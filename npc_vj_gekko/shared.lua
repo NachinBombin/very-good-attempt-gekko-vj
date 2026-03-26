@@ -20,8 +20,12 @@ ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
-ENT.WalkSpeed                = 80
-ENT.RunSpeed                 = 110
+-- Drastically reduced movement speeds.
+-- Original: Walk=80, Run=110.
+-- These values drive the nav system; the animation playback rate
+-- in init.lua is tuned separately to match the new speeds.
+ENT.WalkSpeed                = 28
+ENT.RunSpeed                 = 45
 
 ENT.SightDistance = 8000
 ENT.EnemyTimeout  = 60
@@ -40,17 +44,15 @@ ENT.HasMeleeAttack                      = true
 ENT.MeleeAttackDistance                 = 100
 ENT.MeleeAttackDamageDistance           = 160
 ENT.MeleeAttackAngleRadius              = 120
-ENT.NextMeleeAttackTime                 = VJ.SET(5, 7)
-ENT.NextAnyAttackTime_Melee             = 6
+ENT.NextMeleeAttackTime                 = VJ.SET(6, 9)
+ENT.NextAnyAttackTime_Melee             = 7
 ENT.TimeUntilMeleeAttackDamage          = 0.1
 ENT.DisableDefaultMeleeAttackDamageCode = true
 
 -- ====== Range ======
 ENT.HasRangeAttack                        = true
--- IMPORTANT: set to false — rockets are spawned manually in init.lua
--- so that we can control which attachment (L or R) fires each time.
--- Leaving this as "obj_vj_rocket" would cause VJ to fire a third rocket
--- on top of the two we already spawn, making alternation impossible.
+-- IMPORTANT: false — rockets are spawned manually in init.lua
+-- to control which attachment (L or R) fires each time.
 ENT.RangeAttackProjectiles                = false
 ENT.RangeAttackMinDistance                = 250
 ENT.RangeAttackMaxDistance                = 6000

@@ -12,14 +12,18 @@ local ATT_MACHINEGUN   = 3
 local ATT_MISSILE_L    = 9
 local ATT_MISSILE_R    = 10
 
-local ANIM_WALK_SPEED  = 170
-local ANIM_RUN_SPEED   = 280
+-- Animation reference speeds — must match the actual animation clip
+-- velocity so playback rate = 1.0 at those speeds.
+-- Tuned DOWN to match the new WalkSpeed=28 / RunSpeed=45 in shared.lua
+-- so the leg cycle looks natural (not moonwalking or stuttering).
+local ANIM_WALK_SPEED  = 28    -- was 170
+local ANIM_RUN_SPEED   = 45    -- was 280
 
 -- MG burst config
-local MG_ROUNDS        = 12      -- bullets per attack call
-local MG_INTERVAL      = 0.07    -- seconds between each round
+local MG_ROUNDS        = 12
+local MG_INTERVAL      = 0.07
 local MG_DAMAGE        = 10
-local MG_SPREAD        = 0.028   -- cone half-angle (radians)
+local MG_SPREAD        = 0.028
 
 -- ============================================================
 --  ANIMATION
@@ -77,11 +81,13 @@ function ENT:GekkoUpdateAnimation()
 
     local vel = self:GekkoGetSpeed()
 
+    -- Speed thresholds scaled to new movement speeds.
+    -- >35  = running, >4 = walking, else idle.
     local targetSeq, arate
-    if vel > 160 then
+    if vel > 35 then
         targetSeq = "run"
         arate     = vel / ANIM_RUN_SPEED
-    elseif vel > 6 then
+    elseif vel > 4 then
         targetSeq = "walk"
         arate     = vel / ANIM_WALK_SPEED
     else
@@ -143,10 +149,6 @@ end
 
 -- ============================================================
 --  KNOCKBACK SUPPRESSION
---
---  SetAbsVelocity zeroes world-space velocity on the entity directly.
---  Safe to call on any entity type including NPCs. Does NOT touch
---  the physobj, avoiding the SetAngularVelocity crash from cw20.
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     self:SetAbsVelocity(Vector(0, 0, 0))
@@ -158,7 +160,6 @@ end
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
-    -- Re-apply physics lock every tick in case an engine event re-enabled it.
     local phys = self:GetPhysicsObject()
     if IsValid(phys) then
         if phys:IsMotionEnabled() then
@@ -167,9 +168,6 @@ function ENT:OnThink()
         end
     end
 
-    -- Clamp world-space Z velocity to block floating/flying.
-    -- GetVelocity / SetAbsVelocity work on all entity types (unlike
-    -- GetLocalVelocity / SetLocalVelocity which are Player-only).
     local vel = self:GetVelocity()
     if vel.z > 1 then
         self:SetAbsVelocity(Vector(vel.x, vel.y, 0))
@@ -244,7 +242,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                     or  aimPos
 
                 local src
-
                 local mgAtt = entRef:GetAttachment(ATT_MACHINEGUN)
                 if mgAtt then
                     src = mgAtt.Pos

@@ -10,11 +10,14 @@ end
 
 -- ============================================================
 --  STOMP LEG DRIVER
+--  Slow variant: freq reduced 14 -> 5, amp reduced 55 -> 35.
+--  This gives a heavy, deliberate stomp cadence instead of
+--  the fast mechanical scuttle of the original.
 -- ============================================================
 local function GekkoStompLegs(ent)
     local t      = CurTime()
-    local freq   = 14
-    local amp    = 55
+    local freq   = 5      -- was 14
+    local amp    = 35     -- was 55
     local phaseR = t * freq
     local phaseL = t * freq + math.pi
 
@@ -30,7 +33,7 @@ local function GekkoStompLegs(ent)
     SetBone(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
     SetBone(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
 
-    local slam = math.abs(math.sin(t * freq * 0.5)) * 12
+    local slam = math.abs(math.sin(t * freq * 0.5)) * 8   -- was 12, gentler body bob
     SetBone(ent, "b_pelvis",       Angle(slam, 0, 0))
     SetBone(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
     SetBone(ent, "b_l_hippiston1", Angle(math.sin(phaseL) * amp * 0.4, 0, 0))
@@ -38,6 +41,7 @@ end
 
 -- ============================================================
 --  FOOTSTEP SYNC
+--  Cycle rate tuned down to match slow leg freq.
 -- ============================================================
 local STEP_SOUNDS = {
     "physics/metal/metal_box_impact_hard1.wav",
@@ -47,13 +51,14 @@ local STEP_SOUNDS = {
 
 local function GekkoSyncFootsteps(ent)
     local vel = ent:GetNWFloat("GekkoSpeed", 0)
-    if vel < 8 then
+    if vel < 4 then
         ent._stepPhaseR = nil
         ent._stepPhaseL = nil
         return
     end
 
-    local cycleHz = (vel > 160) and 1.1 or 0.71
+    -- Slower cycle: 0.28 Hz walk, 0.45 Hz run (was 0.71 / 1.1)
+    local cycleHz = (vel > 35) and 0.45 or 0.28
     local t       = CurTime()
     local cycleT  = t * cycleHz * 2 * math.pi
 
@@ -65,8 +70,8 @@ local function GekkoSyncFootsteps(ent)
     ent._stepPhaseR = sinR
     ent._stepPhaseL = sinL
 
-    local pitch = (vel > 160) and math.random(58, 68) or math.random(70, 80)
-    local vol   = (vel > 160) and 88 or 80
+    local pitch = (vel > 35) and math.random(55, 65) or math.random(68, 78)
+    local vol   = (vel > 35) and 90 or 82
 
     if prevR > 0 and sinR <= 0 then
         ent:EmitSound(STEP_SOUNDS[math.random(#STEP_SOUNDS)], vol, pitch)
@@ -77,7 +82,7 @@ local function GekkoSyncFootsteps(ent)
 end
 
 -- ============================================================
---  ARM AIM DRIVER
+--  ARM AIM DRIVER  (unchanged — arms track at full speed)
 -- ============================================================
 local ARM_YAW_LIMIT   = 75
 local ARM_PITCH_LIMIT = 50
@@ -133,28 +138,16 @@ end
 
 -- ============================================================
 --  HEAD AIM DRIVER  (b_spine4)
+--  Speed intentionally UNCHANGED at 200 deg/sec.
+--  The head should feel alert and predatory even when the body is slow.
 --
---  ManipulateBoneAngles takes Angle(p, y, r) in LOCAL bone space.
---
---  On b_spine4 the axes map as:
---    p  =  forward / back tilt   → world pitch
---    y  =  left  / right turn    → world yaw   ← FIX: was in r (roll)
---    r  =  unused (leave 0)
---
---  The old code used Angle(pitch, 0, -relYaw) which put yaw in the
---  ROLL channel. Roll and pitch share a compound axis on this bone,
---  so any nonzero pitch caused the roll-driven yaw to skew sideways
---  and the two values fought each other visually.
---
---  Limits:
---    Yaw:   ±70°  (relative to body forward)
---    Pitch: -70° (up) / +50° (down)
---    Speed: 200 deg/sec
+--  FIX (previous commit): yaw is in the y channel of ManipulateBoneAngles,
+--  NOT the r (roll) channel. Pitch in p, yaw in y, roll=0.
 -- ============================================================
 local HEAD_YAW_LIMIT  =  70
 local HEAD_PITCH_UP   = -70
 local HEAD_PITCH_DOWN =  50
-local HEAD_TURN_SPEED = 200
+local HEAD_TURN_SPEED = 200   -- unchanged
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -165,7 +158,6 @@ local function GekkoUpdateHead(ent, dt)
     local vel     = ent:GetNWFloat("GekkoSpeed", 0)
     local enemy   = ent:GetNWEntity("GekkoEnemy", NULL)
 
-    -- Initialise persistent state on first call
     if not ent._cl_headYaw then
         ent._cl_headYaw    = bodyYaw
         ent._cl_headPitch  = 0
@@ -179,12 +171,9 @@ local function GekkoUpdateHead(ent, dt)
     if IsValid(enemy) then
         local eyePos  = ent:GetPos() + Vector(0, 0, 130)
         local toEnemy = (enemy:GetPos() + Vector(0, 0, 40) - eyePos):Angle()
-        -- toEnemy.y  = world yaw toward enemy
-        -- toEnemy.p  = positive = looking DOWN, negative = looking UP
         targetYaw   = toEnemy.y
         targetPitch = math.Clamp(toEnemy.p, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
-    elseif vel < 6 then
-        -- Idle scan: pan left/right slowly
+    elseif vel < 4 then
         if t > ent._cl_scanNext then
             ent._cl_headDir    = -ent._cl_headDir
             ent._cl_scanNext   = t + math.Rand(2, 5)
@@ -193,16 +182,13 @@ local function GekkoUpdateHead(ent, dt)
         targetYaw   = ent._cl_scanTarget
         targetPitch = math.sin(t * 0.6) * 12
     else
-        -- Walking: face forward with a gentle stride bob
         targetYaw   = bodyYaw
         targetPitch = math.sin(t * 2.5) * 5
     end
 
-    -- Clamp target yaw relative to body, then smooth toward it
     local relTarget = math.Clamp(math.NormalizeAngle(targetYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
     targetYaw = bodyYaw + relTarget
 
-    -- Keep current yaw within body limits before computing diff
     ent._cl_headYaw = bodyYaw + math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
 
     local yawDiff   = math.NormalizeAngle(targetYaw - ent._cl_headYaw)
@@ -212,16 +198,9 @@ local function GekkoUpdateHead(ent, dt)
     ent._cl_headPitch = ent._cl_headPitch + math.Clamp(pitchDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
     ent._cl_headPitch = math.Clamp(ent._cl_headPitch, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
 
-    -- Final relative yaw for bone application
     local relYaw = math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
 
-    -- *** THE FIX ***
-    -- Angle(p, y, r):
-    --   p slot = _cl_headPitch  (forward/back tilt, independent axis)
-    --   y slot = relYaw         (left/right turn,   independent axis)
-    --   r slot = 0              (unused)
-    -- Previously relYaw was in the r slot (roll), which shares a compound
-    -- rotation axis with pitch on this bone — causing visible fighting.
+    -- Angle(p, y, r): pitch in p slot, yaw in y slot, roll=0
     ent:ManipulateBoneAngles(bone, Angle(ent._cl_headPitch, relYaw, 0), false)
 end
 
