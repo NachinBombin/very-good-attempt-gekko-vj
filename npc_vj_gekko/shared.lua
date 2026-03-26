@@ -27,16 +27,13 @@ ENT.SightDistance = 8000
 ENT.EnemyTimeout  = 60
 
 -- ====== Animation Tables ======
--- VJ Base uses these to pick sequences for each state.
--- Use sequence NAME strings; VJ resolves them via LookupSequence internally.
--- false = let VJ fall back to its default ACT lookup (safe).
 ENT.AnimTbl_Idle         = {"idle"}
 ENT.AnimTbl_Walk         = {"walk"}
 ENT.AnimTbl_Run          = {"run"}
-ENT.AnimTbl_MeleeAttack  = {"idle"}   -- Gekko has no dedicated melee anim; idle stance during stomp
-ENT.AnimTbl_RangeAttack  = {"idle"}   -- Same: fire from idle pose, no separate fire anim
-ENT.AnimTbl_Flinch       = false       -- No flinch sequence on this model
-ENT.AnimTbl_Death        = false       -- No death sequence; we handle it in OnDeath
+ENT.AnimTbl_MeleeAttack  = {"idle"}
+ENT.AnimTbl_RangeAttack  = {"idle"}
+ENT.AnimTbl_Flinch       = false
+ENT.AnimTbl_Death        = false
 
 -- ====== Melee (Stomp) ======
 ENT.HasMeleeAttack                      = true
@@ -50,7 +47,11 @@ ENT.DisableDefaultMeleeAttackDamageCode = true
 
 -- ====== Range ======
 ENT.HasRangeAttack                        = true
-ENT.RangeAttackProjectiles                = "obj_vj_rocket"
+-- IMPORTANT: set to false — rockets are spawned manually in init.lua
+-- so that we can control which attachment (L or R) fires each time.
+-- Leaving this as "obj_vj_rocket" would cause VJ to fire a third rocket
+-- on top of the two we already spawn, making alternation impossible.
+ENT.RangeAttackProjectiles                = false
 ENT.RangeAttackMinDistance                = 250
 ENT.RangeAttackMaxDistance                = 6000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
