@@ -23,7 +23,7 @@ ENT.IdleAlwaysWander         = true
 ENT.WalkSpeed                = 80
 ENT.RunSpeed                 = 110
 
-ENT.SightDistance = 8000
+ENT.SightDistance = 18000
 ENT.EnemyTimeout  = 60
 
 -- ====== Animation Tables ======
@@ -54,7 +54,7 @@ ENT.RangeAttackProjectiles                = "obj_vj_rocket"
 ENT.RangeAttackMinDistance                = 250
 ENT.RangeAttackMaxDistance                = 6000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
-ENT.NextRangeAttackTime                   = VJ.SET(2, 4)
+ENT.NextRangeAttackTime                   = 9
 ENT.NextAnyAttackTime_Range               = 3
 
 -- ====== Facing ======

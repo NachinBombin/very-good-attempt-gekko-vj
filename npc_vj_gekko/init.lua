@@ -17,9 +17,9 @@ local ANIM_RUN_SPEED   = 280
 
 -- MG burst config
 local MG_ROUNDS        = 12      -- bullets per attack call
-local MG_INTERVAL      = 0.07    -- seconds between each round
+local MG_INTERVAL      = 0.1    -- seconds between each round
 local MG_DAMAGE        = 10
-local MG_SPREAD        = 0.028   -- cone half-angle in radians (tighter than before)
+local MG_SPREAD        = 4  -- cone half-angle in radians (tighter than before)
 
 -- ============================================================
 --  ANIMATION
@@ -185,35 +185,7 @@ function ENT:OnThink()
     end
 end
 
--- ============================================================
---  MELEE  (Stomp)
--- ============================================================
-function ENT:OnMeleeAttackExecute(status, enemy)
-    if status == "Init" then
-        if not IsValid(enemy) then return true end
 
-        local stompDuration = 1.4
-        self:SetNWFloat("GekkoStompEnd", CurTime() + stompDuration)
-
-        timer.Simple(stompDuration * 0.5, function()
-            if not IsValid(self) or not IsValid(enemy) then return end
-            if self:GetPos():Distance(enemy:GetPos()) > 140 then return end
-
-            local dmg = DamageInfo()
-            dmg:SetAttacker(self)
-            dmg:SetInflictor(self)
-            dmg:SetDamage(85)
-            dmg:SetDamageType(DMG_CLUB)
-            dmg:SetDamagePosition(enemy:GetPos())
-            enemy:TakeDamageInfo(dmg)
-            self:EmitSound("physics/metal/metal_box_impact_hard" .. math.random(1, 3) .. ".wav", 100, 80)
-        end)
-
-        return true
-    end
-end
-
--- ============================================================
 --  RANGE ATTACK
 --
 --  MACHINE GUN  — sequential burst: MG_ROUNDS shots, MG_INTERVAL apart.
