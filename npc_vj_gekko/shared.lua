@@ -20,40 +20,37 @@ ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
--- Drastically reduced movement speeds.
--- Original: Walk=80, Run=110.
--- These values drive the nav system; the animation playback rate
--- in init.lua is tuned separately to match the new speeds.
-ENT.WalkSpeed                = 28
-ENT.RunSpeed                 = 45
+ENT.WalkSpeed                = 80
+ENT.RunSpeed                 = 110
 
 ENT.SightDistance = 8000
 ENT.EnemyTimeout  = 60
 
 -- ====== Animation Tables ======
+-- VJ Base uses these to pick sequences for each state.
+-- Use sequence NAME strings; VJ resolves them via LookupSequence internally.
+-- false = let VJ fall back to its default ACT lookup (safe).
 ENT.AnimTbl_Idle         = {"idle"}
 ENT.AnimTbl_Walk         = {"walk"}
 ENT.AnimTbl_Run          = {"run"}
-ENT.AnimTbl_MeleeAttack  = {"idle"}
-ENT.AnimTbl_RangeAttack  = {"idle"}
-ENT.AnimTbl_Flinch       = false
-ENT.AnimTbl_Death        = false
+ENT.AnimTbl_MeleeAttack  = {"idle"}   -- Gekko has no dedicated melee anim; idle stance during stomp
+ENT.AnimTbl_RangeAttack  = {"idle"}   -- Same: fire from idle pose, no separate fire anim
+ENT.AnimTbl_Flinch       = false       -- No flinch sequence on this model
+ENT.AnimTbl_Death        = false       -- No death sequence; we handle it in OnDeath
 
 -- ====== Melee (Stomp) ======
 ENT.HasMeleeAttack                      = true
 ENT.MeleeAttackDistance                 = 100
 ENT.MeleeAttackDamageDistance           = 160
 ENT.MeleeAttackAngleRadius              = 120
-ENT.NextMeleeAttackTime                 = VJ.SET(6, 9)
-ENT.NextAnyAttackTime_Melee             = 7
+ENT.NextMeleeAttackTime                 = VJ.SET(5, 7)
+ENT.NextAnyAttackTime_Melee             = 6
 ENT.TimeUntilMeleeAttackDamage          = 0.1
 ENT.DisableDefaultMeleeAttackDamageCode = true
 
 -- ====== Range ======
 ENT.HasRangeAttack                        = true
--- IMPORTANT: false — rockets are spawned manually in init.lua
--- to control which attachment (L or R) fires each time.
-ENT.RangeAttackProjectiles                = false
+ENT.RangeAttackProjectiles                = "obj_vj_rocket"
 ENT.RangeAttackMinDistance                = 250
 ENT.RangeAttackMaxDistance                = 6000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
