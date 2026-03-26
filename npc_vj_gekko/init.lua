@@ -100,28 +100,14 @@ function ENT:Init()
     ))
     print(string.format(
         "[GekkoNPC] Attachments  MG=%s  MissileL=%s  MissileR=%s",
-        self:GetAttachment(ATT_MACHINEGUN)  and "OK" or "MISSING",
-        self:GetAttachment(ATT_MISSILE_L)   and "OK" or "MISSING",
-        self:GetAttachment(ATT_MISSILE_R)   and "OK" or "MISSING"
+        self:GetAttachment(ATT_MACHINEGUN) and "OK" or "MISSING",
+        self:GetAttachment(ATT_MISSILE_L)  and "OK" or "MISSING",
+        self:GetAttachment(ATT_MISSILE_R)  and "OK" or "MISSING"
     ))
 end
 
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
-
-    -- Compute head pitch server-side from real enemy position and
-    -- push it to clients as NWFloat.  Client only smooths + applies.
-    local enemy = self:GetEnemy()
-    if IsValid(enemy) then
-        local eyePos   = self:GetPos() + Vector(0, 0, 130)
-        local enemyEye = enemy:GetPos() + Vector(0, 0, 40)
-        local delta    = enemyEye - eyePos
-        local len      = delta:Length()
-        local pitch    = len > 1 and -math.deg(math.asin(math.Clamp(delta.z / len, -1, 1))) or 0
-        self:SetNWFloat("GekkoHeadPitch", pitch)
-    else
-        self:SetNWFloat("GekkoHeadPitch", 0)
-    end
 end
 
 function ENT:OnMeleeAttackExecute(status, enemy)
@@ -151,13 +137,12 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
 
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
     local firedAny = false
 
     self._missileToggle = not self._missileToggle
     local missileAttIdx = self._missileToggle and ATT_MISSILE_L or ATT_MISSILE_R
 
-    -- Machine gun from attachment 3
     local mgAtt = self:GetAttachment(ATT_MACHINEGUN)
     if mgAtt then
         local src = mgAtt.Pos
@@ -181,7 +166,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         end
     end
 
-    -- Missile from alternating launcher attachment
     local misAtt = self:GetAttachment(missileAttIdx)
     if misAtt then
         local src = misAtt.Pos
