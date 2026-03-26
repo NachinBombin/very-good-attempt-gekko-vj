@@ -2,12 +2,6 @@ include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 
--- ============================================================
---  ATTACHMENT INDICES  (from the original mgs4_gekko_mech.lua)
---  att 3  = machine gun barrel  (b_l_gunrack region)
---  att 9  = left  rocket launcher barrel  (b_l_hand region)
---  att 10 = right rocket launcher barrel  (b_r_hand region)
--- ============================================================
 local ATT_MACHINEGUN   = 3
 local ATT_MISSILE_L    = 9
 local ATT_MISSILE_R    = 10
@@ -15,9 +9,6 @@ local ATT_MISSILE_R    = 10
 local ANIM_WALK_SPEED  = 170
 local ANIM_RUN_SPEED   = 280
 
--- ============================================================
---  ANIMATION
--- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
     local walkSeq = self:LookupSequence("walk")
     local runSeq  = self:LookupSequence("run")
@@ -96,14 +87,10 @@ function ENT:GekkoUpdateAnimation()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
--- ============================================================
---  INIT
--- ============================================================
 function ENT:Init()
     self:SetCollisionBounds(Vector(-36, -36, 0), Vector(36, 36, 96))
     self:SetSkin(1)
 
-    -- Bones kept for reference / debug only; firing now uses attachments
     self.GekkoSpineBone    = self:LookupBone("b_spine4")
     self.GekkoLGunBone     = self:LookupBone("b_l_gunrack")
     self.GekkoRGunBone     = self:LookupBone("b_r_gunrack")
@@ -113,8 +100,7 @@ function ENT:Init()
     self._lastPos          = self:GetPos()
     self._smoothSpd        = 0
 
-    -- Sanity-check attachments at spawn so we know if they resolved
-    local mgAtt  = self:GetAttachment(ATT_MACHINEGUN)
+    local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
     local misRAtt = self:GetAttachment(ATT_MISSILE_R)
     print(string.format(
@@ -129,32 +115,39 @@ function ENT:Init()
     ))
 end
 
--- ============================================================
---  THINK
--- ============================================================
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
+    -- Push head pitch to client so we can read it in console
+    -- NWFloat GekkoHeadPitch = the TARGET pitch being computed server-side
+    -- (client computes its own but this lets us cross-check)
+    local enemy = self:GetEnemy()
+    if IsValid(enemy) then
+        local eyePos   = self:GetPos() + Vector(0, 0, 130)
+        local enemyEye = enemy:GetPos() + Vector(0, 0, 40)
+        local delta    = enemyEye - eyePos
+        local len      = delta:Length()
+        local srvPitch = len > 1 and -math.deg(math.asin(delta.z / len)) or 0
+        self:SetNWFloat("GekkoDbgPitch", srvPitch)
+    else
+        self:SetNWFloat("GekkoDbgPitch", 0)
+    end
+
     if CurTime() > self.Gekko_NextDebugT then
-        local enemy = self:GetEnemy()
         local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
         local atkT  = self.AttackAnimTime and string.format("%.2f", self.AttackAnimTime - CurTime()) or "n/a"
+        local dbgP  = self:GetNWFloat("GekkoDbgPitch", 0)
         print(string.format(
-            "[GekkoDBG] smoothSpd=%.1f  seq=%s  act=%d  moving=%s  enemyDist=%d  atkRemain=%s",
+            "[GekkoDBG] spd=%.1f seq=%s act=%d dist=%d atkR=%s | headTargetPitch=%.1f",
             self._smoothSpd or 0,
             tostring(self.Gekko_LastSeqName),
             self:GetActivity(),
-            tostring(self:IsMoving()),
-            dist,
-            atkT
+            dist, atkT, dbgP
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
 end
 
--- ============================================================
---  MELEE  (Stomp — unchanged)
--- ============================================================
 function ENT:OnMeleeAttackExecute(status, enemy)
     if status == "Init" then
         if not IsValid(enemy) then return true end
@@ -180,12 +173,6 @@ function ENT:OnMeleeAttackExecute(status, enemy)
     end
 end
 
--- ============================================================
---  RANGE ATTACK
---  Machine gun fires from attachment 3 (exact barrel tip).
---  Missiles fire from attachments 9 (L) and 10 (R) alternating.
---  Attachment gives us world Pos + Ang directly — no guessing.
--- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
@@ -193,16 +180,13 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
     local firedAny = false
 
-    -- Toggle between missile left/right each burst
     self._missileToggle = not self._missileToggle
     local missileAttIdx = self._missileToggle and ATT_MISSILE_L or ATT_MISSILE_R
 
-    -- ---- Machine gun burst from att 3 ----
     local mgAtt = self:GetAttachment(ATT_MACHINEGUN)
     if mgAtt then
         local src = mgAtt.Pos
         local dir = (aimPos - src):GetNormalized()
-
         self:FireBullets({
             Attacker   = self,
             Damage     = 8,
@@ -213,16 +197,12 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
             Num        = 3,
             Spread     = Vector(0.04, 0.04, 0),
         })
-
-        -- Muzzle flash at exact barrel attachment
         local eff = EffectData()
         eff:SetOrigin(src)
         eff:SetNormal(dir)
         util.Effect("MuzzleFlash", eff)
-
         firedAny = true
     else
-        -- Fallback: bone matrix method
         local boneIdx = self.GekkoLGunBone
         if boneIdx and boneIdx >= 0 then
             local m = self:GetBoneMatrix(boneIdx)
@@ -230,19 +210,19 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                 local src = m:GetTranslation() + m:GetForward() * 28
                 local dir = (aimPos - src):GetNormalized()
                 self:FireBullets({ Attacker=self, Damage=8, Dir=dir, Src=src, AmmoType="AR2", TracerName="Tracer", Num=3, Spread=Vector(0.04,0.04,0) })
-                local eff = EffectData() eff:SetOrigin(src) eff:SetNormal(dir) util.Effect("MuzzleFlash", eff)
+                local eff = EffectData()
+                eff:SetOrigin(src)
+                eff:SetNormal(dir)
+                util.Effect("MuzzleFlash", eff)
                 firedAny = true
             end
         end
     end
 
-    -- ---- Missile from alternating launcher attachment ----
     local misAtt = self:GetAttachment(missileAttIdx)
     if misAtt then
         local src = misAtt.Pos
         local dir = (aimPos - src):GetNormalized()
-
-        -- Use a VJ rocket spawned at the exact launcher tip
         local rocket = ents.Create("obj_vj_rocket")
         if IsValid(rocket) then
             rocket:SetPos(src)
@@ -250,25 +230,17 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
             rocket:SetOwner(self)
             rocket:Spawn()
             rocket:Activate()
-
-            -- Give it velocity toward enemy
             local phys = rocket:GetPhysicsObject()
-            if IsValid(phys) then
-                phys:SetVelocity(dir * 1200)
-            end
+            if IsValid(phys) then phys:SetVelocity(dir * 1200) end
         end
-
-        -- Particle effect at launcher tip
         local eff = EffectData()
         eff:SetOrigin(src)
         eff:SetNormal(dir)
         util.Effect("MuzzleFlash", eff)
-
         firedAny = true
     end
 
     if not firedAny then
-        -- Last resort fallback
         local src = self:GetPos() + Vector(0, 0, 200)
         local dir = (aimPos - src):GetNormalized()
         self:FireBullets({ Attacker=self, Damage=8, Dir=dir, Src=src, AmmoType="AR2", TracerName="Tracer", Num=3, Spread=Vector(0.05,0.05,0) })
@@ -278,9 +250,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     return true
 end
 
--- ============================================================
---  DEATH
--- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
