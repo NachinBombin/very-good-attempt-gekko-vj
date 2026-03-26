@@ -8,15 +8,6 @@ local function SetBone(ent, name, ang)
     if id and id >= 0 then ent:ManipulateBoneAngles(id, ang, false) end
 end
 
--- Signed pitch: negative = target above, positive = target below.
--- Vector:Angle().p is ALWAYS >= 0 in GMod so we compute manually.
-local function SignedPitch(from, to)
-    local delta = to - from
-    local len   = delta:Length()
-    if len < 1 then return 0 end
-    return -math.deg(math.asin(math.Clamp(delta.z / len, -1, 1)))
-end
-
 -- ============================================================
 --  STOMP LEG DRIVER
 -- ============================================================
@@ -98,7 +89,9 @@ local function GekkoAimArms(ent, enemyPos, dt)
     local bodyYaw = ent:GetAngles().y
 
     local relYaw   = math.NormalizeAngle(aimDir:Angle().y - bodyYaw)
-    local relPitch = SignedPitch(myPos, enemyPos)
+    local delta    = enemyPos - myPos
+    local len      = delta:Length()
+    local relPitch = len > 1 and -math.deg(math.asin(math.Clamp(delta.z / len, -1, 1))) or 0
 
     local clampedYaw   = math.Clamp(relYaw,   -ARM_YAW_LIMIT,   ARM_YAW_LIMIT)
     local clampedPitch = math.Clamp(relPitch, -ARM_PITCH_LIMIT, ARM_PITCH_LIMIT)
@@ -141,31 +134,18 @@ end
 -- ============================================================
 --  HEAD AIM DRIVER  (b_spine4)
 --
---  We no longer guess the bone channel mapping.
---  Three convars let you test live in-game:
+--  Bone channel confirmed working from idle:
+--    ManipulateBoneAngles(bone, Angle(pitch, 0, -yaw), false)
 --
---    gekko_head_mode  0 = Angle(pitch, 0,    -yaw )   <- our old assumption
---                     1 = Angle(-yaw,  pitch, 0   )   <- original mech mapping
---                     2 = Angle(0,     pitch, -yaw)   <- third permutation
---
---  Run in console:  gekko_head_mode 1   (then 2, then 0)
---  Watch which one makes the head tilt up/down toward a flying target.
---  Once confirmed, we hard-code and remove the convars.
---
---  Also prints client-side computed pitch to console every second
---  so you can confirm the VALUE is correct even if the channel is wrong.
+--  Pitch is transmitted from server as NWFloat "GekkoHeadPitch".
+--  Server computes it every think from the real enemy position.
+--  Client only smooths and applies it.
+--  This sidesteps ALL client-side position/entity resolution issues.
 -- ============================================================
 local HEAD_YAW_LIMIT  =  70
 local HEAD_PITCH_UP   = -70
 local HEAD_PITCH_DOWN =  50
 local HEAD_TURN_SPEED = 200
-
-if CLIENT then
-    CreateClientConVar("gekko_head_mode", "0", true, false, "Bone channel test: 0/1/2")
-    CreateClientConVar("gekko_head_debug", "1", true, false, "Print head pitch to console")
-end
-
-local _dbgNext = 0
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -185,13 +165,20 @@ local function GekkoUpdateHead(ent, dt)
     end
 
     local targetYaw, targetPitch
-    local eyePos = ent:GetPos() + Vector(0, 0, 130)
 
     if IsValid(enemy) then
         local enemyEye = enemy:GetPos() + Vector(0, 0, 40)
-        targetYaw   = (enemyEye - eyePos):Angle().y
-        targetPitch = math.Clamp(SignedPitch(eyePos, enemyEye), HEAD_PITCH_UP, HEAD_PITCH_DOWN)
+        targetYaw = (enemyEye - ent:GetPos()):Angle().y
+
+        -- Read pitch from server NWFloat — server has authoritative enemy pos
+        -- and computed it with the same SignedPitch formula.
+        -- This avoids any client-side GetPos() weirdness during Draw().
+        targetPitch = math.Clamp(
+            ent:GetNWFloat("GekkoHeadPitch", 0),
+            HEAD_PITCH_UP, HEAD_PITCH_DOWN
+        )
     elseif vel < 6 then
+        -- Idle scan: yaw sweep + gentle pitch nod
         if t > ent._cl_scanNext then
             ent._cl_headDir    = -ent._cl_headDir
             ent._cl_scanNext   = t + math.Rand(2, 5)
@@ -200,6 +187,7 @@ local function GekkoUpdateHead(ent, dt)
         targetYaw   = ent._cl_scanTarget
         targetPitch = math.sin(t * 0.6) * 12
     else
+        -- Walking/running: face forward, light bob
         targetYaw   = bodyYaw
         targetPitch = math.sin(t * 2.5) * 5
     end
@@ -208,38 +196,18 @@ local function GekkoUpdateHead(ent, dt)
     local relTarget = math.Clamp(math.NormalizeAngle(targetYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
     targetYaw = bodyYaw + relTarget
     ent._cl_headYaw = bodyYaw + math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
-    local yawDiff   = math.NormalizeAngle(targetYaw - ent._cl_headYaw)
+    local yawDiff = math.NormalizeAngle(targetYaw - ent._cl_headYaw)
     ent._cl_headYaw = ent._cl_headYaw + math.Clamp(yawDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
 
-    -- Smooth pitch
+    -- Smooth pitch — identical smoothing path as idle
     local pitchDiff   = targetPitch - ent._cl_headPitch
     ent._cl_headPitch = ent._cl_headPitch + math.Clamp(pitchDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
     ent._cl_headPitch = math.Clamp(ent._cl_headPitch, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
 
     local relYaw = math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
-    local cp     = ent._cl_headPitch
 
-    -- Debug print: confirm pitch value is non-zero during combat
-    if GetConVar("gekko_head_debug"):GetBool() and t > _dbgNext and IsValid(enemy) then
-        print(string.format(
-            "[GekkoHead] mode=%d  targetPitch=%.1f  smoothPitch=%.1f  relYaw=%.1f  srvPitch=%.1f",
-            GetConVar("gekko_head_mode"):GetInt(),
-            targetPitch, cp, relYaw,
-            ent:GetNWFloat("GekkoDbgPitch", 0)
-        ))
-        _dbgNext = t + 1
-    end
-
-    -- Apply with selectable channel mapping
-    local mode = GetConVar("gekko_head_mode"):GetInt()
-    if mode == 1 then
-        -- Original mech: Angle(-yaw + bodyYaw, 0, pitch)  remapped to local
-        ent:ManipulateBoneAngles(bone, Angle(-relYaw, 0, cp), false)
-    elseif mode == 2 then
-        ent:ManipulateBoneAngles(bone, Angle(0, cp, -relYaw), false)
-    else  -- mode 0 (current default)
-        ent:ManipulateBoneAngles(bone, Angle(cp, 0, -relYaw), false)
-    end
+    -- Same channel mapping confirmed working in idle
+    ent:ManipulateBoneAngles(bone, Angle(ent._cl_headPitch, 0, -relYaw), false)
 end
 
 -- ============================================================
