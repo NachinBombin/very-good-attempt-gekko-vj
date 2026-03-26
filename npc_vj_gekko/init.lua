@@ -23,18 +23,6 @@ function ENT:SetAnimationTranslations(wepHoldType)
     print(string.format("[GekkoNPC] AnimTrans  idle->%d  walk->%d  run->%d", idleSeq, walkSeq, runSeq))
 end
 
-function ENT:OnMeleeAttack(status, enemy)
-    if status == "Init" then
-        print("[STOMP] Melee triggered!")
-    end
-end
-
-function ENT:OnRangeAttack(status, enemy)
-    if status == "Init" then
-        print("[MISSILE] Range attack triggered!")
-    end
-end
-
 function ENT:TranslateActivity(act)
     if act == ACT_WALK or act == ACT_WALK_AIM then
         return self.GekkoSeq_Walk or act
@@ -65,7 +53,6 @@ function ENT:GekkoGetSpeed()
 end
 
 function ENT:GekkoUpdateAnimation()
-    -- Don't override animation while attack or flinch is playing
     if self.AttackAnimTime and CurTime() < self.AttackAnimTime then return end
     if self.Flinching then return end
 
@@ -123,19 +110,13 @@ end
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
-    local vel = self._smoothSpd or 0
-    if vel > 8 and CurTime() > self.GekkoLastStepTime + 0.38 then
-        self:EmitSound("physics/metal/metal_box_impact_hard1.wav", 85, math.random(60, 75))
-        self.GekkoLastStepTime = CurTime()
-    end
-
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = self:GetEnemy()
         local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
         local atkT  = self.AttackAnimTime and string.format("%.2f", self.AttackAnimTime - CurTime()) or "n/a"
         print(string.format(
             "[GekkoDBG] smoothSpd=%.1f  seq=%s  act=%d  moving=%s  enemyDist=%d  atkRemain=%s",
-            vel,
+            self._smoothSpd or 0,
             tostring(self.Gekko_LastSeqName),
             self:GetActivity(),
             tostring(self:IsMoving()),
@@ -146,17 +127,6 @@ function ENT:OnThink()
     end
 end
 
--- ============================================================
---  MELEE ATTACK (Stomp)
---  DisableDefaultMeleeAttackDamageCode = true in shared.lua
---  means the base will NOT apply its own damage — we own it.
---
---  "Init"      → runs when attack triggers; return true = skip
---                the base's hit-scan (we do our own damage timer)
---  "PreDamage" → never fires because we returned true on Init
---  "Miss"      → fires if the base decides no target was hit
---                (irrelevant here since we disabled base damage)
--- ============================================================
 function ENT:OnMeleeAttackExecute(status, enemy)
     if status == "Init" then
         if not IsValid(enemy) then return true end
@@ -178,18 +148,10 @@ function ENT:OnMeleeAttackExecute(status, enemy)
             self:EmitSound("physics/metal/metal_box_impact_hard" .. math.random(1, 3) .. ".wav", 100, 80)
         end)
 
-        return true -- skip base hit-scan; we applied damage above
+        return true
     end
 end
 
--- ============================================================
---  RANGE ATTACK (Bullet burst from gun-rack barrels)
---
---  "Init"  → runs when attack triggers; we fire bullets and
---            return true to skip spawning obj_vj_rocket.
---  VJ will still handle cooldown timers, animation window,
---  and IsAbleToRangeAttack reset — we just own the firing.
--- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
@@ -224,13 +186,12 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         end
     end
 
-    -- Fallback if bones aren't valid yet
     if not firedAny then
         FireFromBarrel(self:GetPos() + Vector(0, 0, 200))
     end
 
     self:EmitSound("weapons/ar2/fire1.wav", 80, math.random(90, 110))
-    return true -- skip obj_vj_rocket spawning
+    return true
 end
 
 function ENT:OnDeath(dmginfo, hitgroup, status)
