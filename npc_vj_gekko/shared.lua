@@ -27,28 +27,30 @@ ENT.SightDistance = 8000
 ENT.EnemyTimeout  = 60
 
 -- ====== Melee (Stomp) ======
-ENT.HasMeleeAttack                    = true
-ENT.MeleeAttackDistance               = 140        -- increased for HULL_LARGE
-ENT.MeleeAttackDamageDistance         = 160
-ENT.MeleeAttackAngleRadius            = 120
-ENT.NextMeleeAttackTime               = VJ.SET(5, 7)
-ENT.AnimTbl_MeleeAttack               = false      -- we drive animation ourselves
-ENT.TimeUntilMeleeAttackDamage        = false      -- event-based via our timer
-ENT.DisableDefaultMeleeAttackDamageCode = true     -- we apply damage in OnMeleeAttackExecute
+ENT.HasMeleeAttack                      = true
+ENT.MeleeAttackDistance                 = 140
+ENT.MeleeAttackDamageDistance           = 160
+ENT.MeleeAttackAngleRadius              = 120
+ENT.NextMeleeAttackTime                 = VJ.SET(5, 7)
+ENT.NextAnyAttackTime_Melee             = 6
+ENT.AnimTbl_MeleeAttack                 = false
+ENT.TimeUntilMeleeAttackDamage          = 0.1   -- small explicit value, NOT false
+ENT.DisableDefaultMeleeAttackDamageCode = true
 
 -- ====== Range (Bullet burst) ======
 ENT.HasRangeAttack                        = true
-ENT.RangeAttackProjectiles                = "obj_vj_rocket"  -- unused but required field
+ENT.RangeAttackProjectiles                = "obj_vj_rocket"
 ENT.RangeAttackMinDistance                = 250
 ENT.RangeAttackMaxDistance                = 2000
 ENT.AnimTbl_RangeAttack                   = false
-ENT.TimeUntilRangeAttackProjectileRelease = false  -- event-based via our execute
-ENT.NextRangeAttackTime                   = VJ.SET(2, 3)
+ENT.TimeUntilRangeAttackProjectileRelease = 0.1  -- small explicit value, NOT false
+ENT.NextRangeAttackTime                   = VJ.SET(2, 4)
+ENT.NextAnyAttackTime_Range               = 3
 
 -- ====== Facing ======
 ENT.ConstantlyFaceEnemy             = false
-ENT.ConstantlyFaceEnemy_IfVisible   = false        -- fixed typo
-ENT.ConstantlyFaceEnemy_IfAttacking = false        -- fixed typo
+ENT.ConstantlyFaceEnemy_IfVisible   = false
+ENT.ConstantlyFaceEnemy_IfAttacking = false
 ENT.ConstantlyFaceEnemy_Postures    = "Both"
 ENT.ConstantlyFaceEnemy_MinDistance = 8000
 
@@ -59,7 +61,7 @@ ENT.SoundTbl_Death = {
     "mechassault_2/mechs/mech_explode2.ogg",
 }
 ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
-ENT.SoundTbl_Idle  = false
+-- SoundTbl_Idle intentionally omitted (nil = no idle sounds, false causes temptable spam)
 
 -- ====== Blood ======
 ENT.Bleeds     = true
