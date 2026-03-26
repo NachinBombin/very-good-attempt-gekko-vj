@@ -19,7 +19,7 @@ local ANIM_RUN_SPEED   = 280
 local MG_ROUNDS        = 12      -- bullets per attack call
 local MG_INTERVAL      = 0.07    -- seconds between each round
 local MG_DAMAGE        = 10
-local MG_SPREAD        = 0.028   -- cone half-angle in radians (tighter than before)
+local MG_SPREAD        = 0.028   -- cone half-angle (radians)
 
 -- ============================================================
 --  ANIMATION
@@ -117,19 +117,18 @@ function ENT:Init()
     self.Gekko_LastSeqName = ""
     self._lastPos          = self:GetPos()
     self._smoothSpd        = 0
-    self._missileCount     = 0   -- counts missile shots; even = L, odd = R
+    self._missileCount     = 0
     self._mgBurstActive    = false
 
-    -- ---- Physics: make the Gekko very heavy so it doesn't float/fly ----
-    -- VJ creature base entities are not physical by default, but if a
-    -- physics object exists (e.g. from a prop model), pin it down.
+    -- Attempt initial physics lock. This may not stick depending on
+    -- when the physobj is fully initialised — OnThink re-applies it
+    -- every second as a guarantee.
     local phys = self:GetPhysicsObject()
     if IsValid(phys) then
         phys:SetMass(50000)
-        phys:EnableMotion(false)   -- lock physics entirely; nav system moves us
+        phys:EnableMotion(false)
     end
 
-    -- Sanity-check attachments at spawn
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
     local misRAtt = self:GetAttachment(ATT_MISSILE_R)
@@ -147,18 +146,18 @@ end
 
 -- ============================================================
 --  KNOCKBACK SUPPRESSION
---  SNPCs are not physics objects but bullet force and explosions
---  can still displace them via the engine. We absorb that here.
+--
+--  cw20_bulletballistic and similar hooks intercept FireBullets and
+--  call TakeDamage on the NPC mid-frame. At that point the physobj
+--  may be in an indeterminate state, so we must NOT call any physobj
+--  methods here — doing so causes the "attempt to call method
+--  'SetAngularVelocity' (a nil value)" crash.
+--
+--  SetLocalVelocity is a safe engine call that works on MOVETYPE_STEP
+--  entities (which VJ SNPCs are) without touching the physobj at all.
+--  It zeroes out any displacement the damage event imparted.
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    -- Zero out any velocity imparted by the damage source.
-    -- We do this every hit; it has no effect on health (VJ handles that).
-    local phys = self:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:SetVelocity(Vector(0, 0, 0))
-        phys:SetAngularVelocity(Vector(0, 0, 0))
-    end
-    -- Also clamp entity velocity directly (works even without a physobj)
     self:SetLocalVelocity(Vector(0, 0, 0))
 end
 
@@ -167,6 +166,31 @@ end
 -- ============================================================
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
+
+    -- Re-apply physics lock every tick.
+    -- MOVETYPE_STEP SNPCs don't use vphysics for movement, but
+    -- explosions and bullet impacts can briefly re-enable the physobj
+    -- and impart Z velocity, causing the "float" / "fly" effect.
+    -- We clamp it here unconditionally so no single frame slips through.
+    local phys = self:GetPhysicsObject()
+    if IsValid(phys) then
+        -- Re-lock motion in case an engine event re-enabled it
+        if phys:IsMotionEnabled() then
+            phys:EnableMotion(false)
+            phys:SetVelocity(Vector(0, 0, 0))
+            -- NOTE: SetAngularVelocity intentionally NOT called here;
+            -- it is unavailable on kinematic/motion-disabled objects
+            -- in some GMod builds and would crash (same as the cw20 bug).
+        end
+    end
+
+    -- Belt-and-suspenders: clamp entity-level Z velocity.
+    -- This catches displacement that bypasses the physobj entirely
+    -- (e.g. from VPhysicsTakeDamage or Source engine push).
+    local vel = self:GetLocalVelocity()
+    if vel.z > 1 or vel.z < -150 then   -- allow gentle downward settle, block upward flight
+        self:SetLocalVelocity(Vector(vel.x, vel.y, math.Clamp(vel.z, -150, 0)))
+    end
 
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = self:GetEnemy()
@@ -216,20 +240,17 @@ end
 -- ============================================================
 --  RANGE ATTACK
 --
---  MACHINE GUN  — sequential burst: MG_ROUNDS shots, MG_INTERVAL apart.
---                 Each shot = 1 bullet with individual random spread,
---                 giving a proper spray pattern over time.
---                 Fires from att 3; falls back to b_l_gunrack bone.
+--  MACHINE GUN  — sequential burst via timer.Simple chain.
+--                 1 bullet per tick, MG_INTERVAL apart, MG_ROUNDS total.
+--                 Each bullet has independent random spread — proper spray.
+--                 Source: att 3, fallback to b_l_gunrack bone matrix.
 --
---  MISSILES     — strictly alternating L / R per OnRangeAttackExecute call.
---                 Uses _missileCount (incremented each call) so the toggle
---                 is never reset accidentally by the MG logic.
---                 Fires from att 9 (L) or att 10 (R).
+--  MISSILES     — strictly alternating L/R via integer counter.
+--                 Odd call = Left (att 9), Even call = Right (att 10).
+--                 Source: att 9 or 10, fallback to body center.
 --
---  NOTE: VJ Base's RangeAttackProjectiles ("obj_vj_rocket" in shared.lua)
---  is intentionally NOT used here — we manage missiles manually so we can
---  control which attachment fires. Set RangeAttackProjectiles = false in
---  shared.lua to prevent VJ from double-firing a second rocket.
+--  VJ auto-projectile is disabled (RangeAttackProjectiles = false in
+--  shared.lua) so VJ Base does not spawn a third rocket on its own.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
@@ -240,19 +261,18 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     -- ---- Sequential Machine Gun Burst ----
     if not self._mgBurstActive then
         self._mgBurstActive = true
-        local entRef = self  -- capture for timer closures
+        local entRef = self
 
         for i = 0, MG_ROUNDS - 1 do
             timer.Simple(i * MG_INTERVAL, function()
                 if not IsValid(entRef) then return end
 
-                -- Re-resolve enemy position each shot for accurate leading
                 local curEnemy = entRef:GetEnemy()
                 local curAim   = IsValid(curEnemy)
                     and (curEnemy:GetPos() + Vector(0, 0, 40))
                     or  aimPos
 
-                local src, dir
+                local src
 
                 local mgAtt = entRef:GetAttachment(ATT_MACHINEGUN)
                 if mgAtt then
@@ -261,16 +281,13 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                     local boneIdx = entRef.GekkoLGunBone
                     if boneIdx and boneIdx >= 0 then
                         local m = entRef:GetBoneMatrix(boneIdx)
-                        if m then
-                            src = m:GetTranslation() + m:GetForward() * 28
-                        end
+                        if m then src = m:GetTranslation() + m:GetForward() * 28 end
                     end
                     src = src or (entRef:GetPos() + Vector(0, 0, 200))
                 end
 
-                dir = (curAim - src):GetNormalized()
+                local dir = (curAim - src):GetNormalized()
 
-                -- Individual bullet: 1 round, unique random spread per shot
                 entRef:FireBullets({
                     Attacker   = entRef,
                     Damage     = MG_DAMAGE,
@@ -286,14 +303,12 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                     ),
                 })
 
-                -- Muzzle flash + sound every shot
                 local eff = EffectData()
                 eff:SetOrigin(src)
                 eff:SetNormal(dir)
                 util.Effect("MuzzleFlash", eff)
                 entRef:EmitSound("weapons/ar2/fire1.wav", 75, math.random(95, 115))
 
-                -- Clear burst flag after last shot
                 if i == MG_ROUNDS - 1 then
                     entRef._mgBurstActive = false
                 end
@@ -302,47 +317,36 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     end
 
     -- ---- Alternating Missile ----
-    -- _missileCount starts at 0. Even = fire Left, Odd = fire Right.
     self._missileCount = (self._missileCount or 0) + 1
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
 
     local misAtt = self:GetAttachment(missileAttIdx)
+    local mSrc
     if misAtt then
-        local src = misAtt.Pos
-        local dir = (aimPos - src):GetNormalized()
-
-        local rocket = ents.Create("obj_vj_rocket")
-        if IsValid(rocket) then
-            rocket:SetPos(src)
-            rocket:SetAngles(dir:Angle())
-            rocket:SetOwner(self)
-            rocket:Spawn()
-            rocket:Activate()
-
-            local phys = rocket:GetPhysicsObject()
-            if IsValid(phys) then
-                phys:SetVelocity(dir * 1200)
-            end
-        end
-
-        local eff = EffectData()
-        eff:SetOrigin(src)
-        eff:SetNormal(dir)
-        util.Effect("MuzzleFlash", eff)
+        mSrc = misAtt.Pos
     else
-        -- Fallback: fire from body center if attachment missing
-        local src = self:GetPos() + Vector(0, 0, 160)
-        local dir = (aimPos - src):GetNormalized()
-        local rocket = ents.Create("obj_vj_rocket")
-        if IsValid(rocket) then
-            rocket:SetPos(src)
-            rocket:SetAngles(dir:Angle())
-            rocket:SetOwner(self)
-            rocket:Spawn()
-            rocket:Activate()
-            local phys = rocket:GetPhysicsObject()
-            if IsValid(phys) then phys:SetVelocity(dir * 1200) end
+        mSrc = self:GetPos() + Vector(0, 0, 160)
+    end
+
+    local mDir = (aimPos - mSrc):GetNormalized()
+    local rocket = ents.Create("obj_vj_rocket")
+    if IsValid(rocket) then
+        rocket:SetPos(mSrc)
+        rocket:SetAngles(mDir:Angle())
+        rocket:SetOwner(self)
+        rocket:Spawn()
+        rocket:Activate()
+        local rphys = rocket:GetPhysicsObject()
+        if IsValid(rphys) then
+            rphys:SetVelocity(mDir * 1200)
         end
+    end
+
+    if misAtt then
+        local eff = EffectData()
+        eff:SetOrigin(mSrc)
+        eff:SetNormal(mDir)
+        util.Effect("MuzzleFlash", eff)
     end
 
     return true
