@@ -120,9 +120,6 @@ function ENT:Init()
     self._missileCount     = 0
     self._mgBurstActive    = false
 
-    -- Attempt initial physics lock. This may not stick depending on
-    -- when the physobj is fully initialised — OnThink re-applies it
-    -- every second as a guarantee.
     local phys = self:GetPhysicsObject()
     if IsValid(phys) then
         phys:SetMass(50000)
@@ -147,18 +144,12 @@ end
 -- ============================================================
 --  KNOCKBACK SUPPRESSION
 --
---  cw20_bulletballistic and similar hooks intercept FireBullets and
---  call TakeDamage on the NPC mid-frame. At that point the physobj
---  may be in an indeterminate state, so we must NOT call any physobj
---  methods here — doing so causes the "attempt to call method
---  'SetAngularVelocity' (a nil value)" crash.
---
---  SetLocalVelocity is a safe engine call that works on MOVETYPE_STEP
---  entities (which VJ SNPCs are) without touching the physobj at all.
---  It zeroes out any displacement the damage event imparted.
+--  SetAbsVelocity zeroes world-space velocity on the entity directly.
+--  Safe to call on any entity type including NPCs. Does NOT touch
+--  the physobj, avoiding the SetAngularVelocity crash from cw20.
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    self:SetLocalVelocity(Vector(0, 0, 0))
+    self:SetAbsVelocity(Vector(0, 0, 0))
 end
 
 -- ============================================================
@@ -167,29 +158,21 @@ end
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
-    -- Re-apply physics lock every tick.
-    -- MOVETYPE_STEP SNPCs don't use vphysics for movement, but
-    -- explosions and bullet impacts can briefly re-enable the physobj
-    -- and impart Z velocity, causing the "float" / "fly" effect.
-    -- We clamp it here unconditionally so no single frame slips through.
+    -- Re-apply physics lock every tick in case an engine event re-enabled it.
     local phys = self:GetPhysicsObject()
     if IsValid(phys) then
-        -- Re-lock motion in case an engine event re-enabled it
         if phys:IsMotionEnabled() then
             phys:EnableMotion(false)
             phys:SetVelocity(Vector(0, 0, 0))
-            -- NOTE: SetAngularVelocity intentionally NOT called here;
-            -- it is unavailable on kinematic/motion-disabled objects
-            -- in some GMod builds and would crash (same as the cw20 bug).
         end
     end
 
-    -- Belt-and-suspenders: clamp entity-level Z velocity.
-    -- This catches displacement that bypasses the physobj entirely
-    -- (e.g. from VPhysicsTakeDamage or Source engine push).
-    local vel = self:GetLocalVelocity()
-    if vel.z > 1 or vel.z < -150 then   -- allow gentle downward settle, block upward flight
-        self:SetLocalVelocity(Vector(vel.x, vel.y, math.Clamp(vel.z, -150, 0)))
+    -- Clamp world-space Z velocity to block floating/flying.
+    -- GetVelocity / SetAbsVelocity work on all entity types (unlike
+    -- GetLocalVelocity / SetLocalVelocity which are Player-only).
+    local vel = self:GetVelocity()
+    if vel.z > 1 then
+        self:SetAbsVelocity(Vector(vel.x, vel.y, 0))
     end
 
     if CurTime() > self.Gekko_NextDebugT then
@@ -239,18 +222,6 @@ end
 
 -- ============================================================
 --  RANGE ATTACK
---
---  MACHINE GUN  — sequential burst via timer.Simple chain.
---                 1 bullet per tick, MG_INTERVAL apart, MG_ROUNDS total.
---                 Each bullet has independent random spread — proper spray.
---                 Source: att 3, fallback to b_l_gunrack bone matrix.
---
---  MISSILES     — strictly alternating L/R via integer counter.
---                 Odd call = Left (att 9), Even call = Right (att 10).
---                 Source: att 9 or 10, fallback to body center.
---
---  VJ auto-projectile is disabled (RangeAttackProjectiles = false in
---  shared.lua) so VJ Base does not spawn a third rocket on its own.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
@@ -321,14 +292,9 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
 
     local misAtt = self:GetAttachment(missileAttIdx)
-    local mSrc
-    if misAtt then
-        mSrc = misAtt.Pos
-    else
-        mSrc = self:GetPos() + Vector(0, 0, 160)
-    end
+    local mSrc   = misAtt and misAtt.Pos or (self:GetPos() + Vector(0, 0, 160))
+    local mDir   = (aimPos - mSrc):GetNormalized()
 
-    local mDir = (aimPos - mSrc):GetNormalized()
     local rocket = ents.Create("obj_vj_rocket")
     if IsValid(rocket) then
         rocket:SetPos(mSrc)
