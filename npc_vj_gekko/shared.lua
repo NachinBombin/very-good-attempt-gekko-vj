@@ -26,6 +26,18 @@ ENT.RunSpeed                 = 150
 ENT.SightDistance = 8000
 ENT.EnemyTimeout  = 60
 
+-- ====== Animation Tables ======
+-- VJ Base uses these to pick sequences for each state.
+-- Use sequence NAME strings; VJ resolves them via LookupSequence internally.
+-- false = let VJ fall back to its default ACT lookup (safe).
+ENT.AnimTbl_Idle         = {"idle"}
+ENT.AnimTbl_Walk         = {"walk"}
+ENT.AnimTbl_Run          = {"run"}
+ENT.AnimTbl_MeleeAttack  = {"idle"}   -- Gekko has no dedicated melee anim; idle stance during stomp
+ENT.AnimTbl_RangeAttack  = {"idle"}   -- Same: fire from idle pose, no separate fire anim
+ENT.AnimTbl_Flinch       = false       -- No flinch sequence on this model
+ENT.AnimTbl_Death        = false       -- No death sequence; we handle it in OnDeath
+
 -- ====== Melee (Stomp) ======
 ENT.HasMeleeAttack                      = true
 ENT.MeleeAttackDistance                 = 140
@@ -33,17 +45,15 @@ ENT.MeleeAttackDamageDistance           = 160
 ENT.MeleeAttackAngleRadius              = 120
 ENT.NextMeleeAttackTime                 = VJ.SET(5, 7)
 ENT.NextAnyAttackTime_Melee             = 6
-ENT.AnimTbl_MeleeAttack                 = false
-ENT.TimeUntilMeleeAttackDamage          = 0.1   -- small explicit value, NOT false
+ENT.TimeUntilMeleeAttackDamage          = 0.1
 ENT.DisableDefaultMeleeAttackDamageCode = true
 
--- ====== Range (Bullet burst) ======
+-- ====== Range ======
 ENT.HasRangeAttack                        = true
 ENT.RangeAttackProjectiles                = "obj_vj_rocket"
 ENT.RangeAttackMinDistance                = 250
 ENT.RangeAttackMaxDistance                = 2000
-ENT.AnimTbl_RangeAttack                   = false
-ENT.TimeUntilRangeAttackProjectileRelease = 0.1  -- small explicit value, NOT false
+ENT.TimeUntilRangeAttackProjectileRelease = 0.1
 ENT.NextRangeAttackTime                   = VJ.SET(2, 4)
 ENT.NextAnyAttackTime_Range               = 3
 
@@ -61,7 +71,6 @@ ENT.SoundTbl_Death = {
     "mechassault_2/mechs/mech_explode2.ogg",
 }
 ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
--- SoundTbl_Idle intentionally omitted (nil = no idle sounds, false causes temptable spam)
 
 -- ====== Blood ======
 ENT.Bleeds     = true

@@ -9,35 +9,13 @@ local ATT_MISSILE_R   = 10
 local ANIM_WALK_SPEED = 170
 local ANIM_RUN_SPEED  = 280
 
-function ENT:SetAnimationTranslations(wepHoldType)
-    local walkSeq = self:LookupSequence("walk")
-    local runSeq  = self:LookupSequence("run")
-    local idleSeq = self:LookupSequence("idle")
-
-    self.AnimationTranslations[ACT_IDLE]     = idleSeq
-    self.AnimationTranslations[ACT_WALK]     = walkSeq
-    self.AnimationTranslations[ACT_RUN]      = runSeq
-    self.AnimationTranslations[ACT_WALK_AIM] = walkSeq
-    self.AnimationTranslations[ACT_RUN_AIM]  = runSeq
-
-    self.GekkoSeq_Walk = walkSeq
-    self.GekkoSeq_Run  = runSeq
-    self.GekkoSeq_Idle = idleSeq
-
-    print(string.format("[GekkoNPC] AnimTrans  idle->%d  walk->%d  run->%d", idleSeq, walkSeq, runSeq))
-end
-
-function ENT:TranslateActivity(act)
-    if act == ACT_WALK or act == ACT_WALK_AIM then
-        return self.GekkoSeq_Walk or act
-    elseif act == ACT_RUN or act == ACT_RUN_AIM then
-        return self.GekkoSeq_Run or act
-    elseif act == ACT_IDLE then
-        return self.GekkoSeq_Idle or act
-    end
-    return self.BaseClass.TranslateActivity(self, act)
-end
-
+-- ============================================================
+--  ANIMATION
+--  VJ Base drives sequence selection via AnimTbl_* in shared.lua.
+--  We only override playback rate here to sync leg speed to velocity.
+--  TranslateActivity is NOT overridden: returning raw sequence indices
+--  from it conflicts with VJ's internal ACT resolution.
+-- ============================================================
 function ENT:GekkoGetSpeed()
     local pos = self:GetPos()
     local dt  = FrameTime()
@@ -57,21 +35,14 @@ function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
     local vel = self:GekkoGetSpeed()
-    local targetSeq, arate
-    if vel > 160 then
-        targetSeq = "run"
-        arate     = vel / ANIM_RUN_SPEED
-    elseif vel > 6 then
-        targetSeq = "walk"
-        arate     = vel / ANIM_WALK_SPEED
-    else
-        targetSeq = "idle"
-        arate     = 0.08
-    end
+    local arate
 
-    if targetSeq ~= self.Gekko_LastSeqName then
-        self:ResetSequence(targetSeq)
-        self.Gekko_LastSeqName = targetSeq
+    if vel > 160 then
+        arate = vel / ANIM_RUN_SPEED
+    elseif vel > 6 then
+        arate = vel / ANIM_WALK_SPEED
+    else
+        arate = 0.08
     end
 
     self:SetPlaybackRate(arate)
@@ -82,21 +53,28 @@ function ENT:GekkoUpdateAnimation()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
+-- ============================================================
+--  INIT
+-- ============================================================
 function ENT:Init()
-    self:SetCollisionBounds(Vector(-36, -36, 0), Vector(36, 36, 96))
+    -- Collision bounds scaled to the model's actual visual footprint.
+    -- HULL_LARGE navmesh cell is ~50 units; bounds match that.
+    -- Height ~200 covers the torso; legs extend below origin.
+    self:SetCollisionBounds(Vector(-50, -50, 0), Vector(50, 50, 200))
     self:SetSkin(1)
 
     self.GekkoSpineBone    = self:LookupBone("b_spine4")
     self.GekkoLGunBone     = self:LookupBone("b_l_gunrack")
     self.GekkoRGunBone     = self:LookupBone("b_r_gunrack")
-    self.Gekko_NextDebugT  = 0
     self.Gekko_LastSeqName = ""
     self._lastPos          = self:GetPos()
     self._smoothSpd        = 0
 
     print(string.format(
         "[GekkoNPC] Init  Spine4=%d  LGun=%d  RGun=%d",
-        self.GekkoSpineBone, self.GekkoLGunBone, self.GekkoRGunBone
+        self.GekkoSpineBone or -1,
+        self.GekkoLGunBone  or -1,
+        self.GekkoRGunBone  or -1
     ))
     print(string.format(
         "[GekkoNPC] Attachments  MG=%s  MissileL=%s  MissileR=%s",
@@ -106,10 +84,16 @@ function ENT:Init()
     ))
 end
 
+-- ============================================================
+--  THINK
+-- ============================================================
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
 end
 
+-- ============================================================
+--  MELEE
+-- ============================================================
 function ENT:OnMeleeAttackExecute(status, enemy)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
@@ -119,7 +103,7 @@ function ENT:OnMeleeAttackExecute(status, enemy)
 
     timer.Simple(stompDuration * 0.5, function()
         if not IsValid(self) or not IsValid(enemy) then return end
-        if self:GetPos():Distance(enemy:GetPos()) > 140 then return end
+        if self:GetPos():Distance(enemy:GetPos()) > 160 then return end
         local dmg = DamageInfo()
         dmg:SetAttacker(self)
         dmg:SetInflictor(self)
@@ -133,6 +117,9 @@ function ENT:OnMeleeAttackExecute(status, enemy)
     return true
 end
 
+-- ============================================================
+--  RANGE ATTACK
+-- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
@@ -143,6 +130,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     self._missileToggle = not self._missileToggle
     local missileAttIdx = self._missileToggle and ATT_MISSILE_L or ATT_MISSILE_R
 
+    -- Machine gun from attachment 3
     local mgAtt = self:GetAttachment(ATT_MACHINEGUN)
     if mgAtt then
         local src = mgAtt.Pos
@@ -166,6 +154,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         end
     end
 
+    -- Missile from alternating launcher attachment
     local misAtt = self:GetAttachment(missileAttIdx)
     if misAtt then
         local src = misAtt.Pos
@@ -193,6 +182,9 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     return true
 end
 
+-- ============================================================
+--  DEATH
+-- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
