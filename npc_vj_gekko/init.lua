@@ -23,6 +23,18 @@ function ENT:SetAnimationTranslations(wepHoldType)
     print(string.format("[GekkoNPC] AnimTrans  idle->%d  walk->%d  run->%d", idleSeq, walkSeq, runSeq))
 end
 
+function ENT:OnMeleeAttack(status, enemy)
+    if status == "Init" then
+        print("[STOMP] Melee triggered!")
+    end
+end
+
+function ENT:OnRangeAttack(status, enemy)
+    if status == "Init" then
+        print("[MISSILE] Range attack triggered!")
+    end
+end
+
 function ENT:TranslateActivity(act)
     if act == ACT_WALK or act == ACT_WALK_AIM then
         return self.GekkoSeq_Walk or act
@@ -53,6 +65,7 @@ function ENT:GekkoGetSpeed()
 end
 
 function ENT:GekkoUpdateAnimation()
+    -- Don't override animation while attack or flinch is playing
     if self.AttackAnimTime and CurTime() < self.AttackAnimTime then return end
     if self.Flinching then return end
 
@@ -61,13 +74,13 @@ function ENT:GekkoUpdateAnimation()
     local targetSeq, arate
     if vel > 160 then
         targetSeq = "run"
-        arate = vel / ANIM_RUN_SPEED
+        arate     = vel / ANIM_RUN_SPEED
     elseif vel > 6 then
         targetSeq = "walk"
-        arate = vel / ANIM_WALK_SPEED
+        arate     = vel / ANIM_WALK_SPEED
     else
         targetSeq = "idle"
-        arate = 0.08
+        arate     = 0.08
     end
 
     if targetSeq ~= self.Gekko_LastSeqName then
@@ -134,42 +147,55 @@ function ENT:OnThink()
 end
 
 -- ============================================================
---  MELEE ATTACK
---  Fires when enemy is close. Sets NWFloat "GekkoStompEnd"
---  to CurTime() + duration so client knows to play the
---  frantic leg animation for exactly that window.
+--  MELEE ATTACK (Stomp)
+--  DisableDefaultMeleeAttackDamageCode = true in shared.lua
+--  means the base will NOT apply its own damage — we own it.
+--
+--  "Init"      → runs when attack triggers; return true = skip
+--                the base's hit-scan (we do our own damage timer)
+--  "PreDamage" → never fires because we returned true on Init
+--  "Miss"      → fires if the base decides no target was hit
+--                (irrelevant here since we disabled base damage)
 -- ============================================================
 function ENT:OnMeleeAttackExecute(status, enemy)
-    if status ~= "Init" then return end
-    if not IsValid(enemy) then return true end
+    if status == "Init" then
+        if not IsValid(enemy) then return true end
 
-    local stompDuration = 1.4
-    self:SetNWFloat("GekkoStompEnd", CurTime() + stompDuration)
+        local stompDuration = 1.4
+        self:SetNWFloat("GekkoStompEnd", CurTime() + stompDuration)
 
-    -- Damage at mid-point of animation
-    timer.Simple(stompDuration * 0.5, function()
-        if not IsValid(self) or not IsValid(enemy) then return end
-        if self:GetPos():Distance(enemy:GetPos()) > 120 then return end
-        local dmg = DamageInfo()
-        dmg:SetAttacker(self)
-        dmg:SetInflictor(self)
-        dmg:SetDamage(85)
-        dmg:SetDamageType(DMG_CLUB)
-        dmg:SetDamagePosition(enemy:GetPos())
-        enemy:TakeDamageInfo(dmg)
-        self:EmitSound("physics/metal/metal_box_impact_hard" .. math.random(1,3) .. ".wav", 100, 80)
-    end)
+        timer.Simple(stompDuration * 0.5, function()
+            if not IsValid(self) or not IsValid(enemy) then return end
+            if self:GetPos():Distance(enemy:GetPos()) > 140 then return end
 
-    return true
+            local dmg = DamageInfo()
+            dmg:SetAttacker(self)
+            dmg:SetInflictor(self)
+            dmg:SetDamage(85)
+            dmg:SetDamageType(DMG_CLUB)
+            dmg:SetDamagePosition(enemy:GetPos())
+            enemy:TakeDamageInfo(dmg)
+            self:EmitSound("physics/metal/metal_box_impact_hard" .. math.random(1, 3) .. ".wav", 100, 80)
+        end)
+
+        return true -- skip base hit-scan; we applied damage above
+    end
 end
 
+-- ============================================================
+--  RANGE ATTACK (Bullet burst from gun-rack barrels)
+--
+--  "Init"  → runs when attack triggers; we fire bullets and
+--            return true to skip spawning obj_vj_rocket.
+--  VJ will still handle cooldown timers, animation window,
+--  and IsAbleToRangeAttack reset — we just own the firing.
+-- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
 
-    local offset   = self.GekkoBarrelOffset
-    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
-    local firedAny = false
+    local offset = self.GekkoBarrelOffset or 28
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
     local function FireFromBarrel(src)
         local dir = (aimPos - src):GetNormalized()
@@ -189,6 +215,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         util.Effect("MuzzleFlash", eff)
     end
 
+    local firedAny = false
     for _, b in ipairs({self.GekkoLGunBone, self.GekkoRGunBone}) do
         local pos = GetBarrelPos(self, b, offset)
         if pos then
@@ -197,18 +224,19 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         end
     end
 
+    -- Fallback if bones aren't valid yet
     if not firedAny then
         FireFromBarrel(self:GetPos() + Vector(0, 0, 200))
     end
 
     self:EmitSound("weapons/ar2/fire1.wav", 80, math.random(90, 110))
-    return true
+    return true -- skip obj_vj_rocket spawning
 end
 
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
-    local pos = self:GetPos()
+    local pos      = self:GetPos()
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
