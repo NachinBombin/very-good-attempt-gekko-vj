@@ -12,9 +12,9 @@ end
 --  STOMP LEG DRIVER
 -- ============================================================
 local function GekkoStompLegs(ent)
-    local t      = CurTime()
-    local freq   = 14
-    local amp    = 55
+    local t     = CurTime()
+    local freq  = 14
+    local amp   = 55
     local phaseR = t * freq
     local phaseL = t * freq + math.pi
 
@@ -77,11 +77,73 @@ local function GekkoSyncFootsteps(ent)
 end
 
 -- ============================================================
---  HEAD YAW ONLY  (b_spine4)
---  No pitch. No arm manipulation. Just yaw tracking + idle scan.
+--  ARM AIM DRIVER
 -- ============================================================
-local HEAD_YAW_LIMIT  = 70
-local HEAD_TURN_SPEED = 200
+local ARM_YAW_LIMIT   = 75
+local ARM_PITCH_LIMIT = 50
+local ARM_TURN_SPEED  = 120
+
+local function GekkoAimArms(ent, enemyPos, dt)
+    local myPos  = ent:GetPos() + Vector(0, 0, 120)
+    local aimDir = (enemyPos - myPos):GetNormalized()
+    local bodyYaw = ent:GetAngles().y
+
+    local aimAng    = aimDir:Angle()
+    local relYaw    = math.NormalizeAngle(aimAng.y - bodyYaw)
+    local relPitch  = -aimAng.p
+
+    local clampedYaw   = math.Clamp(relYaw,   -ARM_YAW_LIMIT,   ARM_YAW_LIMIT)
+    local clampedPitch = math.Clamp(relPitch, -ARM_PITCH_LIMIT, ARM_PITCH_LIMIT)
+
+    ent._armYaw   = ent._armYaw   or 0
+    ent._armPitch = ent._armPitch or 0
+
+    local maxStep = ARM_TURN_SPEED * dt
+    ent._armYaw   = ent._armYaw   + math.Clamp(clampedYaw   - ent._armYaw,   -maxStep, maxStep)
+    ent._armPitch = ent._armPitch + math.Clamp(clampedPitch - ent._armPitch, -maxStep, maxStep)
+
+    local ay = ent._armYaw
+    local ap = ent._armPitch
+
+    SetBone(ent, "b_r_shoulder",  Angle(0,  ay * 0.5, 0))
+    SetBone(ent, "b_r_upperarm",  Angle(ap * 0.6, ay * 0.3, 0))
+    SetBone(ent, "b_r_forearm",   Angle(ap * 0.4, 0, 0))
+
+    SetBone(ent, "b_l_shoulder",  Angle(0,  -ay * 0.5, 0))
+    SetBone(ent, "b_l_upperarm",  Angle(ap * 0.6, -ay * 0.3, 0))
+    SetBone(ent, "b_l_forearm",   Angle(ap * 0.4, 0, 0))
+end
+
+local function GekkoResetArms(ent, dt)
+    ent._armYaw   = ent._armYaw   or 0
+    ent._armPitch = ent._armPitch or 0
+    local maxStep = ARM_TURN_SPEED * dt
+    ent._armYaw   = ent._armYaw   + math.Clamp(0 - ent._armYaw,   -maxStep, maxStep)
+    ent._armPitch = ent._armPitch + math.Clamp(0 - ent._armPitch, -maxStep, maxStep)
+
+    SetBone(ent, "b_r_shoulder",  Angle(0,  ent._armYaw * 0.5, 0))
+    SetBone(ent, "b_r_upperarm",  Angle(ent._armPitch * 0.6, ent._armYaw * 0.3, 0))
+    SetBone(ent, "b_r_forearm",   Angle(ent._armPitch * 0.4, 0, 0))
+
+    SetBone(ent, "b_l_shoulder",  Angle(0,  -ent._armYaw * 0.5, 0))
+    SetBone(ent, "b_l_upperarm",  Angle(ent._armPitch * 0.6, -ent._armYaw * 0.3, 0))
+    SetBone(ent, "b_l_forearm",   Angle(ent._armPitch * 0.4, 0, 0))
+end
+
+-- ============================================================
+--  HEAD AIM DRIVER  (b_spine4 — yaw + pitch)
+--
+--  Bone orientation on Gekko:
+--    p channel = forward/back tilt  (pitch in world terms)
+--    r channel = left/right rotation (yaw in world terms)
+--  Hard limits extended vs previous version:
+--    Pitch: -70 up / +50 down   (was -55/+40 — too shy vertically)
+--    Yaw:   ±70  (unchanged)
+-- ============================================================
+local HEAD_YAW_LIMIT  =  70
+local HEAD_PITCH_UP   = -70   -- negative = looking up
+local HEAD_PITCH_DOWN =  50   -- positive = looking down
+local HEAD_TURN_SPEED = 200   -- deg/sec  (was 180 — snappier tracking)
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -94,27 +156,36 @@ local function GekkoUpdateHead(ent, dt)
 
     if not ent._cl_headYaw then
         ent._cl_headYaw    = bodyYaw
+        ent._cl_headPitch  = 0
         ent._cl_headDir    = 1
         ent._cl_scanNext   = t + 1.5
         ent._cl_scanTarget = bodyYaw
     end
 
-    local targetYaw
+    local targetYaw, targetPitch
 
     if IsValid(enemy) then
-        local enemyEye = enemy:GetPos() + Vector(0, 0, 40)
-        targetYaw = (enemyEye - ent:GetPos()):Angle().y
+        -- Compute angle from spine4 approximate world position to enemy eye
+        local eyePos  = ent:GetPos() + Vector(0, 0, 130)
+        local toEnemy = (enemy:GetPos() + Vector(0, 0, 40) - eyePos):Angle()
+        targetYaw   = toEnemy.y
+        -- pitch.p from Angle() is positive when looking DOWN, negative when UP
+        -- clamp to our defined limits
+        targetPitch = math.Clamp(toEnemy.p, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
     elseif vel < 6 then
         if t > ent._cl_scanNext then
             ent._cl_headDir    = -ent._cl_headDir
             ent._cl_scanNext   = t + math.Rand(2, 5)
             ent._cl_scanTarget = bodyYaw + ent._cl_headDir * math.Rand(35, 70)
         end
-        targetYaw = ent._cl_scanTarget
+        targetYaw   = ent._cl_scanTarget
+        targetPitch = math.sin(t * 0.6) * 12   -- gentle nod, slightly exaggerated
     else
-        targetYaw = bodyYaw
+        targetYaw   = bodyYaw
+        targetPitch = math.sin(t * 2.5) * 5    -- light stride bob
     end
 
+    -- Clamp yaw relative to body, then smooth
     local relTarget = math.Clamp(math.NormalizeAngle(targetYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
     targetYaw = bodyYaw + relTarget
 
@@ -122,9 +193,15 @@ local function GekkoUpdateHead(ent, dt)
     local yawDiff   = math.NormalizeAngle(targetYaw - ent._cl_headYaw)
     ent._cl_headYaw = ent._cl_headYaw + math.Clamp(yawDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
 
+    local pitchDiff   = targetPitch - ent._cl_headPitch
+    ent._cl_headPitch = ent._cl_headPitch + math.Clamp(pitchDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
+    ent._cl_headPitch = math.Clamp(ent._cl_headPitch, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
+
     local relYaw = math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
 
-    ent:ManipulateBoneAngles(bone, Angle(0, 0, -relYaw), false)
+    -- Apply bone manipulation
+    -- p = pitch tilt (forward/back), r = roll drives yaw on this bone's orientation
+    ent:ManipulateBoneAngles(bone, Angle(ent._cl_headPitch, 0, -relYaw), false)
 end
 
 -- ============================================================
@@ -141,7 +218,16 @@ function ENT:Draw()
     local dt = math.Clamp(t - (self._cl_lastT or t), 0, 0.05)
     self._cl_lastT = t
 
+    local enemy = self:GetNWEntity("GekkoEnemy", NULL)
+
     GekkoUpdateHead(self, dt)
+
+    if IsValid(enemy) then
+        GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
+    else
+        GekkoResetArms(self, dt)
+    end
+
     GekkoSyncFootsteps(self)
 
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)

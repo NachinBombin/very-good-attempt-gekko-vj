@@ -20,8 +20,8 @@ ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
-ENT.WalkSpeed                = 100
-ENT.RunSpeed                 = 150
+ENT.WalkSpeed                = 80
+ENT.RunSpeed                 = 110
 
 ENT.SightDistance = 8000
 ENT.EnemyTimeout  = 60
@@ -40,7 +40,7 @@ ENT.AnimTbl_Death        = false       -- No death sequence; we handle it in OnD
 
 -- ====== Melee (Stomp) ======
 ENT.HasMeleeAttack                      = true
-ENT.MeleeAttackDistance                 = 140
+ENT.MeleeAttackDistance                 = 100
 ENT.MeleeAttackDamageDistance           = 160
 ENT.MeleeAttackAngleRadius              = 120
 ENT.NextMeleeAttackTime                 = VJ.SET(5, 7)
@@ -52,7 +52,7 @@ ENT.DisableDefaultMeleeAttackDamageCode = true
 ENT.HasRangeAttack                        = true
 ENT.RangeAttackProjectiles                = "obj_vj_rocket"
 ENT.RangeAttackMinDistance                = 250
-ENT.RangeAttackMaxDistance                = 2000
+ENT.RangeAttackMaxDistance                = 6000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
 ENT.NextRangeAttackTime                   = VJ.SET(2, 4)
 ENT.NextAnyAttackTime_Range               = 3
