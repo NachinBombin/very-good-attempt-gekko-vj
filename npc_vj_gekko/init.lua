@@ -3,7 +3,7 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 
 -- ============================================================
---  ATTACHMENT INDICES  (from the original mgs4_gekko_mech.lua)
+--  ATTACHMENT INDICES
 --  att 3  = machine gun barrel  (b_l_gunrack region)
 --  att 9  = left  rocket launcher barrel  (b_l_hand region)
 --  att 10 = right rocket launcher barrel  (b_r_hand region)
@@ -14,6 +14,12 @@ local ATT_MISSILE_R    = 10
 
 local ANIM_WALK_SPEED  = 170
 local ANIM_RUN_SPEED   = 280
+
+-- MG burst config
+local MG_ROUNDS        = 12      -- bullets per attack call
+local MG_INTERVAL      = 0.07    -- seconds between each round
+local MG_DAMAGE        = 10
+local MG_SPREAD        = 0.028   -- cone half-angle in radians (tighter than before)
 
 -- ============================================================
 --  ANIMATION
@@ -103,7 +109,6 @@ function ENT:Init()
     self:SetCollisionBounds(Vector(-36, -36, 0), Vector(36, 36, 96))
     self:SetSkin(1)
 
-    -- Bones kept for reference / debug only; firing now uses attachments
     self.GekkoSpineBone    = self:LookupBone("b_spine4")
     self.GekkoLGunBone     = self:LookupBone("b_l_gunrack")
     self.GekkoRGunBone     = self:LookupBone("b_r_gunrack")
@@ -112,9 +117,20 @@ function ENT:Init()
     self.Gekko_LastSeqName = ""
     self._lastPos          = self:GetPos()
     self._smoothSpd        = 0
+    self._missileCount     = 0   -- counts missile shots; even = L, odd = R
+    self._mgBurstActive    = false
 
-    -- Sanity-check attachments at spawn so we know if they resolved
-    local mgAtt  = self:GetAttachment(ATT_MACHINEGUN)
+    -- ---- Physics: make the Gekko very heavy so it doesn't float/fly ----
+    -- VJ creature base entities are not physical by default, but if a
+    -- physics object exists (e.g. from a prop model), pin it down.
+    local phys = self:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:SetMass(50000)
+        phys:EnableMotion(false)   -- lock physics entirely; nav system moves us
+    end
+
+    -- Sanity-check attachments at spawn
+    local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
     local misRAtt = self:GetAttachment(ATT_MISSILE_R)
     print(string.format(
@@ -123,10 +139,27 @@ function ENT:Init()
     ))
     print(string.format(
         "[GekkoNPC] Attachments  MG=%s  MissileL=%s  MissileR=%s",
-        mgAtt  and "OK" or "MISSING",
+        mgAtt   and "OK" or "MISSING",
         misLAtt and "OK" or "MISSING",
         misRAtt and "OK" or "MISSING"
     ))
+end
+
+-- ============================================================
+--  KNOCKBACK SUPPRESSION
+--  SNPCs are not physics objects but bullet force and explosions
+--  can still displace them via the engine. We absorb that here.
+-- ============================================================
+function ENT:OnTakeDamage(dmginfo)
+    -- Zero out any velocity imparted by the damage source.
+    -- We do this every hit; it has no effect on health (VJ handles that).
+    local phys = self:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:SetVelocity(Vector(0, 0, 0))
+        phys:SetAngularVelocity(Vector(0, 0, 0))
+    end
+    -- Also clamp entity velocity directly (works even without a physobj)
+    self:SetLocalVelocity(Vector(0, 0, 0))
 end
 
 -- ============================================================
@@ -153,7 +186,7 @@ function ENT:OnThink()
 end
 
 -- ============================================================
---  MELEE  (Stomp — unchanged)
+--  MELEE  (Stomp)
 -- ============================================================
 function ENT:OnMeleeAttackExecute(status, enemy)
     if status == "Init" then
@@ -182,67 +215,102 @@ end
 
 -- ============================================================
 --  RANGE ATTACK
---  Machine gun fires from attachment 3 (exact barrel tip).
---  Missiles fire from attachments 9 (L) and 10 (R) alternating.
---  Attachment gives us world Pos + Ang directly — no guessing.
+--
+--  MACHINE GUN  — sequential burst: MG_ROUNDS shots, MG_INTERVAL apart.
+--                 Each shot = 1 bullet with individual random spread,
+--                 giving a proper spray pattern over time.
+--                 Fires from att 3; falls back to b_l_gunrack bone.
+--
+--  MISSILES     — strictly alternating L / R per OnRangeAttackExecute call.
+--                 Uses _missileCount (incremented each call) so the toggle
+--                 is never reset accidentally by the MG logic.
+--                 Fires from att 9 (L) or att 10 (R).
+--
+--  NOTE: VJ Base's RangeAttackProjectiles ("obj_vj_rocket" in shared.lua)
+--  is intentionally NOT used here — we manage missiles manually so we can
+--  control which attachment fires. Set RangeAttackProjectiles = false in
+--  shared.lua to prevent VJ from double-firing a second rocket.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
 
-    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
-    local firedAny = false
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
-    -- Toggle between missile left/right each burst
-    self._missileToggle = not self._missileToggle
-    local missileAttIdx = self._missileToggle and ATT_MISSILE_L or ATT_MISSILE_R
+    -- ---- Sequential Machine Gun Burst ----
+    if not self._mgBurstActive then
+        self._mgBurstActive = true
+        local entRef = self  -- capture for timer closures
 
-    -- ---- Machine gun burst from att 3 ----
-    local mgAtt = self:GetAttachment(ATT_MACHINEGUN)
-    if mgAtt then
-        local src = mgAtt.Pos
-        local dir = (aimPos - src):GetNormalized()
+        for i = 0, MG_ROUNDS - 1 do
+            timer.Simple(i * MG_INTERVAL, function()
+                if not IsValid(entRef) then return end
 
-        self:FireBullets({
-            Attacker   = self,
-            Damage     = 8,
-            Dir        = dir,
-            Src        = src,
-            AmmoType   = "AR2",
-            TracerName = "Tracer",
-            Num        = 3,
-            Spread     = Vector(0.04, 0.04, 0),
-        })
+                -- Re-resolve enemy position each shot for accurate leading
+                local curEnemy = entRef:GetEnemy()
+                local curAim   = IsValid(curEnemy)
+                    and (curEnemy:GetPos() + Vector(0, 0, 40))
+                    or  aimPos
 
-        -- Muzzle flash at exact barrel attachment
-        local eff = EffectData()
-        eff:SetOrigin(src)
-        eff:SetNormal(dir)
-        util.Effect("MuzzleFlash", eff)
+                local src, dir
 
-        firedAny = true
-    else
-        -- Fallback: bone matrix method
-        local boneIdx = self.GekkoLGunBone
-        if boneIdx and boneIdx >= 0 then
-            local m = self:GetBoneMatrix(boneIdx)
-            if m then
-                local src = m:GetTranslation() + m:GetForward() * 28
-                local dir = (aimPos - src):GetNormalized()
-                self:FireBullets({ Attacker=self, Damage=8, Dir=dir, Src=src, AmmoType="AR2", TracerName="Tracer", Num=3, Spread=Vector(0.04,0.04,0) })
-                local eff = EffectData() eff:SetOrigin(src) eff:SetNormal(dir) util.Effect("MuzzleFlash", eff)
-                firedAny = true
-            end
+                local mgAtt = entRef:GetAttachment(ATT_MACHINEGUN)
+                if mgAtt then
+                    src = mgAtt.Pos
+                else
+                    local boneIdx = entRef.GekkoLGunBone
+                    if boneIdx and boneIdx >= 0 then
+                        local m = entRef:GetBoneMatrix(boneIdx)
+                        if m then
+                            src = m:GetTranslation() + m:GetForward() * 28
+                        end
+                    end
+                    src = src or (entRef:GetPos() + Vector(0, 0, 200))
+                end
+
+                dir = (curAim - src):GetNormalized()
+
+                -- Individual bullet: 1 round, unique random spread per shot
+                entRef:FireBullets({
+                    Attacker   = entRef,
+                    Damage     = MG_DAMAGE,
+                    Dir        = dir,
+                    Src        = src,
+                    AmmoType   = "AR2",
+                    TracerName = "Tracer",
+                    Num        = 1,
+                    Spread     = Vector(
+                        (math.random() - 0.5) * 2 * MG_SPREAD,
+                        (math.random() - 0.5) * 2 * MG_SPREAD,
+                        0
+                    ),
+                })
+
+                -- Muzzle flash + sound every shot
+                local eff = EffectData()
+                eff:SetOrigin(src)
+                eff:SetNormal(dir)
+                util.Effect("MuzzleFlash", eff)
+                entRef:EmitSound("weapons/ar2/fire1.wav", 75, math.random(95, 115))
+
+                -- Clear burst flag after last shot
+                if i == MG_ROUNDS - 1 then
+                    entRef._mgBurstActive = false
+                end
+            end)
         end
     end
 
-    -- ---- Missile from alternating launcher attachment ----
+    -- ---- Alternating Missile ----
+    -- _missileCount starts at 0. Even = fire Left, Odd = fire Right.
+    self._missileCount = (self._missileCount or 0) + 1
+    local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+
     local misAtt = self:GetAttachment(missileAttIdx)
     if misAtt then
         local src = misAtt.Pos
         local dir = (aimPos - src):GetNormalized()
 
-        -- Use a VJ rocket spawned at the exact launcher tip
         local rocket = ents.Create("obj_vj_rocket")
         if IsValid(rocket) then
             rocket:SetPos(src)
@@ -251,30 +319,32 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
             rocket:Spawn()
             rocket:Activate()
 
-            -- Give it velocity toward enemy
             local phys = rocket:GetPhysicsObject()
             if IsValid(phys) then
                 phys:SetVelocity(dir * 1200)
             end
         end
 
-        -- Particle effect at launcher tip
         local eff = EffectData()
         eff:SetOrigin(src)
         eff:SetNormal(dir)
         util.Effect("MuzzleFlash", eff)
-
-        firedAny = true
-    end
-
-    if not firedAny then
-        -- Last resort fallback
-        local src = self:GetPos() + Vector(0, 0, 200)
+    else
+        -- Fallback: fire from body center if attachment missing
+        local src = self:GetPos() + Vector(0, 0, 160)
         local dir = (aimPos - src):GetNormalized()
-        self:FireBullets({ Attacker=self, Damage=8, Dir=dir, Src=src, AmmoType="AR2", TracerName="Tracer", Num=3, Spread=Vector(0.05,0.05,0) })
+        local rocket = ents.Create("obj_vj_rocket")
+        if IsValid(rocket) then
+            rocket:SetPos(src)
+            rocket:SetAngles(dir:Angle())
+            rocket:SetOwner(self)
+            rocket:Spawn()
+            rocket:Activate()
+            local phys = rocket:GetPhysicsObject()
+            if IsValid(phys) then phys:SetVelocity(dir * 1200) end
+        end
     end
 
-    self:EmitSound("weapons/ar2/fire1.wav", 80, math.random(90, 110))
     return true
 end
 
