@@ -131,19 +131,25 @@ local function GekkoResetArms(ent, dt)
 end
 
 -- ============================================================
---  HEAD AIM DRIVER  (b_spine4 — yaw + pitch)
+--  HEAD AIM DRIVER  (b_spine4)
 --
---  Bone orientation on Gekko:
---    p channel = forward/back tilt  (pitch in world terms)
---    r channel = left/right rotation (yaw in world terms)
---  Hard limits extended vs previous version:
---    Pitch: -70 up / +50 down   (was -55/+40 — too shy vertically)
---    Yaw:   ±70  (unchanged)
+--  FIX: _cl_headYaw and _cl_scanTarget are now stored as RELATIVE
+--  angles (relative to bodyYaw). This eliminates the world->relative
+--  round-trip that happened every frame and caused the tracker to be
+--  re-anchored to bodyYaw before the diff was added, producing the
+--  left-bias oscillation in combat.
+--
+--  All smoothing math operates in relative space [-HEAD_YAW_LIMIT, +HEAD_YAW_LIMIT].
+--  Conversion to bone angle happens exactly once at the apply step.
+--
+--  Bone axis mapping on b_spine4 (ManipulateBoneAngles, local=false):
+--    Angle.p  = pitch (forward tilt)
+--    Angle.r  = drives yaw on this bone  (sign: negative = look right)
 -- ============================================================
 local HEAD_YAW_LIMIT  =  70
-local HEAD_PITCH_UP   = -70   -- negative = looking up
-local HEAD_PITCH_DOWN =  50   -- positive = looking down
-local HEAD_TURN_SPEED = 200   -- deg/sec  (was 180 — snappier tracking)
+local HEAD_PITCH_UP   = -70
+local HEAD_PITCH_DOWN =  50
+local HEAD_TURN_SPEED = 200   -- deg/sec
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -154,54 +160,61 @@ local function GekkoUpdateHead(ent, dt)
     local vel     = ent:GetNWFloat("GekkoSpeed", 0)
     local enemy   = ent:GetNWEntity("GekkoEnemy", NULL)
 
-    if not ent._cl_headYaw then
-        ent._cl_headYaw    = bodyYaw
-        ent._cl_headPitch  = 0
-        ent._cl_headDir    = 1
-        ent._cl_scanNext   = t + 1.5
-        ent._cl_scanTarget = bodyYaw
+    -- Initialise tracker state in RELATIVE space
+    if not ent._cl_headRelYaw then
+        ent._cl_headRelYaw   = 0
+        ent._cl_headPitch    = 0
+        ent._cl_headDir      = 1
+        ent._cl_scanNext     = t + 1.5
+        ent._cl_scanRelTarget = 0   -- relative scan target
     end
 
-    local targetYaw, targetPitch
+    local targetRelYaw, targetPitch
 
     if IsValid(enemy) then
-        -- Compute angle from spine4 approximate world position to enemy eye
+        -- Compute relative yaw and pitch to enemy directly
         local eyePos  = ent:GetPos() + Vector(0, 0, 130)
         local toEnemy = (enemy:GetPos() + Vector(0, 0, 40) - eyePos):Angle()
-        targetYaw   = toEnemy.y
-        -- pitch.p from Angle() is positive when looking DOWN, negative when UP
-        -- clamp to our defined limits
-        targetPitch = math.Clamp(toEnemy.p, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
+        -- toEnemy.y is world yaw; subtract bodyYaw to get relative
+        targetRelYaw  = math.Clamp(math.NormalizeAngle(toEnemy.y - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
+        targetPitch   = math.Clamp(toEnemy.p, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
+
     elseif vel < 6 then
+        -- Idle scan: target is already stored as relative
         if t > ent._cl_scanNext then
-            ent._cl_headDir    = -ent._cl_headDir
-            ent._cl_scanNext   = t + math.Rand(2, 5)
-            ent._cl_scanTarget = bodyYaw + ent._cl_headDir * math.Rand(35, 70)
+            ent._cl_headDir       = -ent._cl_headDir
+            ent._cl_scanNext      = t + math.Rand(2, 5)
+            ent._cl_scanRelTarget = math.Clamp(
+                ent._cl_headDir * math.Rand(35, 70),
+                -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT
+            )
         end
-        targetYaw   = ent._cl_scanTarget
-        targetPitch = math.sin(t * 0.6) * 12   -- gentle nod, slightly exaggerated
+        targetRelYaw = ent._cl_scanRelTarget
+        targetPitch  = math.sin(t * 0.6) * 12
+
     else
-        targetYaw   = bodyYaw
-        targetPitch = math.sin(t * 2.5) * 5    -- light stride bob
+        -- Walking: look forward (relative = 0)
+        targetRelYaw = 0
+        targetPitch  = math.sin(t * 2.5) * 5
     end
 
-    -- Clamp yaw relative to body, then smooth
-    local relTarget = math.Clamp(math.NormalizeAngle(targetYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
-    targetYaw = bodyYaw + relTarget
+    -- Smooth relative yaw tracker toward target (no bodyYaw involved in the math)
+    local maxStep     = HEAD_TURN_SPEED * dt
+    local yawDiff     = math.NormalizeAngle(targetRelYaw - ent._cl_headRelYaw)
+    ent._cl_headRelYaw = math.Clamp(
+        ent._cl_headRelYaw + math.Clamp(yawDiff, -maxStep, maxStep),
+        -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT
+    )
 
-    ent._cl_headYaw = bodyYaw + math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
-    local yawDiff   = math.NormalizeAngle(targetYaw - ent._cl_headYaw)
-    ent._cl_headYaw = ent._cl_headYaw + math.Clamp(yawDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
-
+    -- Smooth pitch tracker
     local pitchDiff   = targetPitch - ent._cl_headPitch
-    ent._cl_headPitch = ent._cl_headPitch + math.Clamp(pitchDiff, -HEAD_TURN_SPEED * dt, HEAD_TURN_SPEED * dt)
-    ent._cl_headPitch = math.Clamp(ent._cl_headPitch, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
+    ent._cl_headPitch = math.Clamp(
+        ent._cl_headPitch + math.Clamp(pitchDiff, -maxStep, maxStep),
+        HEAD_PITCH_UP, HEAD_PITCH_DOWN
+    )
 
-    local relYaw = math.Clamp(math.NormalizeAngle(ent._cl_headYaw - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
-
-    -- Apply bone manipulation
-    -- p = pitch tilt (forward/back), r = roll drives yaw on this bone's orientation
-    ent:ManipulateBoneAngles(bone, Angle(ent._cl_headPitch, 0, -relYaw), false)
+    -- Apply: relative yaw goes into Angle.r with negated sign (bone axis convention)
+    ent:ManipulateBoneAngles(bone, Angle(ent._cl_headPitch, 0, -ent._cl_headRelYaw), false)
 end
 
 -- ============================================================
