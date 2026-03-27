@@ -23,8 +23,24 @@ ENT.IdleAlwaysWander         = true
 ENT.WalkSpeed                = 80
 ENT.RunSpeed                 = 110
 
+-- High turning speed so nav steering snaps quickly and doesn't drag
+-- the head bone tracker across multiple frames during rotation.
+ENT.TurningSpeed = 1000
+
 ENT.SightDistance = 18000
 ENT.EnemyTimeout  = 60
+
+-- ====== Facing: fully disabled ======
+-- VJ's SCHED_CHASE_ENEMY calls SetIdealYaw toward the enemy every think
+-- even with melee off. This slams bodyYaw each frame, making the bone
+-- head tracker's relYaw = (toEnemy.y - bodyYaw) never stable.
+-- Disabling all face-enemy automation lets the nav system steer the
+-- body naturally while our bone driver handles the head independently.
+ENT.ConstantlyFaceEnemy             = false
+ENT.ConstantlyFaceEnemy_IfVisible   = false
+ENT.ConstantlyFaceEnemy_IfAttacking = false
+ENT.ConstantlyFaceEnemy_Postures    = "Both"
+ENT.ConstantlyFaceEnemy_MinDistance = 99999
 
 -- ====== Animation Tables ======
 ENT.AnimTbl_Idle         = {"idle"}
@@ -35,8 +51,6 @@ ENT.AnimTbl_Flinch       = false
 ENT.AnimTbl_Death        = false
 
 -- ====== Melee: DISABLED ======
--- Melee state in VJ seizes body rotation and blocks range attacks.
--- Gekko fights with guns only.
 ENT.HasMeleeAttack = false
 
 -- ====== Range ======
@@ -50,12 +64,13 @@ ENT.NextRangeAttackTime                   = 9
 ENT.NextAnyAttackTime_Range               = 3
 
 -- ====== Sounds ======
-ENT.HasSounds      = true
-ENT.SoundTbl_Death = {
+ENT.HasSounds        = true
+ENT.NoIdleChatter    = true
+ENT.SoundTbl_Death   = {
     "mechassault_2/mechs/mech_explode1.ogg",
     "mechassault_2/mechs/mech_explode2.ogg",
 }
-ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
+ENT.SoundTbl_Alert   = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
 
 -- ====== Blood ======
 ENT.Bleeds     = true

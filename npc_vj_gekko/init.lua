@@ -119,12 +119,6 @@ function ENT:Init()
     self._missileCount     = 0
     self._mgBurstActive    = false
 
-    local phys = self:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:SetMass(50000)
-        phys:EnableMotion(false)
-    end
-
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
     local misRAtt = self:GetAttachment(ATT_MISSILE_R)
@@ -142,13 +136,10 @@ end
 
 -- ============================================================
 --  KNOCKBACK SUPPRESSION
+--  SNPCs have no PhysObj with angular velocity methods.
+--  SetLocalVelocity is sufficient to kill blast/bullet knockback.
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    local phys = self:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:SetVelocity(Vector(0, 0, 0))
-        phys:SetAngularVelocity(Vector(0, 0, 0))
-    end
     self:SetLocalVelocity(Vector(0, 0, 0))
 end
 
