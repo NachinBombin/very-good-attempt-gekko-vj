@@ -17,12 +17,12 @@ local ATT_MISSILE_R    = 10
 --  Tune ANIM_WALK_SPEED / ANIM_RUN_SPEED until arate~1.0 at
 --  the NPC's natural cruise speed (read vel= from console).
 -- ============================================================
-local ANIM_WALK_SPEED     = 200
-local ANIM_RUN_SPEED      = 200
+local ANIM_WALK_SPEED    = 200
+local ANIM_RUN_SPEED     = 200
 
 -- Distance threshold: run engages above this, walk resumes below.
-local RUN_ENGAGE_DIST     = 900
-local RUN_DISENGAGE_DIST  = 750   -- slight hysteresis so it doesn't flicker
+local RUN_ENGAGE_DIST    = 900
+local RUN_DISENGAGE_DIST = 750   -- hysteresis to prevent flicker
 
 -- MG burst config
 local MG_ROUNDS    = 12
@@ -69,22 +69,20 @@ end
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    local vel    = self:GetVelocity():Length()
-    local enemy  = self:GetEnemy()
-    local dist   = IsValid(enemy) and self:GetPos():Distance(enemy:GetPos()) or 0
+    -- GetAbsVelocity reflects the NPC's kinematic nav movement.
+    -- GetVelocity() returns physics velocity which is 0 for AI-moved NPCs.
+    local vel = self:GetAbsVelocity():Length()
+
+    -- VJ Base stores the current enemy in self.Enemy, which is always
+    -- valid during chase/combat. GetEnemy() may return NULL between schedules.
+    local enemy = self.Enemy
+    local dist  = IsValid(enemy) and self:GetPos():Distance(enemy:GetPos()) or 0
 
     -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop back below RUN_DISENGAGE_DIST
     if dist > RUN_ENGAGE_DIST then
         self._gekkoRunning = true
     elseif dist < RUN_DISENGAGE_DIST then
         self._gekkoRunning = false
-    end
-
-    -- Sync physical speed with run state
-    if self._gekkoRunning then
-        self:SetNWBool("GekkoRunning", true)
-    else
-        self:SetNWBool("GekkoRunning", false)
     end
 
     local targetSeq, arate
@@ -158,7 +156,7 @@ end
 --  THINK
 -- ============================================================
 function ENT:OnThink()
-    -- Sync VJ Base move speed with run state every think
+    -- Sync physical move speed with run state
     if self._gekkoRunning then
         self.MoveSpeed = self.RunSpeed
     else
@@ -168,9 +166,9 @@ function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
     if CurTime() > self.Gekko_NextDebugT then
-        local enemy = self:GetEnemy()
+        local enemy = self.Enemy
         local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
-        local vel   = self:GetVelocity():Length()
+        local vel   = self:GetAbsVelocity():Length()
         print(string.format(
             "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d",
             vel,
@@ -204,7 +202,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
             timer.Simple(i * MG_INTERVAL, function()
                 if not IsValid(entRef) then return end
 
-                local curEnemy = entRef:GetEnemy()
+                local curEnemy = entRef.Enemy
                 local curAim   = IsValid(curEnemy)
                     and (curEnemy:GetPos() + Vector(0, 0, 40))
                     or  aimPos
