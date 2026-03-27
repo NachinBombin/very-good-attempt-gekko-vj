@@ -12,8 +12,16 @@ local ATT_MACHINEGUN   = 3
 local ATT_MISSILE_L    = 9
 local ATT_MISSILE_R    = 10
 
-local ANIM_WALK_SPEED  = 50
-local ANIM_RUN_SPEED   = 270
+-- ============================================================
+--  ANIMATION CALIBRATION  (exact values from original vehicle)
+--    GetAnimationSpeeds() -> awalk=170, arun=165
+--    GetSpeeds()          -> walk=200,  run=380
+-- ============================================================
+local ANIM_WALK_SPEED     = 170   -- playback rate divisor at walk
+local ANIM_RUN_SPEED      = 165   -- playback rate divisor at run
+local POSE_WALK_SPEED     = 200   -- move_x pose param divisor at walk
+local POSE_RUN_SPEED      = 380   -- move_x pose param divisor at run
+local RUN_VEL_THRESHOLD   = 300   -- u/s above which we switch to run anim
 
 -- MG burst config
 local MG_ROUNDS    = 12
@@ -80,16 +88,20 @@ function ENT:GekkoUpdateAnimation()
 
     local vel = self:GekkoGetSpeed()
 
-    local targetSeq, arate
-    if vel > 260 then
+    local targetSeq, arate, mrate
+
+    if vel > RUN_VEL_THRESHOLD then
         targetSeq = "run"
         arate     = vel / ANIM_RUN_SPEED
+        mrate     = vel / POSE_RUN_SPEED
     elseif vel > 6 then
         targetSeq = "walk"
         arate     = vel / ANIM_WALK_SPEED
+        mrate     = vel / POSE_WALK_SPEED
     else
         targetSeq = "idle"
         arate     = 0.08
+        mrate     = 0
     end
 
     if targetSeq ~= self.Gekko_LastSeqName then
@@ -98,7 +110,7 @@ function ENT:GekkoUpdateAnimation()
     end
 
     self:SetPlaybackRate(arate)
-    self:SetPoseParameter("move_x", math.Clamp(arate, 0, 1))
+    self:SetPoseParameter("move_x", mrate)
     self:SetNWFloat("GekkoSpeed", vel)
 
     local enemy = self:GetEnemy()
@@ -109,11 +121,6 @@ end
 --  INIT
 -- ============================================================
 function ENT:Init()
-    -- --------------------------------------------------------
-    --  HITBOX: match original Gekko-Unit dimensions
-    --  Original: Radius=64, Height=256 (mgs4_gekko_mech.lua)
-    --  This makes the full torso + head hittable, not just legs.
-    -- --------------------------------------------------------
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 256))
     self:SetSkin(1)
 
@@ -145,31 +152,14 @@ function ENT:Init()
 end
 
 -- ============================================================
---  PHYSICS / KNOCKBACK SUPPRESSION
---
---  Root cause of floating:
---    VJ Base is ENT.Type="ai". Source NPCs have an internal
---    physics solver. CTakeDamageInfo carries a force vector;
---    the engine applies it as a velocity impulse BEFORE Lua's
---    OnTakeDamage fires. SetLocalVelocity AFTER the fact was
---    always one frame too late.
---
---  Fix:
---    1. Zero the force vector inside dmginfo BEFORE passing it
---       to the base class, so the engine never sees a non-zero
---       impulse in the first place.
---    2. Also zero velocity in OnThink every tick as a hard
---       floor -- catches any residual impulse from blast radii
---       that bypass OnTakeDamage (e.g. util.BlastDamage
---       internal direct-damage path).
+--  DAMAGE / KNOCKBACK SUPPRESSION
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    -- Strip the damage force so the NPC physics solver never
-    -- accumulates upward velocity from bullet/explosion pushes.
-     dmginfo:SetDamageForce(Vector(0, 0, 0))
+    dmginfo:SetDamageForce(Vector(0, 0, 0))
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
+
 -- ============================================================
 --  THINK
 -- ============================================================
@@ -193,10 +183,6 @@ end
 
 -- ============================================================
 --  RANGE ATTACK
---
---  Each call fires exactly ONE weapon, alternating MG -> Missile -> MG ...
---  MG: sequential burst of MG_ROUNDS shots.
---  Missile: single rocket, alternating L/R attachment.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
