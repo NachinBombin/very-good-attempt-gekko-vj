@@ -12,9 +12,9 @@ end
 --  STOMP LEG DRIVER
 -- ============================================================
 local function GekkoStompLegs(ent)
-    local t     = CurTime()
-    local freq  = 14
-    local amp   = 55
+    local t      = CurTime()
+    local freq   = 14
+    local amp    = 55
     local phaseR = t * freq
     local phaseL = t * freq + math.pi
 
@@ -84,16 +84,13 @@ local ARM_PITCH_LIMIT = 50
 local ARM_TURN_SPEED  = 120
 
 local function GekkoAimArms(ent, enemyPos, dt)
-    local myPos  = ent:GetPos() + Vector(0, 0, 120)
-    local aimDir = (enemyPos - myPos):GetNormalized()
+    local myPos   = ent:GetPos() + Vector(0, 0, 120)
+    local aimDir  = (enemyPos - myPos):GetNormalized()
     local bodyYaw = ent:GetAngles().y
+    local aimAng  = aimDir:Angle()
 
-    local aimAng    = aimDir:Angle()
-    local relYaw    = math.NormalizeAngle(aimAng.y - bodyYaw)
-    local relPitch  = -aimAng.p
-
-    local clampedYaw   = math.Clamp(relYaw,   -ARM_YAW_LIMIT,   ARM_YAW_LIMIT)
-    local clampedPitch = math.Clamp(relPitch, -ARM_PITCH_LIMIT, ARM_PITCH_LIMIT)
+    local clampedYaw   = math.Clamp(math.NormalizeAngle(aimAng.y - bodyYaw), -ARM_YAW_LIMIT,   ARM_YAW_LIMIT)
+    local clampedPitch = math.Clamp(-aimAng.p,                                -ARM_PITCH_LIMIT, ARM_PITCH_LIMIT)
 
     ent._armYaw   = ent._armYaw   or 0
     ent._armPitch = ent._armPitch or 0
@@ -105,116 +102,54 @@ local function GekkoAimArms(ent, enemyPos, dt)
     local ay = ent._armYaw
     local ap = ent._armPitch
 
-    SetBone(ent, "b_r_shoulder",  Angle(0,  ay * 0.5, 0))
-    SetBone(ent, "b_r_upperarm",  Angle(ap * 0.6, ay * 0.3, 0))
-    SetBone(ent, "b_r_forearm",   Angle(ap * 0.4, 0, 0))
-
-    SetBone(ent, "b_l_shoulder",  Angle(0,  -ay * 0.5, 0))
-    SetBone(ent, "b_l_upperarm",  Angle(ap * 0.6, -ay * 0.3, 0))
-    SetBone(ent, "b_l_forearm",   Angle(ap * 0.4, 0, 0))
+    SetBone(ent, "b_r_shoulder", Angle(0,          ay * 0.5,  0))
+    SetBone(ent, "b_r_upperarm", Angle(ap * 0.6,   ay * 0.3,  0))
+    SetBone(ent, "b_r_forearm",  Angle(ap * 0.4,   0,         0))
+    SetBone(ent, "b_l_shoulder", Angle(0,          -ay * 0.5, 0))
+    SetBone(ent, "b_l_upperarm", Angle(ap * 0.6,   -ay * 0.3, 0))
+    SetBone(ent, "b_l_forearm",  Angle(ap * 0.4,   0,         0))
 end
 
 local function GekkoResetArms(ent, dt)
     ent._armYaw   = ent._armYaw   or 0
     ent._armPitch = ent._armPitch or 0
     local maxStep = ARM_TURN_SPEED * dt
-    ent._armYaw   = ent._armYaw   + math.Clamp(0 - ent._armYaw,   -maxStep, maxStep)
-    ent._armPitch = ent._armPitch + math.Clamp(0 - ent._armPitch, -maxStep, maxStep)
+    ent._armYaw   = ent._armYaw   + math.Clamp(-ent._armYaw,   -maxStep, maxStep)
+    ent._armPitch = ent._armPitch + math.Clamp(-ent._armPitch, -maxStep, maxStep)
 
-    SetBone(ent, "b_r_shoulder",  Angle(0,  ent._armYaw * 0.5, 0))
-    SetBone(ent, "b_r_upperarm",  Angle(ent._armPitch * 0.6, ent._armYaw * 0.3, 0))
-    SetBone(ent, "b_r_forearm",   Angle(ent._armPitch * 0.4, 0, 0))
-
-    SetBone(ent, "b_l_shoulder",  Angle(0,  -ent._armYaw * 0.5, 0))
-    SetBone(ent, "b_l_upperarm",  Angle(ent._armPitch * 0.6, -ent._armYaw * 0.3, 0))
-    SetBone(ent, "b_l_forearm",   Angle(ent._armPitch * 0.4, 0, 0))
+    SetBone(ent, "b_r_shoulder", Angle(0,                ent._armYaw * 0.5,  0))
+    SetBone(ent, "b_r_upperarm", Angle(ent._armPitch * 0.6, ent._armYaw * 0.3,  0))
+    SetBone(ent, "b_r_forearm",  Angle(ent._armPitch * 0.4, 0,                  0))
+    SetBone(ent, "b_l_shoulder", Angle(0,                -ent._armYaw * 0.5, 0))
+    SetBone(ent, "b_l_upperarm", Angle(ent._armPitch * 0.6, -ent._armYaw * 0.3, 0))
+    SetBone(ent, "b_l_forearm",  Angle(ent._armPitch * 0.4, 0,                  0))
 end
 
 -- ============================================================
---  HEAD AIM DRIVER  (b_spine4)
+--  HEAD DRIVER  (b_spine4)  —  YAW ONLY, dead simple
 --
---  FIX: _cl_headYaw and _cl_scanTarget are now stored as RELATIVE
---  angles (relative to bodyYaw). This eliminates the world->relative
---  round-trip that happened every frame and caused the tracker to be
---  re-anchored to bodyYaw before the diff was added, producing the
---  left-bias oscillation in combat.
+--  When enemy exists: snap relative yaw toward enemy, clamped to ±70.
+--  No pitch. No smoothing stack. No scan state. Nothing else.
 --
---  All smoothing math operates in relative space [-HEAD_YAW_LIMIT, +HEAD_YAW_LIMIT].
---  Conversion to bone angle happens exactly once at the apply step.
---
---  Bone axis mapping on b_spine4 (ManipulateBoneAngles, local=false):
---    Angle.p  = pitch (forward tilt)
---    Angle.r  = drives yaw on this bone  (sign: negative = look right)
+--  Bone axis on b_spine4 with ManipulateBoneAngles local=false:
+--    Angle( 0, 0, -relYaw )  turns the head left/right.
 -- ============================================================
-local HEAD_YAW_LIMIT  =  70
-local HEAD_PITCH_UP   = -70
-local HEAD_PITCH_DOWN =  50
-local HEAD_TURN_SPEED = 200   -- deg/sec
+local HEAD_LIMIT = 70
 
-local function GekkoUpdateHead(ent, dt)
+local function GekkoUpdateHead(ent)
     local bone = ent._spineBone
     if not bone or bone < 0 then return end
 
-    local t       = CurTime()
-    local bodyYaw = ent:GetAngles().y
-    local vel     = ent:GetNWFloat("GekkoSpeed", 0)
-    local enemy   = ent:GetNWEntity("GekkoEnemy", NULL)
-
-    -- Initialise tracker state in RELATIVE space
-    if not ent._cl_headRelYaw then
-        ent._cl_headRelYaw   = 0
-        ent._cl_headPitch    = 0
-        ent._cl_headDir      = 1
-        ent._cl_scanNext     = t + 1.5
-        ent._cl_scanRelTarget = 0   -- relative scan target
-    end
-
-    local targetRelYaw, targetPitch
+    local enemy = ent:GetNWEntity("GekkoEnemy", NULL)
+    local relYaw = 0
 
     if IsValid(enemy) then
-        -- Compute relative yaw and pitch to enemy directly
         local eyePos  = ent:GetPos() + Vector(0, 0, 130)
         local toEnemy = (enemy:GetPos() + Vector(0, 0, 40) - eyePos):Angle()
-        -- toEnemy.y is world yaw; subtract bodyYaw to get relative
-        targetRelYaw  = math.Clamp(math.NormalizeAngle(toEnemy.y - bodyYaw), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT)
-        targetPitch   = math.Clamp(toEnemy.p, HEAD_PITCH_UP, HEAD_PITCH_DOWN)
-
-    elseif vel < 6 then
-        -- Idle scan: target is already stored as relative
-        if t > ent._cl_scanNext then
-            ent._cl_headDir       = -ent._cl_headDir
-            ent._cl_scanNext      = t + math.Rand(2, 5)
-            ent._cl_scanRelTarget = math.Clamp(
-                ent._cl_headDir * math.Rand(35, 70),
-                -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT
-            )
-        end
-        targetRelYaw = ent._cl_scanRelTarget
-        targetPitch  = math.sin(t * 0.6) * 12
-
-    else
-        -- Walking: look forward (relative = 0)
-        targetRelYaw = 0
-        targetPitch  = math.sin(t * 2.5) * 5
+        relYaw = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT, HEAD_LIMIT)
     end
 
-    -- Smooth relative yaw tracker toward target (no bodyYaw involved in the math)
-    local maxStep     = HEAD_TURN_SPEED * dt
-    local yawDiff     = math.NormalizeAngle(targetRelYaw - ent._cl_headRelYaw)
-    ent._cl_headRelYaw = math.Clamp(
-        ent._cl_headRelYaw + math.Clamp(yawDiff, -maxStep, maxStep),
-        -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT
-    )
-
-    -- Smooth pitch tracker
-    local pitchDiff   = targetPitch - ent._cl_headPitch
-    ent._cl_headPitch = math.Clamp(
-        ent._cl_headPitch + math.Clamp(pitchDiff, -maxStep, maxStep),
-        HEAD_PITCH_UP, HEAD_PITCH_DOWN
-    )
-
-    -- Apply: relative yaw goes into Angle.r with negated sign (bone axis convention)
-    ent:ManipulateBoneAngles(bone, Angle(ent._cl_headPitch, 0, -ent._cl_headRelYaw), false)
+    ent:ManipulateBoneAngles(bone, Angle(0, 0, -relYaw), false)
 end
 
 -- ============================================================
@@ -233,7 +168,7 @@ function ENT:Draw()
 
     local enemy = self:GetNWEntity("GekkoEnemy", NULL)
 
-    GekkoUpdateHead(self, dt)
+    GekkoUpdateHead(self)
 
     if IsValid(enemy) then
         GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
