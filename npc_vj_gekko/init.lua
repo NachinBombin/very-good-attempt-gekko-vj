@@ -32,6 +32,21 @@ local WMODE_MG      = 1
 local WMODE_MISSILE = 2
 
 -- ============================================================
+--  HELPER: resolve the active enemy from either VJ Base or engine
+--  VJ Base sets self.VJ_TheEnemy while an attack schedule is running,
+--  but clears it during scan/idle intervals.
+--  self:GetEnemy() is the engine-level field and remains valid as
+--  long as the NPC has a living target, so it fills the gap.
+-- ============================================================
+local function GetActiveEnemy(ent)
+    local e = ent.VJ_TheEnemy
+    if IsValid(e) then return e end
+    e = ent:GetEnemy()
+    if IsValid(e) then return e end
+    return nil
+end
+
+-- ============================================================
 --  ANIMATION
 -- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
@@ -70,10 +85,16 @@ function ENT:GekkoUpdateAnimation()
     -- GetAbsVelocity() always returns 0 for AI-schedule-driven creatures.
     local vel = self:GetVelocity():Length()
 
-    -- VJ Base stores the active enemy in self.VJ_TheEnemy, NOT self.Enemy.
-    -- self.Enemy is an engine field VJ Base does not populate.
-    local enemy = self.VJ_TheEnemy
-    local dist  = IsValid(enemy) and self:GetPos():Distance(enemy:GetPos()) or 0
+    local enemy = GetActiveEnemy(self)
+    local dist  = 0
+    if IsValid(enemy) then
+        dist = self:GetPos():Distance(enemy:GetPos())
+        self._gekkoLastEnemyPos  = enemy:GetPos()   -- cache for fallback
+        self._gekkoLastEnemyDist = dist
+    elseif self._gekkoLastEnemyDist then
+        -- Use last known distance so hysteresis isn't reset by a momentary nil
+        dist = self._gekkoLastEnemyDist
+    end
 
     -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop below RUN_DISENGAGE_DIST
     if dist > RUN_ENGAGE_DIST then
@@ -118,12 +139,14 @@ function ENT:Init()
     self.GekkoLGunBone     = self:LookupBone("b_l_gunrack")
     self.GekkoRGunBone     = self:LookupBone("b_r_gunrack")
 
-    self.Gekko_NextDebugT  = 0
-    self.Gekko_LastSeqName = ""
-    self._missileCount     = 0
-    self._mgBurstActive    = false
-    self._weaponMode       = WMODE_MG
-    self._gekkoRunning     = false
+    self.Gekko_NextDebugT    = 0
+    self.Gekko_LastSeqName   = ""
+    self._missileCount       = 0
+    self._mgBurstActive      = false
+    self._weaponMode         = WMODE_MG
+    self._gekkoRunning       = false
+    self._gekkoLastEnemyPos  = nil
+    self._gekkoLastEnemyDist = nil
 
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
@@ -163,15 +186,34 @@ function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
     if CurTime() > self.Gekko_NextDebugT then
-        local enemy = self.VJ_TheEnemy
-        local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
-        local vel   = self:GetVelocity():Length()
+        local enemy = GetActiveEnemy(self)
+        local dist
+        if IsValid(enemy) then
+            dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
+        elseif self._gekkoLastEnemyDist then
+            dist = math.floor(self._gekkoLastEnemyDist)  -- show cached, not -1
+        else
+            dist = -1  -- genuinely no enemy ever seen
+        end
+
+        local vel = self:GetVelocity():Length()
+        -- src: VJ_TheEnemy=valid | engine:GetEnemy()=valid | cached | none
+        local src = "none"
+        if IsValid(self.VJ_TheEnemy) then
+            src = "vj"
+        elseif IsValid(self:GetEnemy()) then
+            src = "engine"
+        elseif self._gekkoLastEnemyDist then
+            src = "cached"
+        end
+
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d",
+            "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d  src=%s",
             vel,
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
-            dist
+            dist,
+            src
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
@@ -199,7 +241,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
             timer.Simple(i * MG_INTERVAL, function()
                 if not IsValid(entRef) then return end
 
-                local curEnemy = entRef.VJ_TheEnemy
+                local curEnemy = GetActiveEnemy(entRef)
                 local curAim   = IsValid(curEnemy)
                     and (curEnemy:GetPos() + Vector(0, 0, 40))
                     or  aimPos
