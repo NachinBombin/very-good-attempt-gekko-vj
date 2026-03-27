@@ -109,7 +109,12 @@ end
 --  INIT
 -- ============================================================
 function ENT:Init()
-    self:SetCollisionBounds(Vector(-36, -36, 0), Vector(36, 36, 96))
+    -- --------------------------------------------------------
+    --  HITBOX: match original Gekko-Unit dimensions
+    --  Original: Radius=64, Height=256 (mgs4_gekko_mech.lua)
+    --  This makes the full torso + head hittable, not just legs.
+    -- --------------------------------------------------------
+    self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 256))
     self:SetSkin(1)
 
     self.GekkoSpineBone    = self:LookupBone("b_spine4")
@@ -122,7 +127,6 @@ function ENT:Init()
     self._smoothSpd        = 0
     self._missileCount     = 0
     self._mgBurstActive    = false
-    -- Start on MG; alternates to missile each attack call
     self._weaponMode       = WMODE_MG
 
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
@@ -141,10 +145,29 @@ function ENT:Init()
 end
 
 -- ============================================================
---  KNOCKBACK SUPPRESSION
+--  PHYSICS / KNOCKBACK SUPPRESSION
+--
+--  Root cause of floating:
+--    VJ Base is ENT.Type="ai". Source NPCs have an internal
+--    physics solver. CTakeDamageInfo carries a force vector;
+--    the engine applies it as a velocity impulse BEFORE Lua's
+--    OnTakeDamage fires. SetLocalVelocity AFTER the fact was
+--    always one frame too late.
+--
+--  Fix:
+--    1. Zero the force vector inside dmginfo BEFORE passing it
+--       to the base class, so the engine never sees a non-zero
+--       impulse in the first place.
+--    2. Also zero velocity in OnThink every tick as a hard
+--       floor -- catches any residual impulse from blast radii
+--       that bypass OnTakeDamage (e.g. util.BlastDamage
+--       internal direct-damage path).
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    self:SetLocalVelocity(Vector(0, 0, 0))
+    -- Strip the damage force so the NPC physics solver never
+    -- accumulates upward velocity from bullet/explosion pushes.
+    dmginfo:SetDamageForce(Vector(0, 0, 0))
+    dmginfo:SetDamagePosition(self:GetPos())
 end
 
 -- ============================================================
@@ -152,6 +175,13 @@ end
 -- ============================================================
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
+
+    -- Hard-floor: kill any vertical velocity that slipped through
+    -- (e.g. from util.BlastDamage direct-damage radius calls).
+    local vel = self:GetVelocity()
+    if vel.z > 1 then
+        self:SetAbsVelocity(Vector(vel.x, vel.y, 0))
+    end
 
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = self:GetEnemy()
@@ -181,13 +211,12 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
-    -- Determine which weapon fires this call, then flip for next time
     local mode = self._weaponMode
     self._weaponMode = (mode == WMODE_MG) and WMODE_MISSILE or WMODE_MG
 
     -- ---- Machine Gun Burst ----
     if mode == WMODE_MG then
-        if self._mgBurstActive then return true end  -- still firing, skip
+        if self._mgBurstActive then return true end
         self._mgBurstActive = true
         local entRef = self
 
