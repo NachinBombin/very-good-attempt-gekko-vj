@@ -20,17 +20,16 @@ ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
--- WalkSpeed matches ANIM_WALK_SPEED in init.lua so arate≈1.0 at full nav speed.
+-- WalkSpeed: normal patrol/approach pace
+-- RunSpeed:  engaged when enemy is >900 units away (set in OnThink)
 ENT.WalkSpeed                = 90
-ENT.RunSpeed                 = 90
+ENT.RunSpeed                 = 180
 
 ENT.TurningSpeed = 1000
 
 ENT.SightDistance = 18000
 ENT.EnemyTimeout  = 60
 
--- Re-enabled so the chase scheduler completes orientation steps
--- and doesn't stall mid-schedule when the player moves away.
 ENT.ConstantlyFaceEnemy             = true
 ENT.ConstantlyFaceEnemy_IfVisible   = true
 ENT.ConstantlyFaceEnemy_IfAttacking = true

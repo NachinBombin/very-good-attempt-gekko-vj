@@ -14,15 +14,15 @@ local ATT_MISSILE_R    = 10
 
 -- ============================================================
 --  ANIMATION CALIBRATION
---  Tune ANIM_WALK_SPEED and ANIM_RUN_SPEED in-game:
---    - Watch console for smoothSpd value while NPC walks normally
---    - If legs spin too fast -> increase the constant
---    - If legs slide/lag   -> decrease the constant
---    - Correct value = makes arate~1.0 at the NPC's natural cruise speed
+--  Tune ANIM_WALK_SPEED / ANIM_RUN_SPEED until arate~1.0 at
+--  the NPC's natural cruise speed (read vel= from console).
 -- ============================================================
-local ANIM_WALK_SPEED   = 200   -- starting point, tune in-game
-local ANIM_RUN_SPEED    = 200   -- starting point, tune in-game
-local RUN_VEL_THRESHOLD = 160   -- u/s above which run anim plays
+local ANIM_WALK_SPEED     = 200
+local ANIM_RUN_SPEED      = 200
+
+-- Distance threshold: run engages above this, walk resumes below.
+local RUN_ENGAGE_DIST     = 900
+local RUN_DISENGAGE_DIST  = 750   -- slight hysteresis so it doesn't flicker
 
 -- MG burst config
 local MG_ROUNDS    = 12
@@ -69,17 +69,34 @@ end
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    -- Use engine physics velocity directly (same approach as original vehicle)
-    local vel = self:GetVelocity():Length()
+    local vel    = self:GetVelocity():Length()
+    local enemy  = self:GetEnemy()
+    local dist   = IsValid(enemy) and self:GetPos():Distance(enemy:GetPos()) or 0
+
+    -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop back below RUN_DISENGAGE_DIST
+    if dist > RUN_ENGAGE_DIST then
+        self._gekkoRunning = true
+    elseif dist < RUN_DISENGAGE_DIST then
+        self._gekkoRunning = false
+    end
+
+    -- Sync physical speed with run state
+    if self._gekkoRunning then
+        self:SetNWBool("GekkoRunning", true)
+    else
+        self:SetNWBool("GekkoRunning", false)
+    end
 
     local targetSeq, arate
 
-    if vel > RUN_VEL_THRESHOLD then
-        targetSeq = "run"
-        arate     = vel / ANIM_RUN_SPEED
-    elseif vel > 6 then
-        targetSeq = "walk"
-        arate     = vel / ANIM_WALK_SPEED
+    if vel > 6 then
+        if self._gekkoRunning then
+            targetSeq = "run"
+            arate     = vel / ANIM_RUN_SPEED
+        else
+            targetSeq = "walk"
+            arate     = vel / ANIM_WALK_SPEED
+        end
     else
         targetSeq = "idle"
         arate     = 1.0
@@ -92,8 +109,6 @@ function ENT:GekkoUpdateAnimation()
 
     self:SetPlaybackRate(arate)
     self:SetNWFloat("GekkoSpeed", vel)
-
-    local enemy = self:GetEnemy()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
@@ -113,6 +128,7 @@ function ENT:Init()
     self._missileCount     = 0
     self._mgBurstActive    = false
     self._weaponMode       = WMODE_MG
+    self._gekkoRunning     = false
 
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
@@ -142,6 +158,13 @@ end
 --  THINK
 -- ============================================================
 function ENT:OnThink()
+    -- Sync VJ Base move speed with run state every think
+    if self._gekkoRunning then
+        self.MoveSpeed = self.RunSpeed
+    else
+        self.MoveSpeed = self.WalkSpeed
+    end
+
     self:GekkoUpdateAnimation()
 
     if CurTime() > self.Gekko_NextDebugT then
@@ -149,11 +172,10 @@ function ENT:OnThink()
         local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
         local vel   = self:GetVelocity():Length()
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  act=%d  moving=%s  enemyDist=%d",
+            "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d",
             vel,
             tostring(self.Gekko_LastSeqName),
-            self:GetActivity(),
-            tostring(self:IsMoving()),
+            tostring(self._gekkoRunning),
             dist
         ))
         self.Gekko_NextDebugT = CurTime() + 1
