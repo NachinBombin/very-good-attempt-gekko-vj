@@ -102,12 +102,12 @@ local function GekkoAimArms(ent, enemyPos, dt)
     local ay = ent._armYaw
     local ap = ent._armPitch
 
-    SetBone(ent, "b_r_shoulder", Angle(0,          ay * 0.5,  0))
-    SetBone(ent, "b_r_upperarm", Angle(ap * 0.6,   ay * 0.3,  0))
-    SetBone(ent, "b_r_forearm",  Angle(ap * 0.4,   0,         0))
-    SetBone(ent, "b_l_shoulder", Angle(0,          -ay * 0.5, 0))
-    SetBone(ent, "b_l_upperarm", Angle(ap * 0.6,   -ay * 0.3, 0))
-    SetBone(ent, "b_l_forearm",  Angle(ap * 0.4,   0,         0))
+    SetBone(ent, "b_r_shoulder", Angle(0,        ay * 0.5,  0))
+    SetBone(ent, "b_r_upperarm", Angle(ap * 0.6, ay * 0.3,  0))
+    SetBone(ent, "b_r_forearm",  Angle(ap * 0.4, 0,         0))
+    SetBone(ent, "b_l_shoulder", Angle(0,        -ay * 0.5, 0))
+    SetBone(ent, "b_l_upperarm", Angle(ap * 0.6, -ay * 0.3, 0))
+    SetBone(ent, "b_l_forearm",  Angle(ap * 0.4, 0,         0))
 end
 
 local function GekkoResetArms(ent, dt)
@@ -126,13 +126,15 @@ local function GekkoResetArms(ent, dt)
 end
 
 -- ============================================================
---  HEAD DRIVER  (b_spine4)  —  YAW ONLY, dead simple
+--  HEAD DRIVER  (b_spine4)  —  YAW ONLY
 --
---  When enemy exists: snap relative yaw toward enemy, clamped to ±70.
---  No pitch. No smoothing stack. No scan state. Nothing else.
+--  Confirmed axis mapping from original mech UpdateAimAngle:
+--    ManipulateBoneAngles(bone, Angle(-ang.y + bodyYaw, 0, ang.p), false)
+--  meaning: world-yaw-delta -> Angle.p,  world-pitch -> Angle.r
 --
---  Bone axis on b_spine4 with ManipulateBoneAngles local=false:
---    Angle( 0, 0, -relYaw )  turns the head left/right.
+--  So for yaw-only head turn:
+--    relYaw = NormalizeAngle(toEnemy.y - bodyYaw)
+--    ManipulateBoneAngles(bone, Angle(-relYaw, 0, 0), false)
 -- ============================================================
 local HEAD_LIMIT = 70
 
@@ -140,16 +142,18 @@ local function GekkoUpdateHead(ent)
     local bone = ent._spineBone
     if not bone or bone < 0 then return end
 
-    local enemy = ent:GetNWEntity("GekkoEnemy", NULL)
+    local enemy  = ent:GetNWEntity("GekkoEnemy", NULL)
     local relYaw = 0
 
     if IsValid(enemy) then
-        local eyePos  = ent:GetPos() + Vector(0, 0, 130)
-        local toEnemy = (enemy:GetPos() + Vector(0, 0, 40) - eyePos):Angle()
+        local boneMatrix = ent:GetBoneMatrix(bone)
+        local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
+        local toEnemy    = (enemy:GetPos() + Vector(0, 0, 40) - pos):Angle()
         relYaw = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT, HEAD_LIMIT)
     end
 
-    ent:ManipulateBoneAngles(bone, Angle(0, 0, -relYaw), false)
+    -- Angle.p holds the yaw delta (original mech convention: -relYaw into p)
+    ent:ManipulateBoneAngles(bone, Angle(-relYaw, 0, 0), false)
 end
 
 -- ============================================================
