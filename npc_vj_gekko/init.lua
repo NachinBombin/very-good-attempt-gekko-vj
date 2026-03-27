@@ -21,6 +21,10 @@ local MG_INTERVAL  = 0.1
 local MG_DAMAGE    = 10
 local MG_SPREAD    = 4
 
+-- Weapon mode constants
+local WMODE_MG      = 1
+local WMODE_MISSILE = 2
+
 -- ============================================================
 --  ANIMATION
 -- ============================================================
@@ -118,6 +122,8 @@ function ENT:Init()
     self._smoothSpd        = 0
     self._missileCount     = 0
     self._mgBurstActive    = false
+    -- Start on MG; alternates to missile each attack call
+    self._weaponMode       = WMODE_MG
 
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
@@ -136,8 +142,6 @@ end
 
 -- ============================================================
 --  KNOCKBACK SUPPRESSION
---  SNPCs have no PhysObj with angular velocity methods.
---  SetLocalVelocity is sufficient to kill blast/bullet knockback.
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     self:SetLocalVelocity(Vector(0, 0, 0))
@@ -167,14 +171,9 @@ end
 -- ============================================================
 --  RANGE ATTACK
 --
---  MACHINE GUN  — sequential burst, MG_ROUNDS shots MG_INTERVAL apart.
---                 Fires from att 3; falls back to b_l_gunrack bone.
---
---  MISSILES     — strictly alternating L/R per call.
---                 Fires from att 9 (L) or att 10 (R).
---
---  RangeAttackProjectiles = false in shared.lua so VJ never fires
---  a second projectile on its own.
+--  Each call fires exactly ONE weapon, alternating MG -> Missile -> MG ...
+--  MG: sequential burst of MG_ROUNDS shots.
+--  Missile: single rocket, alternating L/R attachment.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
@@ -182,8 +181,13 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
-    -- ---- Sequential Machine Gun Burst ----
-    if not self._mgBurstActive then
+    -- Determine which weapon fires this call, then flip for next time
+    local mode = self._weaponMode
+    self._weaponMode = (mode == WMODE_MG) and WMODE_MISSILE or WMODE_MG
+
+    -- ---- Machine Gun Burst ----
+    if mode == WMODE_MG then
+        if self._mgBurstActive then return true end  -- still firing, skip
         self._mgBurstActive = true
         local entRef = self
 
@@ -237,20 +241,22 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                 end
             end)
         end
+
+        return true
     end
 
-    -- ---- Alternating Missile ----
+    -- ---- Missile ----
     self._missileCount = (self._missileCount or 0) + 1
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
 
     local misAtt = self:GetAttachment(missileAttIdx)
-    local src, dir
+    local src
     if misAtt then
         src = misAtt.Pos
     else
         src = self:GetPos() + Vector(0, 0, 160)
     end
-    dir = (aimPos - src):GetNormalized()
+    local dir = (aimPos - src):GetNormalized()
 
     local rocket = ents.Create("obj_vj_rocket")
     if IsValid(rocket) then
