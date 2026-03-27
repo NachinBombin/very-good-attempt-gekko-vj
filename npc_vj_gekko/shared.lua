@@ -20,9 +20,9 @@ ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
--- Match original vehicle walk speed exactly (GetSpeeds() -> walk=200)
-ENT.WalkSpeed                = 200
-ENT.RunSpeed                 = 200   -- capped to walk only; run anim triggers above 300 u/s
+-- WalkSpeed matches ANIM_WALK_SPEED in init.lua so arate≈1.0 at full nav speed.
+ENT.WalkSpeed                = 90
+ENT.RunSpeed                 = 90
 
 ENT.TurningSpeed = 1000
 
@@ -51,8 +51,6 @@ ENT.HasMeleeAttack = false
 -- ====== Range ======
 ENT.HasRangeAttack                        = true
 ENT.RangeAttackProjectiles                = false
--- Raised min distance so Gekko keeps chasing instead of
--- planting and waiting for the 9s attack cooldown.
 ENT.RangeAttackMinDistance                = 900
 ENT.RangeAttackMaxDistance                = 6000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1

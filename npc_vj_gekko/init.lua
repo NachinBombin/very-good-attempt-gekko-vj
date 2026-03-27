@@ -13,15 +13,16 @@ local ATT_MISSILE_L    = 9
 local ATT_MISSILE_R    = 10
 
 -- ============================================================
---  ANIMATION CALIBRATION  (exact values from original vehicle)
---    GetAnimationSpeeds() -> awalk=170, arun=165
---    GetSpeeds()          -> walk=200,  run=380
+--  ANIMATION CALIBRATION
+--  Rule: ANIM_WALK_SPEED = WalkSpeed so arate≈1.0 at full nav speed.
+--  The original vehicle reached 200 u/s via player input; the AI
+--  nav system caps out much lower (~90 u/s), so we calibrate here.
 -- ============================================================
-local ANIM_WALK_SPEED     = 170   -- playback rate divisor at walk
-local ANIM_RUN_SPEED      = 165   -- playback rate divisor at run
-local POSE_WALK_SPEED     = 200   -- move_x pose param divisor at walk
-local POSE_RUN_SPEED      = 380   -- move_x pose param divisor at run
-local RUN_VEL_THRESHOLD   = 300   -- u/s above which we switch to run anim
+local ANIM_WALK_SPEED     = 90    -- = WalkSpeed → arate≈1.0 at full walk
+local ANIM_RUN_SPEED      = 165   -- original vehicle run divisor
+local POSE_WALK_SPEED     = 90    -- = WalkSpeed → mrate≈1.0 at full walk
+local POSE_RUN_SPEED      = 380   -- original vehicle run pose divisor
+local RUN_VEL_THRESHOLD   = 300   -- effectively unreachable; walk only
 
 -- MG burst config
 local MG_ROUNDS    = 12
