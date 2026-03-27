@@ -14,33 +14,27 @@ ENT.Model    = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
 
 ENT.VJ_NPC_Class = {"CLASS_COMBINE"}
 ENT.HullType     = HULL_LARGE
-ENT.StartHealth  = 3000
+ENT.StartHealth  = 3100
 
 ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
 ENT.WalkSpeed                = 80
-ENT.RunSpeed                 = 110
+ENT.RunSpeed                 = 80   -- keep walking always
 
--- High turning speed so nav steering snaps quickly and doesn't drag
--- the head bone tracker across multiple frames during rotation.
-ENT.TurningSpeed = 1000
+ENT.TurningSpeed = 500
 
 ENT.SightDistance = 18000
 ENT.EnemyTimeout  = 60
 
--- ====== Facing: fully disabled ======
--- VJ's SCHED_CHASE_ENEMY calls SetIdealYaw toward the enemy every think
--- even with melee off. This slams bodyYaw each frame, making the bone
--- head tracker's relYaw = (toEnemy.y - bodyYaw) never stable.
--- Disabling all face-enemy automation lets the nav system steer the
--- body naturally while our bone driver handles the head independently.
-ENT.ConstantlyFaceEnemy             = false
-ENT.ConstantlyFaceEnemy_IfVisible   = false
-ENT.ConstantlyFaceEnemy_IfAttacking = false
+-- FIX 2: Re-enable facing so the chase scheduler can properly
+-- complete orientation steps and not stall mid-schedule.
+ENT.ConstantlyFaceEnemy             = true
+ENT.ConstantlyFaceEnemy_IfVisible   = true
+ENT.ConstantlyFaceEnemy_IfAttacking = true
 ENT.ConstantlyFaceEnemy_Postures    = "Both"
-ENT.ConstantlyFaceEnemy_MinDistance = 99999
+ENT.ConstantlyFaceEnemy_MinDistance = 0   -- always face, no distance gate
 
 -- ====== Animation Tables ======
 ENT.AnimTbl_Idle         = {"idle"}
@@ -55,13 +49,19 @@ ENT.HasMeleeAttack = false
 
 -- ====== Range ======
 ENT.HasRangeAttack                        = true
--- false = VJ will NOT auto-fire a projectile; OnRangeAttackExecute handles everything
 ENT.RangeAttackProjectiles                = false
-ENT.RangeAttackMinDistance                = 250
+-- FIX 1: Push min distance up so the Gekko keeps chasing
+-- instead of planting itself and waiting for the attack timer.
+ENT.RangeAttackMinDistance                = 900
 ENT.RangeAttackMaxDistance                = 6000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
-ENT.NextRangeAttackTime                   = 9
-ENT.NextAnyAttackTime_Range               = 3
+-- FIX 1: Shorten attack cooldowns so it never idles waiting.
+ENT.NextRangeAttackTime                   = 4
+ENT.NextAnyAttackTime_Range               = 1.5
+
+-- FIX: prevents Source engine from applying bullet/explosion
+-- force impulses to the NPC's physics body on hit.
+ENT.DisablePhysicsOnDamage = true
 
 -- ====== Sounds ======
 ENT.HasSounds        = true

@@ -137,9 +137,9 @@ end
 --  Yaw limit: +-50 deg.  Pitch limit: -30 (up) / +20 (down).
 -- ============================================================
 local HEAD_LIMIT       =  50
-local HEAD_PITCH_UP    = -30
-local HEAD_PITCH_DOWN  =  20
-local HEAD_SPEED       =  80   -- deg/sec, same for both axes
+local HEAD_PITCH_UP    = -60
+local HEAD_PITCH_DOWN  =  60
+local HEAD_SPEED       =  30  -- deg/sec, same for both axes
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone

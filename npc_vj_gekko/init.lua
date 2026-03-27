@@ -12,8 +12,8 @@ local ATT_MACHINEGUN   = 3
 local ATT_MISSILE_L    = 9
 local ATT_MISSILE_R    = 10
 
-local ANIM_WALK_SPEED  = 170
-local ANIM_RUN_SPEED   = 280
+local ANIM_WALK_SPEED  = 50
+local ANIM_RUN_SPEED   = 270
 
 -- MG burst config
 local MG_ROUNDS    = 12
@@ -81,7 +81,7 @@ function ENT:GekkoUpdateAnimation()
     local vel = self:GekkoGetSpeed()
 
     local targetSeq, arate
-    if vel > 160 then
+    if vel > 260 then
         targetSeq = "run"
         arate     = vel / ANIM_RUN_SPEED
     elseif vel > 6 then
@@ -166,22 +166,15 @@ end
 function ENT:OnTakeDamage(dmginfo)
     -- Strip the damage force so the NPC physics solver never
     -- accumulates upward velocity from bullet/explosion pushes.
-    dmginfo:SetDamageForce(Vector(0, 0, 0))
+     dmginfo:SetDamageForce(Vector(0, 0, 0))
     dmginfo:SetDamagePosition(self:GetPos())
+    self.BaseClass.OnTakeDamage(self, dmginfo)
 end
-
 -- ============================================================
 --  THINK
 -- ============================================================
 function ENT:OnThink()
     self:GekkoUpdateAnimation()
-
-    -- Hard-floor: kill any vertical velocity that slipped through
-    -- (e.g. from util.BlastDamage direct-damage radius calls).
-    local vel = self:GetVelocity()
-    if vel.z > 1 then
-        self:SetAbsVelocity(Vector(vel.x, vel.y, 0))
-    end
 
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = self:GetEnemy()
