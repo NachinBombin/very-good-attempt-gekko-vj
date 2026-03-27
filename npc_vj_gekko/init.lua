@@ -14,15 +14,12 @@ local ATT_MISSILE_R    = 10
 
 -- ============================================================
 --  ANIMATION CALIBRATION
---  Tune ANIM_WALK_SPEED / ANIM_RUN_SPEED until arate~1.0 at
---  the NPC's natural cruise speed (read vel= from console).
 -- ============================================================
 local ANIM_WALK_SPEED    = 200
 local ANIM_RUN_SPEED     = 200
 
--- Distance threshold: run engages above this, walk resumes below.
 local RUN_ENGAGE_DIST    = 900
-local RUN_DISENGAGE_DIST = 750   -- hysteresis to prevent flicker
+local RUN_DISENGAGE_DIST = 750
 
 -- MG burst config
 local MG_ROUNDS    = 12
@@ -69,13 +66,13 @@ end
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    -- GetAbsVelocity reflects kinematic nav movement.
-    -- GetVelocity() is physics velocity = 0 for AI-moved NPCs.
-    local vel = self:GetAbsVelocity():Length()
+    -- VJ Base creature NPCs: GetVelocity() is the correct speed source.
+    -- GetAbsVelocity() always returns 0 for AI-schedule-driven creatures.
+    local vel = self:GetVelocity():Length()
 
-    -- self.Enemy is VJ Base's persistent enemy reference.
-    -- GetEnemy() returns NULL between schedules.
-    local enemy = self.Enemy
+    -- VJ Base stores the active enemy in self.VJ_TheEnemy, NOT self.Enemy.
+    -- self.Enemy is an engine field VJ Base does not populate.
+    local enemy = self.VJ_TheEnemy
     local dist  = IsValid(enemy) and self:GetPos():Distance(enemy:GetPos()) or 0
 
     -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop below RUN_DISENGAGE_DIST
@@ -166,9 +163,9 @@ function ENT:OnThink()
     self:GekkoUpdateAnimation()
 
     if CurTime() > self.Gekko_NextDebugT then
-        local enemy = self.Enemy
+        local enemy = self.VJ_TheEnemy
         local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
-        local vel   = self:GetAbsVelocity():Length()
+        local vel   = self:GetVelocity():Length()
         print(string.format(
             "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d",
             vel,
@@ -202,7 +199,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
             timer.Simple(i * MG_INTERVAL, function()
                 if not IsValid(entRef) then return end
 
-                local curEnemy = entRef.Enemy
+                local curEnemy = entRef.VJ_TheEnemy
                 local curAim   = IsValid(curEnemy)
                     and (curEnemy:GetPos() + Vector(0, 0, 40))
                     or  aimPos
