@@ -14,15 +14,15 @@ local ATT_MISSILE_R    = 10
 
 -- ============================================================
 --  ANIMATION CALIBRATION
---  Rule: ANIM_WALK_SPEED = WalkSpeed so arate≈1.0 at full nav speed.
---  The original vehicle reached 200 u/s via player input; the AI
---  nav system caps out much lower (~90 u/s), so we calibrate here.
+--  Tune ANIM_WALK_SPEED and ANIM_RUN_SPEED in-game:
+--    - Watch console for smoothSpd value while NPC walks normally
+--    - If legs spin too fast -> increase the constant
+--    - If legs slide/lag   -> decrease the constant
+--    - Correct value = makes arate~1.0 at the NPC's natural cruise speed
 -- ============================================================
-local ANIM_WALK_SPEED     = 90    -- = WalkSpeed → arate≈1.0 at full walk
-local ANIM_RUN_SPEED      = 165   -- original vehicle run divisor
-local POSE_WALK_SPEED     = 90    -- = WalkSpeed → mrate≈1.0 at full walk
-local POSE_RUN_SPEED      = 380   -- original vehicle run pose divisor
-local RUN_VEL_THRESHOLD   = 300   -- effectively unreachable; walk only
+local ANIM_WALK_SPEED   = 200   -- starting point, tune in-game
+local ANIM_RUN_SPEED    = 200   -- starting point, tune in-game
+local RUN_VEL_THRESHOLD = 160   -- u/s above which run anim plays
 
 -- MG burst config
 local MG_ROUNDS    = 12
@@ -66,43 +66,23 @@ function ENT:TranslateActivity(act)
     return self.BaseClass.TranslateActivity(self, act)
 end
 
-function ENT:GekkoGetSpeed()
-    local pos = self:GetPos()
-    local dt  = FrameTime()
-
-    if not self._lastPos or dt <= 0 then
-        self._lastPos = pos
-        return self._smoothSpd or 0
-    end
-
-    local spd = (pos - self._lastPos):Length() / dt
-    self._lastPos = pos
-
-    local alpha = 1 - math.exp(-dt * 12)
-    self._smoothSpd = self._smoothSpd + (spd - self._smoothSpd) * alpha
-
-    return self._smoothSpd
-end
-
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    local vel = self:GekkoGetSpeed()
+    -- Use engine physics velocity directly (same approach as original vehicle)
+    local vel = self:GetVelocity():Length()
 
-    local targetSeq, arate, mrate
+    local targetSeq, arate
 
     if vel > RUN_VEL_THRESHOLD then
         targetSeq = "run"
         arate     = vel / ANIM_RUN_SPEED
-        mrate     = vel / POSE_RUN_SPEED
     elseif vel > 6 then
         targetSeq = "walk"
         arate     = vel / ANIM_WALK_SPEED
-        mrate     = vel / POSE_WALK_SPEED
     else
         targetSeq = "idle"
-        arate     = 0.08
-        mrate     = 0
+        arate     = 1.0
     end
 
     if targetSeq ~= self.Gekko_LastSeqName then
@@ -111,7 +91,6 @@ function ENT:GekkoUpdateAnimation()
     end
 
     self:SetPlaybackRate(arate)
-    self:SetPoseParameter("move_x", mrate)
     self:SetNWFloat("GekkoSpeed", vel)
 
     local enemy = self:GetEnemy()
@@ -131,8 +110,6 @@ function ENT:Init()
 
     self.Gekko_NextDebugT  = 0
     self.Gekko_LastSeqName = ""
-    self._lastPos          = self:GetPos()
-    self._smoothSpd        = 0
     self._missileCount     = 0
     self._mgBurstActive    = false
     self._weaponMode       = WMODE_MG
@@ -170,9 +147,10 @@ function ENT:OnThink()
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = self:GetEnemy()
         local dist  = IsValid(enemy) and math.floor(self:GetPos():Distance(enemy:GetPos())) or -1
+        local vel   = self:GetVelocity():Length()
         print(string.format(
-            "[GekkoDBG] smoothSpd=%.1f  seq=%s  act=%d  moving=%s  enemyDist=%d",
-            self._smoothSpd or 0,
+            "[GekkoDBG] vel=%.1f  seq=%s  act=%d  moving=%s  enemyDist=%d",
+            vel,
             tostring(self.Gekko_LastSeqName),
             self:GetActivity(),
             tostring(self:IsMoving()),
