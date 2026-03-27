@@ -117,51 +117,59 @@ local function GekkoResetArms(ent, dt)
     ent._armYaw   = ent._armYaw   + math.Clamp(-ent._armYaw,   -maxStep, maxStep)
     ent._armPitch = ent._armPitch + math.Clamp(-ent._armPitch, -maxStep, maxStep)
 
-    SetBone(ent, "b_r_shoulder", Angle(0,                ent._armYaw * 0.5,  0))
+    SetBone(ent, "b_r_shoulder", Angle(0,                   ent._armYaw * 0.5,  0))
     SetBone(ent, "b_r_upperarm", Angle(ent._armPitch * 0.6, ent._armYaw * 0.3,  0))
     SetBone(ent, "b_r_forearm",  Angle(ent._armPitch * 0.4, 0,                  0))
-    SetBone(ent, "b_l_shoulder", Angle(0,                -ent._armYaw * 0.5, 0))
+    SetBone(ent, "b_l_shoulder", Angle(0,                   -ent._armYaw * 0.5, 0))
     SetBone(ent, "b_l_upperarm", Angle(ent._armPitch * 0.6, -ent._armYaw * 0.3, 0))
     SetBone(ent, "b_l_forearm",  Angle(ent._armPitch * 0.4, 0,                  0))
 end
 
 -- ============================================================
---  HEAD DRIVER  (b_spine4)  —  YAW ONLY
+--  HEAD DRIVER  (b_spine4)  —  YAW + PITCH
 --
---  Bone axis (confirmed from original mech UpdateAimAngle):
---    Angle.p = yaw delta   ( -relYaw )
---    Angle.y = 0
---    Angle.r = 0
+--  Confirmed axis mapping from original mech UpdateAimAngle:
+--    Angle( -ang.y + bodyYaw,  0,  ang.p )
+--    => Angle.p = yaw delta  ( -relYaw )
+--    => Angle.r = world pitch ( toEnemy.p )
 --
---  Smoothing: exponential decay toward target at HEAD_SPEED deg/sec.
---  Limit reduced to 50 deg to prevent over-rotation.
+--  Both channels smoothed at HEAD_SPEED deg/sec.
+--  Yaw limit: +-50 deg.  Pitch limit: -30 (up) / +20 (down).
 -- ============================================================
-local HEAD_LIMIT = 50      -- max degrees either side
-local HEAD_SPEED = 80      -- deg/sec toward target
+local HEAD_LIMIT       =  50
+local HEAD_PITCH_UP    = -30
+local HEAD_PITCH_DOWN  =  20
+local HEAD_SPEED       =  80   -- deg/sec, same for both axes
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
     if not bone or bone < 0 then return end
 
-    ent._headYaw = ent._headYaw or 0
+    ent._headYaw   = ent._headYaw   or 0
+    ent._headPitch = ent._headPitch or 0
 
-    local enemy  = ent:GetNWEntity("GekkoEnemy", NULL)
-    local target = 0
+    local enemy     = ent:GetNWEntity("GekkoEnemy", NULL)
+    local targetYaw = 0
+    local targetPitch = 0
 
     if IsValid(enemy) then
         local boneMatrix = ent:GetBoneMatrix(bone)
         local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
         local toEnemy    = (enemy:GetPos() + Vector(0, 0, 40) - pos):Angle()
-        target = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT, HEAD_LIMIT)
+        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,      HEAD_LIMIT)
+        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP,    HEAD_PITCH_DOWN)
     end
 
-    -- Smooth current yaw toward target
-    local diff     = math.NormalizeAngle(target - ent._headYaw)
-    local maxStep  = HEAD_SPEED * dt
-    ent._headYaw   = ent._headYaw + math.Clamp(diff, -maxStep, maxStep)
-    ent._headYaw   = math.Clamp(ent._headYaw, -HEAD_LIMIT, HEAD_LIMIT)
+    local maxStep    = HEAD_SPEED * dt
 
-    ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, 0), false)
+    local yawDiff    = math.NormalizeAngle(targetYaw - ent._headYaw)
+    ent._headYaw     = math.Clamp(ent._headYaw   + math.Clamp(yawDiff,                  -maxStep, maxStep), -HEAD_LIMIT,     HEAD_LIMIT)
+
+    local pitchDiff  = targetPitch - ent._headPitch
+    ent._headPitch   = math.Clamp(ent._headPitch + math.Clamp(pitchDiff,                -maxStep, maxStep),  HEAD_PITCH_UP,   HEAD_PITCH_DOWN)
+
+    -- Angle.p = -yaw,  Angle.r = pitch  (original mech convention)
+    ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, ent._headPitch), false)
 end
 
 -- ============================================================
