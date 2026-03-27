@@ -128,32 +128,40 @@ end
 -- ============================================================
 --  HEAD DRIVER  (b_spine4)  —  YAW ONLY
 --
---  Confirmed axis mapping from original mech UpdateAimAngle:
---    ManipulateBoneAngles(bone, Angle(-ang.y + bodyYaw, 0, ang.p), false)
---  meaning: world-yaw-delta -> Angle.p,  world-pitch -> Angle.r
+--  Bone axis (confirmed from original mech UpdateAimAngle):
+--    Angle.p = yaw delta   ( -relYaw )
+--    Angle.y = 0
+--    Angle.r = 0
 --
---  So for yaw-only head turn:
---    relYaw = NormalizeAngle(toEnemy.y - bodyYaw)
---    ManipulateBoneAngles(bone, Angle(-relYaw, 0, 0), false)
+--  Smoothing: exponential decay toward target at HEAD_SPEED deg/sec.
+--  Limit reduced to 50 deg to prevent over-rotation.
 -- ============================================================
-local HEAD_LIMIT = 70
+local HEAD_LIMIT = 50      -- max degrees either side
+local HEAD_SPEED = 80      -- deg/sec toward target
 
-local function GekkoUpdateHead(ent)
+local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
     if not bone or bone < 0 then return end
 
+    ent._headYaw = ent._headYaw or 0
+
     local enemy  = ent:GetNWEntity("GekkoEnemy", NULL)
-    local relYaw = 0
+    local target = 0
 
     if IsValid(enemy) then
         local boneMatrix = ent:GetBoneMatrix(bone)
         local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
         local toEnemy    = (enemy:GetPos() + Vector(0, 0, 40) - pos):Angle()
-        relYaw = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT, HEAD_LIMIT)
+        target = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT, HEAD_LIMIT)
     end
 
-    -- Angle.p holds the yaw delta (original mech convention: -relYaw into p)
-    ent:ManipulateBoneAngles(bone, Angle(-relYaw, 0, 0), false)
+    -- Smooth current yaw toward target
+    local diff     = math.NormalizeAngle(target - ent._headYaw)
+    local maxStep  = HEAD_SPEED * dt
+    ent._headYaw   = ent._headYaw + math.Clamp(diff, -maxStep, maxStep)
+    ent._headYaw   = math.Clamp(ent._headYaw, -HEAD_LIMIT, HEAD_LIMIT)
+
+    ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, 0), false)
 end
 
 -- ============================================================
@@ -172,7 +180,7 @@ function ENT:Draw()
 
     local enemy = self:GetNWEntity("GekkoEnemy", NULL)
 
-    GekkoUpdateHead(self)
+    GekkoUpdateHead(self, dt)
 
     if IsValid(enemy) then
         GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
