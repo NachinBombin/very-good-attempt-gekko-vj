@@ -69,16 +69,16 @@ end
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    -- GetAbsVelocity reflects the NPC's kinematic nav movement.
-    -- GetVelocity() returns physics velocity which is 0 for AI-moved NPCs.
+    -- GetAbsVelocity reflects kinematic nav movement.
+    -- GetVelocity() is physics velocity = 0 for AI-moved NPCs.
     local vel = self:GetAbsVelocity():Length()
 
-    -- VJ Base stores the current enemy in self.Enemy, which is always
-    -- valid during chase/combat. GetEnemy() may return NULL between schedules.
+    -- self.Enemy is VJ Base's persistent enemy reference.
+    -- GetEnemy() returns NULL between schedules.
     local enemy = self.Enemy
     local dist  = IsValid(enemy) and self:GetPos():Distance(enemy:GetPos()) or 0
 
-    -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop back below RUN_DISENGAGE_DIST
+    -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop below RUN_DISENGAGE_DIST
     if dist > RUN_ENGAGE_DIST then
         self._gekkoRunning = true
     elseif dist < RUN_DISENGAGE_DIST then
