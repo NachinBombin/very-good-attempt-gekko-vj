@@ -80,12 +80,24 @@ function ENT:SetAnimationTranslations(wepHoldType)
 end
 
 -- ============================================================
+--  MaintainActivity override
+--  VJ Base calls this to push locomotion sequences every tick.
+--  We block it entirely during jump phases so nothing under us
+--  can clobber the jump/fall/land ResetSequence we already set.
+-- ============================================================
+function ENT:MaintainActivity()
+    if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
+        return  -- jump system owns the sequence right now
+    end
+    self.BaseClass.MaintainActivity(self)
+end
+
+-- ============================================================
 --  TranslateActivity
---  Jump states take priority — this is what the engine/client
---  uses to pick the rendered sequence every frame.
+--  Secondary guard: if VJ somehow gets past MaintainActivity,
+--  redirect locomotion ACTs to the correct jump sequence.
 -- ============================================================
 function ENT:TranslateActivity(act)
-    -- Jump states override everything
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING  and self._seqJump and self._seqJump ~= -1 then
         return self._seqJump
@@ -116,7 +128,7 @@ function ENT:GekkoUpdateAnimation()
 
     local jumpState = self:GetGekkoJumpState()
 
-    -- Full bail during any jump phase — do NOT touch ResetSequence
+    -- Full bail during any jump phase
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
        jumpState == self.JUMP_LAND    or
@@ -213,6 +225,7 @@ function ENT:Init()
     self._gekkoLastEnemyDist = nil
     self._gekkoLastPos       = self:GetPos()
     self._gekkoLastTime      = CurTime() - 0.1
+    self._gekkoSuppressActivity = 0
 
     self:GekkoJump_Init()
 

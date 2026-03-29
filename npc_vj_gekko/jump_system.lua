@@ -9,7 +9,7 @@ local JUMP_LAND    = 3
 
 local JUMP_FORCE          = 450
 local JUMP_FORWARD_FORCE  = 200
-local JUMP_LAND_LOCKOUT   = 2
+local JUMP_LAND_LOCKOUT   = 1.4   -- matches land anim duration
 local JUMP_COOLDOWN       = 6.0
 local JUMP_GROUND_DIST    = 24
 local JUMP_MIN_ENEMY_DIST = 600
@@ -102,6 +102,22 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
+--  GekkoJump_ForceSequence
+--  Single authoritative place to slam a jump-phase sequence.
+--  Locks out GekkoUpdateAnimation AND MaintainActivity so
+--  nothing underneath can clobber the anim this tick.
+-- ============================================================
+local function ForceSeq(ent, seq, rate)
+    ent:ResetSequence(seq)
+    ent:SetCycle(0)
+    ent:SetPlaybackRate(rate)
+    ent.Gekko_LastSeqIdx  = seq
+    ent.Gekko_LastSeqName = "jump_phase"
+    -- Suppress VJ MaintainActivity for this tick
+    ent._gekkoSuppressActivity = CurTime() + 0.5
+end
+
+-- ============================================================
 function ENT:GekkoJump_Execute()
     if self:GetGekkoJumpState() ~= JUMP_NONE then return end
 
@@ -125,11 +141,7 @@ function ENT:GekkoJump_Execute()
     print("[GekkoJump] EXECUTE → RISING  seqJump=" .. self._seqJump)
 
     if self._seqJump ~= -1 then
-        self:ResetSequence(self._seqJump)
-        self:SetPlaybackRate(1.0)
-        -- Stamp so GekkoUpdateAnimation won't clobber us with a competing reset
-        self.Gekko_LastSeqIdx  = self._seqJump
-        self.Gekko_LastSeqName = "jump"
+        ForceSeq(self, self._seqJump, 1.0)
     end
 
     self:GekkoJump_StartJetFX()
@@ -139,6 +151,11 @@ end
 function ENT:GekkoJump_Think()
     local state    = self:GetGekkoJumpState()
     if state == JUMP_NONE then return end
+
+    -- Keep suppression alive every think tick while airborne
+    if state == JUMP_RISING or state == JUMP_FALLING then
+        self._gekkoSuppressActivity = CurTime() + 0.5
+    end
 
     local vel      = self:GetVelocity()
     local grounded = GekkoIsGrounded(self)
@@ -156,11 +173,7 @@ function ENT:GekkoJump_Think()
         self:GekkoJump_StopJetFX()
         print("[GekkoJump] → FALLING  seqFall=" .. self._seqFall)
         if self._seqFall ~= -1 then
-            self:ResetSequence(self._seqFall)
-            self:SetPlaybackRate(1.0)
-            -- Stamp so GekkoUpdateAnimation won't clobber
-            self.Gekko_LastSeqIdx  = self._seqFall
-            self.Gekko_LastSeqName = "fall"
+            ForceSeq(self, self._seqFall, 1.0)
         end
         return
     end
@@ -172,11 +185,9 @@ function ENT:GekkoJump_Think()
         self:SetVelocity(Vector(0, 0, 0))
         print("[GekkoJump] → LAND  seqLand=" .. self._seqLand)
         if self._seqLand ~= -1 then
-            self:ResetSequence(self._seqLand)
-            self:SetPlaybackRate(1.2)
-            -- Stamp so GekkoUpdateAnimation won't clobber
-            self.Gekko_LastSeqIdx  = self._seqLand
-            self.Gekko_LastSeqName = "land"
+            -- Play land anim at natural speed (1.0).
+            -- Lockout duration should match the anim length — tune JUMP_LAND_LOCKOUT if needed.
+            ForceSeq(self, self._seqLand, 1.0)
         end
         self:GekkoJump_LandImpact()
         return
@@ -185,9 +196,9 @@ function ENT:GekkoJump_Think()
     if state == JUMP_LAND and CurTime() > self:GetGekkoJumpTimer() then
         self:SetGekkoJumpState(JUMP_NONE)
         self:SetGekkoJumpTimer(0)
-        -- Clear stamp so normal walk/idle logic resumes freely
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
+        self._gekkoSuppressActivity = 0
         print("[GekkoJump] → NONE (lockout done)")
     end
 end
@@ -222,16 +233,23 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_LandImpact()
-    self:EmitSound("MA2_Mech.HardLand", 95, 100)
     local shakePos = self:GetPos()
-    for _, ply in ipairs(player.GetAll()) do
-        if ply:GetPos():Distance(shakePos) < 600 then
-            util.ScreenShake(shakePos, 8, 5, 0.4, 600)
-            break
-        end
-    end
+
+    -- Camera shake — works serverside, broadcasts to nearby players
+    util.ScreenShake(shakePos, 12, 8, 0.6, 700)
+
+    -- Land sound
+    self:EmitSound("physics/metal/metal_box_impact_hard3.wav", 100, 80)
+
+    -- Dust: use a real built-in particle that definitely exists
     local eff = EffectData()
-    eff:SetOrigin(self:GetPos())
-    eff:SetScale(2)
-    util.Effect("GekkoLandDust", eff, true, true)
+    eff:SetOrigin(shakePos)
+    eff:SetNormal(Vector(0, 0, 1))
+    eff:SetScale(3)
+    eff:SetMagnitude(3)
+    eff:SetRadius(128)
+    util.Effect("dust", eff)
+
+    -- Supplemental dirt puff via particle system
+    ParticleEffect("impact_dirt_cheap", shakePos, Angle(0, 0, 0))
 end
