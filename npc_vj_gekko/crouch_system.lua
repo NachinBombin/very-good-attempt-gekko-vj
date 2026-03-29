@@ -61,9 +61,10 @@ function ENT:GeckoCrouch_Init()
     self._gekkoCeilingHit         = false
     self.GekkoSeq_CrouchIdle      = -1
     self.GekkoSeq_CrouchWalk      = -1
+    self._gekkoCrouchSeqSet       = -1   -- last seq WE set; avoids GetSequence() race
     -- Random crouch state
-    self._gekkoRandomCrouch       = false   -- true while random timer is active
-    self._gekkoRandomCrouchEndT   = 0       -- CurTime() when random crouch expires
+    self._gekkoRandomCrouch       = false
+    self._gekkoRandomCrouchEndT   = 0
     self._gekkoRandomCrouchNextT  = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
     print("[GeckoCrouch] Init() — state vars created")
 end
@@ -89,42 +90,35 @@ function ENT:GeckoCrouch_CacheSeqs()
 end
 
 -- ───────────────────────────────────────────────────────────
---  GeckoCrouch_TickRandom
---  Called at the top of GeckoCrouch_Update every tick.
---  Manages the random crouch timer independently of other triggers.
+--  TickRandom — manages the random crouch timer
 -- ───────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
 
-    -- If a random crouch is currently active, check if it has expired
     if ent._gekkoRandomCrouch then
         if now >= ent._gekkoRandomCrouchEndT then
             ent._gekkoRandomCrouch      = false
             ent._gekkoRandomCrouchEndT  = 0
-            -- Schedule the next roll
             ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
             print(string.format(
                 "[GeckoCrouch] Random crouch EXPIRED — next roll in %.1fs",
                 ent._gekkoRandomCrouchNextT - now
             ))
         end
-        return  -- still active OR just expired; either way no new roll this tick
+        return
     end
 
-    -- Time to roll?
     if now < ent._gekkoRandomCrouchNextT then return end
 
-    -- Roll the dice
     if math.random() < RAND_CHANCE then
         local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
-        ent._gekkoRandomCrouch    = true
+        ent._gekkoRandomCrouch     = true
         ent._gekkoRandomCrouchEndT = now + dur
         print(string.format(
             "[GeckoCrouch] Random crouch TRIGGERED — will hold for %.1fs",
             dur
         ))
     else
-        -- Failed roll — schedule next attempt
         ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
         print(string.format(
             "[GeckoCrouch] Random crouch roll FAILED — next attempt in %.1fs",
@@ -149,7 +143,8 @@ function ENT:GeckoCrouch_Update()
         if self._gekkoCrouching then
             self._gekkoCrouching          = false
             self._gekkoCrouchExitTime     = 0
-            self._gekkoRandomCrouch       = false   -- cancel random crouch on jump too
+            self._gekkoCrouchSeqSet       = -1
+            self._gekkoRandomCrouch       = false
             self._gekkoRandomCrouchEndT   = 0
             self._gekkoRandomCrouchNextT  = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
             self.VJ_CanMoveThink          = true
@@ -170,7 +165,7 @@ function ENT:GeckoCrouch_Update()
     -- ── Tick the random crouch scheduler ──────────────────────
     TickRandom(self)
 
-    -- ── Evaluate all triggers (any one is enough) ──────────────
+    -- ── Evaluate all triggers ─────────────────────────────────
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local ceilHit    = CeilingCheck(self)
     local randActive = self._gekkoRandomCrouch
@@ -204,6 +199,7 @@ function ENT:GeckoCrouch_Update()
             else
                 self._gekkoCrouching      = false
                 self._gekkoCrouchExitTime = 0
+                self._gekkoCrouchSeqSet   = -1
                 self.VJ_CanMoveThink      = true
                 self:SetCollisionBounds(
                     Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
@@ -247,8 +243,12 @@ function ENT:GeckoCrouch_Update()
         targetSeq = self.GekkoSeq_CrouchIdle
     end
 
-    if self:GetSequence() ~= targetSeq then
-        self:ResetSequence(targetSeq)
+    -- Compare against what WE last set, NOT self:GetSequence().
+    -- GetSequence() may reflect a VJ Base override that happened between ticks,
+    -- which would cause ResetSequence to fire every tick and restart the anim.
+    if self._gekkoCrouchSeqSet ~= targetSeq then
+        self._gekkoCrouchSeqSet = targetSeq
+        self:ResetSequence(targetSeq)   -- full reset only on actual sequence change
         self:SetCycle(0)
 
         if moving then
@@ -262,9 +262,13 @@ function ENT:GeckoCrouch_Update()
         self.Gekko_LastSeqIdx  = targetSeq
         self.Gekko_LastSeqName = moving and "c_walk" or "cidle"
         print(string.format(
-            "[GeckoCrouch] Sequence changed → %s (seq %d)  moving=%s",
+            "[GeckoCrouch] Sequence set → %s (seq %d)  moving=%s",
             self.Gekko_LastSeqName, targetSeq, tostring(moving)
         ))
+    else
+        -- Sequence already correct — re-enforce it every tick without resetting
+        -- the cycle, so VJ Base cannot silently swap it back.
+        self:SetSequence(targetSeq)
     end
 
     self:SetPoseParameter("move_x", 0)
