@@ -1,117 +1,89 @@
 -- ============================================================
---  crouch_system.lua  (DEBUG BUILD)
---  Visual trace beams are drawn every tick while this is loaded.
---  Green line = miss, Red line = hit.
---  Remove debugoverlay calls once ceiling detection is confirmed working.
+--  crouch_system.lua
+--  Gekko VJ NPC — Crouch mechanic
+--
+--  Triggers (any one is enough to crouch):
+--    1. VJ Base native crouch flag (VJ_IsBeingCrouched)        — immediate
+--    2. Standing-hull lookahead (TraceHull forward)            — debounced
+--       Projects the full standing collision box ahead of the NPC.
+--       If the standing-height hull hits geometry, the NPC cannot
+--       walk through upright → crouch. Immune to Z-offset issues.
+--    3. Random timed behaviour                                  — timer-based
+--
+--  Called from:
+--    ENT:Init()                 → self:GeckoCrouch_Init()
+--    ENT:GekkoUpdateAnimation() → self:GeckoCrouch_Update()
 -- ============================================================
 
+-- ─────────────────────────────────────────────────────────────
+--  Tuning constants
+-- ─────────────────────────────────────────────────────────────
 local CROUCH_EXIT_LOCKOUT = 0.35
 
--- Overhead trace parameters — tune these until raw=true fires
-local CEIL_UP_Z_START   = 40    -- start of upward trace above origin
-local CEIL_UP_Z_END     = 150   -- end of upward trace (increase if obstacle is high)
-local CEIL_FWD_DIST     = 120   -- how far forward the forward probe looks
-local CEIL_FWD_Z_LOW    = 40    -- forward probe low Z (sweep covers low obstacles)
-local CEIL_FWD_Z_HIGH   = 150   -- forward probe high Z
+-- How far ahead to project the standing hull (units)
+local HULL_LOOKAHEAD      = 80
 
 -- Ceiling debounce
-local CEIL_ON_DEBOUNCE  = 0.20
-local CEIL_OFF_DEBOUNCE = 0.40
+local CEIL_ON_DEBOUNCE    = 0.20
+local CEIL_OFF_DEBOUNCE   = 0.40
 
-local HITBOX_STAND_H  = 200
-local HITBOX_CROUCH_H = 130
-local HITBOX_HALF_W   = 64
+-- Hitbox heights
+local HITBOX_STAND_H   = 200
+local HITBOX_CROUCH_H  = 130
+local HITBOX_HALF_W    = 64
 
+-- Random crouch behaviour
 local RAND_CHECK_MIN  = 4
 local RAND_CHECK_MAX  = 12
 local RAND_CHANCE     = 0.30
 local RAND_DUR_MIN    = 3
 local RAND_DUR_MAX    = 10
 
--- ───────────────────────────────────────────────────────────
---  Raw overhead check — 3 traces with visual debug
--- ───────────────────────────────────────────────────────────
-local function RawCeilingCheck(ent)
+-- ─────────────────────────────────────────────────────────────
+--  Standing-hull lookahead trace
+--  Projects the full standing collision box HULL_LOOKAHEAD units
+--  forward. Returns true if the NPC cannot walk upright through
+--  the geometry ahead (i.e., needs to crouch).
+-- ─────────────────────────────────────────────────────────────
+local HULL_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
+local HULL_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+
+local function RawObstacleCheck(ent)
     local pos = ent:GetPos()
     local fwd = ent:GetForward()
     fwd.z = 0
     fwd:Normalize()
 
-    -- Trace A: straight up from mid-torso
-    local upStart = pos + Vector(0, 0, CEIL_UP_Z_START)
-    local upEnd   = pos + Vector(0, 0, CEIL_UP_Z_END)
-    local trUp    = util.TraceLine({
-        start  = upStart,
-        endpos = upEnd,
+    local offset = fwd * HULL_LOOKAHEAD
+    local tr = util.TraceHull({
+        start  = pos,
+        endpos = pos + offset,
+        mins   = HULL_MIN,
+        maxs   = HULL_MAX,
         filter = ent,
         mask   = MASK_SOLID,
     })
-    debugoverlay.Line(upStart, trUp.HitPos, 0.05,
-        trUp.Hit and Color(255,0,0) or Color(0,255,0), true)
 
-    if trUp.Hit then return true, "up" end
-
-    -- Trace B: forward probe at low head height
-    local fwdStartLow = pos + Vector(0, 0, CEIL_FWD_Z_LOW)
-    local fwdEndLow   = fwdStartLow + fwd * CEIL_FWD_DIST
-    local trFwdLow    = util.TraceLine({
-        start  = fwdStartLow,
-        endpos = fwdEndLow,
-        filter = ent,
-        mask   = MASK_SOLID,
-    })
-    debugoverlay.Line(fwdStartLow, trFwdLow.HitPos, 0.05,
-        trFwdLow.Hit and Color(255,128,0) or Color(0,200,255), true)
-
-    if trFwdLow.Hit then return true, "fwd_low" end
-
-    -- Trace C: forward probe at upper head height
-    local fwdStartHigh = pos + Vector(0, 0, CEIL_FWD_Z_HIGH)
-    local fwdEndHigh   = fwdStartHigh + fwd * CEIL_FWD_DIST
-    local trFwdHigh    = util.TraceLine({
-        start  = fwdStartHigh,
-        endpos = fwdEndHigh,
-        filter = ent,
-        mask   = MASK_SOLID,
-    })
-    debugoverlay.Line(fwdStartHigh, trFwdHigh.HitPos, 0.05,
-        trFwdHigh.Hit and Color(255,0,255) or Color(200,200,0), true)
-
-    if trFwdHigh.Hit then return true, "fwd_high" end
-
-    return false, "none"
+    return tr.Hit
 end
 
--- ───────────────────────────────────────────────────────────
---  Debounced ceiling check
--- ───────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+--  Debounced obstacle check
+-- ─────────────────────────────────────────────────────────────
 local function TickCeiling(ent)
     local now = CurTime()
-    local raw, src = RawCeilingCheck(ent)
+    local raw = RawObstacleCheck(ent)
     ent._gekkoCeilingHit = raw
-
-    -- Log exact trace geometry occasionally so we can verify Z heights
-    if not ent._ceilPosLogT or now > ent._ceilPosLogT then
-        local pos = ent:GetPos()
-        print(string.format(
-            "[GeckoCrouch] TracePos | origin=%.0f,%.0f,%.0f  upZ=%.0f..%.0f  fwdZ=%.0f..%.0f  raw=%s(%s)",
-            pos.x, pos.y, pos.z,
-            pos.z + CEIL_UP_Z_START, pos.z + CEIL_UP_Z_END,
-            pos.z + CEIL_FWD_Z_LOW,  pos.z + CEIL_FWD_Z_HIGH,
-            tostring(raw), src
-        ))
-        ent._ceilPosLogT = now + 3
-    end
 
     if raw then
         ent._gekkoCeilOffSince = nil
         if not ent._gekkoCeilOnSince then
             ent._gekkoCeilOnSince = now
-            print("[GeckoCrouch] Ceiling HIT (" .. src .. ") — debounce started")
+            print("[GeckoCrouch] Hull obstacle HIT — debounce started")
         elseif now - ent._gekkoCeilOnSince >= CEIL_ON_DEBOUNCE then
             if not ent._gekkoCeilDebounced then
                 ent._gekkoCeilDebounced = true
-                print(string.format("[GeckoCrouch] Ceiling CONFIRMED via '%s' (held %.2fs)", src, now - ent._gekkoCeilOnSince))
+                print(string.format("[GeckoCrouch] Hull obstacle CONFIRMED (held %.2fs)", now - ent._gekkoCeilOnSince))
             end
         end
     else
@@ -119,11 +91,11 @@ local function TickCeiling(ent)
         if ent._gekkoCeilDebounced then
             if not ent._gekkoCeilOffSince then
                 ent._gekkoCeilOffSince = now
-                print("[GeckoCrouch] Ceiling CLEAR — off-debounce started")
+                print("[GeckoCrouch] Hull obstacle CLEAR — off-debounce started")
             elseif now - ent._gekkoCeilOffSince >= CEIL_OFF_DEBOUNCE then
                 ent._gekkoCeilDebounced = false
                 ent._gekkoCeilOffSince  = nil
-                print("[GeckoCrouch] Ceiling trigger RELEASED")
+                print("[GeckoCrouch] Hull obstacle trigger RELEASED")
             end
         else
             ent._gekkoCeilOffSince = nil
@@ -133,7 +105,9 @@ local function TickCeiling(ent)
     return ent._gekkoCeilDebounced or false
 end
 
--- ───────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+--  GeckoCrouch_Init
+-- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
     self._gekkoCrouching          = false
     self._gekkoCrouchExitTime     = 0
@@ -150,7 +124,9 @@ function ENT:GeckoCrouch_Init()
     print("[GeckoCrouch] Init() — state vars created")
 end
 
--- ───────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+--  GeckoCrouch_CacheSeqs
+-- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_CacheSeqs()
     local cidle = self:LookupSequence("cidle")
     local cwalk = self:LookupSequence("c_walk")
@@ -162,7 +138,9 @@ function ENT:GeckoCrouch_CacheSeqs()
     ))
 end
 
--- ───────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+--  TickRandom
+-- ─────────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
     if ent._gekkoRandomCrouch then
@@ -186,9 +164,14 @@ local function TickRandom(ent)
     end
 end
 
--- ───────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+--  GeckoCrouch_Update
+--  Returns true  → crouch active, caller must return early
+--  Returns false → crouch inactive, caller runs normally
+-- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
 
+    -- ── Jump takes absolute priority ──────────────────────────────
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
@@ -218,16 +201,18 @@ function ENT:GeckoCrouch_Update()
         return false
     end
 
+    -- ── Tick sub-systems ──────────────────────────────────────────
     TickRandom(self)
     local ceilHit = TickCeiling(self)
 
+    -- ── Evaluate triggers ─────────────────────────────────────────
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local randActive = self._gekkoRandomCrouch
     local wantCrouch = vjCrouch or ceilHit or randActive
 
     if not self._crouchDiagT or CurTime() > self._crouchDiagT then
         print(string.format(
-            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  ceil=%s(raw=%s)  rand=%s  randEndsIn=%.1f",
+            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  hull=%s(raw=%s)  rand=%s  randEndsIn=%.1f",
             tostring(self._gekkoCrouching), tostring(wantCrouch),
             tostring(vjCrouch), tostring(ceilHit), tostring(self._gekkoCeilingHit),
             tostring(randActive),
@@ -236,6 +221,7 @@ function ENT:GeckoCrouch_Update()
         self._crouchDiagT = CurTime() + 2
     end
 
+    -- ── Exit with lockout ─────────────────────────────────────────
     if not wantCrouch then
         if self._gekkoCrouching then
             if self._gekkoCrouchExitTime == 0 then
@@ -263,6 +249,7 @@ function ENT:GeckoCrouch_Update()
         self._gekkoCrouchExitTime = 0
     end
 
+    -- ── Enter crouch ──────────────────────────────────────────────
     if not self._gekkoCrouching then
         self._gekkoCrouching = true
         self:SetCollisionBounds(
@@ -274,6 +261,7 @@ function ENT:GeckoCrouch_Update()
 
     if self.GekkoSeq_CrouchIdle == -1 then return false end
 
+    -- ── Pick cidle or c_walk ──────────────────────────────────────
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
     local moving = speed2 > (16 * 16)
