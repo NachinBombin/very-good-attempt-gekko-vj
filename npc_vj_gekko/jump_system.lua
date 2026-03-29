@@ -102,10 +102,10 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
---  GekkoJump_ForceSequence
+--  ForceSeq
 --  Single authoritative place to slam a jump-phase sequence.
---  Locks out GekkoUpdateAnimation AND MaintainActivity so
---  nothing underneath can clobber the anim this tick.
+--  Locks out GekkoUpdateAnimation, MaintainActivity, AND VJ Base's
+--  own VJ_AnimationThink so nothing underneath can clobber the anim.
 -- ============================================================
 local function ForceSeq(ent, seq, rate)
     ent:ResetSequence(seq)
@@ -113,8 +113,11 @@ local function ForceSeq(ent, seq, rate)
     ent:SetPlaybackRate(rate)
     ent.Gekko_LastSeqIdx  = seq
     ent.Gekko_LastSeqName = "jump_phase"
-    -- Suppress VJ MaintainActivity for this tick
+    -- Suppress VJ MaintainActivity and VJ_AnimationThink for this window
     ent._gekkoSuppressActivity = CurTime() + 0.5
+    -- Block VJ Base's movement-think flags so it stops pushing loco anims
+    ent.VJ_IsMoving      = false
+    ent.VJ_CanMoveThink  = false
 end
 
 -- ============================================================
@@ -128,11 +131,18 @@ function ENT:GekkoJump_Execute()
     fwd.z = 0
     fwd:Normalize()
 
+    -- Lock the yaw so the NPC faces the enemy and stops steering mid-air
+    local launchYaw = fwd:Angle().y
+    self:SetAngles(Angle(0, launchYaw, 0))
+
     local vel = self:GetVelocity()
     vel.z     = JUMP_FORCE
     vel       = vel + fwd * JUMP_FORWARD_FORCE
     self:SetVelocity(vel)
     self:SetMoveType(MOVETYPE_FLYGRAVITY)
+
+    -- Kill the AI navigation schedule so the NPC brain stops trying to steer
+    self:SetSchedule(SCHED_NONE)
 
     self:SetGekkoJumpState(JUMP_RISING)
     self._jumpCooldown    = CurTime() + JUMP_COOLDOWN
@@ -152,13 +162,24 @@ function ENT:GekkoJump_Think()
     local state    = self:GetGekkoJumpState()
     if state == JUMP_NONE then return end
 
-    -- Keep suppression alive every think tick while airborne
-    if state == JUMP_RISING or state == JUMP_FALLING then
-        self._gekkoSuppressActivity = CurTime() + 0.5
-    end
-
     local vel      = self:GetVelocity()
     local grounded = GekkoIsGrounded(self)
+
+    -- --------------------------------------------------------
+    --  RISING / FALLING: keep suppression alive and freeze
+    --  physics-induced pitch/roll so the Gekko doesn't tumble.
+    -- --------------------------------------------------------
+    if state == JUMP_RISING or state == JUMP_FALLING then
+        self._gekkoSuppressActivity = CurTime() + 0.5
+        self.VJ_IsMoving     = false
+        self.VJ_CanMoveThink = false
+
+        -- Clamp pitch and roll — only allow yaw (horizontal facing)
+        local a = self:GetAngles()
+        if math.abs(a.p) > 0.5 or math.abs(a.r) > 0.5 then
+            self:SetAngles(Angle(0, a.y, 0))
+        end
+    end
 
     if not self._jumpThinkPrint or CurTime() > self._jumpThinkPrint then
         print(string.format(
@@ -168,6 +189,9 @@ function ENT:GekkoJump_Think()
         self._jumpThinkPrint = CurTime() + 0.2
     end
 
+    -- --------------------------------------------------------
+    --  RISING → FALLING
+    -- --------------------------------------------------------
     if state == JUMP_RISING and vel.z < 0 then
         self:SetGekkoJumpState(JUMP_FALLING)
         self:GekkoJump_StopJetFX()
@@ -178,14 +202,40 @@ function ENT:GekkoJump_Think()
         return
     end
 
+    -- --------------------------------------------------------
+    --  FALLING: keep the fall anim alive.
+    --  The 'fall' sequence is NOT a loop — when it finishes the
+    --  engine would snap to the default pose (ragdoll/walk).
+    --  Re-enforce the sequence every tick and clamp the cycle
+    --  near the held mid-fall pose so it never actually ends.
+    -- --------------------------------------------------------
+    if state == JUMP_FALLING then
+        if self._seqFall ~= -1 then
+            if self:GetSequence() ~= self._seqFall then
+                self:ResetSequence(self._seqFall)
+                self:SetPlaybackRate(0.8)
+            end
+            -- Clamp cycle so the anim freezes in the held fall pose
+            if self:GetCycle() > 0.90 then
+                self:SetCycle(0.5)
+            end
+        end
+    end
+
+    -- --------------------------------------------------------
+    --  FALLING → LAND
+    -- --------------------------------------------------------
     if state == JUMP_FALLING and grounded then
         self:SetGekkoJumpState(JUMP_LAND)
         self:SetGekkoJumpTimer(CurTime() + JUMP_LAND_LOCKOUT)
         self:SetMoveType(MOVETYPE_STEP)
         self:SetVelocity(Vector(0, 0, 0))
+        -- Snap angles clean on touchdown
+        local a = self:GetAngles()
+        self:SetAngles(Angle(0, a.y, 0))
         print("[GekkoJump] → LAND  seqLand=" .. self._seqLand)
         if self._seqLand ~= -1 then
-            -- Play land anim at natural speed (1.0).
+            -- Play land anim at natural speed.
             -- Lockout duration should match the anim length — tune JUMP_LAND_LOCKOUT if needed.
             ForceSeq(self, self._seqLand, 1.0)
         end
@@ -193,12 +243,29 @@ function ENT:GekkoJump_Think()
         return
     end
 
+    -- --------------------------------------------------------
+    --  LAND → NONE
+    --  Add a short grace window after lockout expires so that
+    --  VJ Base and GekkoUpdateAnimation agree on the first idle
+    --  frame instead of racing to set different sequences.
+    -- --------------------------------------------------------
     if state == JUMP_LAND and CurTime() > self:GetGekkoJumpTimer() then
         self:SetGekkoJumpState(JUMP_NONE)
         self:SetGekkoJumpTimer(0)
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
-        self._gekkoSuppressActivity = 0
+        -- Grace period: keep VJ Base suppressed a tiny bit longer so
+        -- GekkoUpdateAnimation wins the first idle-frame race.
+        self._gekkoSuppressActivity = CurTime() + 0.15
+        -- Pre-seed idle so VJ Base inherits the correct sequence
+        if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
+            self:ResetSequence(self.GekkoSeq_Idle)
+            self:SetPlaybackRate(1.0)
+            self.Gekko_LastSeqIdx  = self.GekkoSeq_Idle
+            self.Gekko_LastSeqName = "idle"
+        end
+        -- Re-allow VJ movement think
+        self.VJ_CanMoveThink = true
         print("[GekkoJump] → NONE (lockout done)")
     end
 end

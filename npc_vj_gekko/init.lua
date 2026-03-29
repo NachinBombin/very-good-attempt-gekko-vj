@@ -93,6 +93,19 @@ function ENT:MaintainActivity()
 end
 
 -- ============================================================
+--  VJ_AnimationThink override
+--  VJ Base's secondary per-tick animation hook. Fires independently
+--  of MaintainActivity and can clobber jump sequences via pose
+--  parameters and SetPlaybackRate. Block it during suppression.
+-- ============================================================
+function ENT:VJ_AnimationThink()
+    if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
+        return  -- jump system owns the sequence right now
+    end
+    self.BaseClass.VJ_AnimationThink(self)
+end
+
+-- ============================================================
 --  TranslateActivity
 --  Secondary guard: if VJ somehow gets past MaintainActivity,
 --  redirect locomotion ACTs to the correct jump sequence.
