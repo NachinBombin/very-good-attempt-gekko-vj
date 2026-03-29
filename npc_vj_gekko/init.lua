@@ -1,6 +1,5 @@
 -- ============================================================
 --  npc_vj_gekko / init.lua
---  DIAGNOSTIC BUILD — deferred activate fix applied
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -80,7 +79,24 @@ function ENT:SetAnimationTranslations(wepHoldType)
     self.GekkoSeq_Idle = idleSeq
 end
 
+-- ============================================================
+--  TranslateActivity
+--  Jump states take priority — this is what the engine/client
+--  uses to pick the rendered sequence every frame.
+-- ============================================================
 function ENT:TranslateActivity(act)
+    -- Jump states override everything
+    local jumpState = self:GetGekkoJumpState()
+    if jumpState == self.JUMP_RISING  and self._seqJump and self._seqJump ~= -1 then
+        return self._seqJump
+    end
+    if jumpState == self.JUMP_FALLING and self._seqFall and self._seqFall ~= -1 then
+        return self._seqFall
+    end
+    if jumpState == self.JUMP_LAND    and self._seqLand and self._seqLand ~= -1 then
+        return self._seqLand
+    end
+
     if act == ACT_WALK or act == ACT_WALK_AIM then
         return self.GekkoSeq_Walk or act
     elseif act == ACT_RUN or act == ACT_RUN_AIM then
@@ -93,12 +109,14 @@ end
 
 -- ============================================================
 --  Core animation update
+--  Called every OnThink tick.  Bails completely during jumps.
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
     local jumpState = self:GetGekkoJumpState()
 
+    -- Full bail during any jump phase — do NOT touch ResetSequence
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
        jumpState == self.JUMP_LAND    or
@@ -196,21 +214,14 @@ function ENT:Init()
     self._gekkoLastPos       = self:GetPos()
     self._gekkoLastTime      = CurTime() - 0.1
 
-    -- Jump state-only init: safe here before model loads
     self:GekkoJump_Init()
 
-    -- ── DEFERRED ACTIVATE ────────────────────────────────────
-    -- VJ base does not call ENT:Activate() on this version.
-    -- timer.Simple(0) fires on the very next tick, after VJ has
-    -- finished its own init chain and the model is fully live.
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
 
-        -- Jump system: sequence resolve + attachment scan
         selfRef:GekkoJump_Activate()
 
-        -- Re-resolve walk/run/idle now that model is loaded
         local walkSeq = selfRef:LookupSequence("walk")
         local runSeq  = selfRef:LookupSequence("run")
         local idleSeq = selfRef:LookupSequence("idle")
@@ -218,12 +229,10 @@ function ENT:Init()
         selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
-        -- Re-resolve bones
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
         selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
         selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
 
-        -- Attachment sanity check
         local mgAtt   = selfRef:GetAttachment(ATT_MACHINEGUN)
         local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
@@ -242,17 +251,13 @@ function ENT:Init()
 end
 
 -- ============================================================
---  Activate — kept for forward compatibility with future VJ
---  versions that may call it. Harmless if never invoked.
+--  Activate
 -- ============================================================
 function ENT:Activate()
     local base = self.BaseClass
     if base and base.Activate and base.Activate ~= ENT.Activate then
         base.Activate(self)
     end
-    -- Intentionally empty: deferred timer in Init() handles all setup.
-    -- If this fires (future VJ version), it is safe to call GekkoJump_Activate
-    -- again because all its operations are idempotent.
     print("[GekkoNPC] Activate() called by engine (future VJ path)")
 end
 
@@ -269,18 +274,14 @@ end
 --  Think
 -- ============================================================
 function ENT:OnThink()
-    -- 1. Jump state machine
     self:GekkoJump_Think()
 
-    -- 2. Jump AI decision
     if self:GekkoJump_ShouldJump() then
         self:GekkoJump_Execute()
     end
 
-    -- 3. Walk/run/idle animation
     self:GekkoUpdateAnimation()
 
-    -- 4. Throttled 1Hz debug
     if true and CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
         local dist, src
@@ -322,7 +323,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     local mode   = self._weaponMode
     self._weaponMode = (mode == WMODE_MG) and WMODE_MISSILE or WMODE_MG
 
-    -- ── Machinegun burst ─────────────────────────────────────
     if mode == WMODE_MG then
         if self._mgBurstActive then return true end
         self._mgBurstActive = true
@@ -382,7 +382,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         return true
     end
 
-    -- ── TOW missile ──────────────────────────────────────────
     self._missileCount = (self._missileCount or 0) + 1
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local misAtt = self:GetAttachment(missileAttIdx)

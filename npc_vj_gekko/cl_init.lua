@@ -10,7 +10,15 @@ end
 
 -- ============================================================
 --  STOMP LEG DRIVER
+--  Only runs when the NW jump state says the gekko is on the
+--  ground (JUMP_NONE or JUMP_LAND).  During RISING / FALLING
+--  the model's own jump animation drives the legs.
 -- ============================================================
+local JUMP_NONE    = 0
+local JUMP_RISING  = 1
+local JUMP_FALLING = 2
+local JUMP_LAND    = 3
+
 local function GekkoStompLegs(ent)
     local t      = CurTime()
     local freq   = 14
@@ -127,19 +135,11 @@ end
 
 -- ============================================================
 --  HEAD DRIVER  (b_spine4)  —  YAW + PITCH
---
---  Confirmed axis mapping from original mech UpdateAimAngle:
---    Angle( -ang.y + bodyYaw,  0,  ang.p )
---    => Angle.p = yaw delta  ( -relYaw )
---    => Angle.r = world pitch ( toEnemy.p )
---
---  Both channels smoothed at HEAD_SPEED deg/sec.
---  Yaw limit: +-50 deg.  Pitch limit: -30 (up) / +20 (down).
 -- ============================================================
 local HEAD_LIMIT       =  50
 local HEAD_PITCH_UP    = -60
 local HEAD_PITCH_DOWN  =  60
-local HEAD_SPEED       =  30  -- deg/sec, same for both axes
+local HEAD_SPEED       =  30
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -168,7 +168,6 @@ local function GekkoUpdateHead(ent, dt)
     local pitchDiff  = targetPitch - ent._headPitch
     ent._headPitch   = math.Clamp(ent._headPitch + math.Clamp(pitchDiff,                -maxStep, maxStep),  HEAD_PITCH_UP,   HEAD_PITCH_DOWN)
 
-    -- Angle.p = -yaw,  Angle.r = pitch  (original mech convention)
     ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, ent._headPitch), false)
 end
 
@@ -190,16 +189,23 @@ function ENT:Draw()
 
     GekkoUpdateHead(self, dt)
 
-    if IsValid(enemy) then
-        GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
-    else
-        GekkoResetArms(self, dt)
+    -- Only aim arms when not airborne — jump anim handles the pose
+    local jumpState = self:GetNWInt("GekkoJumpState", JUMP_NONE)
+    local airborne  = (jumpState == JUMP_RISING or jumpState == JUMP_FALLING)
+
+    if not airborne then
+        if IsValid(enemy) then
+            GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
+        else
+            GekkoResetArms(self, dt)
+        end
     end
 
     GekkoSyncFootsteps(self)
 
+    -- Stomp legs only when grounded and moving
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
-    if t < stompEnd then
+    if t < stompEnd and not airborne then
         GekkoStompLegs(self)
     end
 

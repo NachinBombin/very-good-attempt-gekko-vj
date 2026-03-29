@@ -48,10 +48,6 @@ function ENT:GekkoJump_Init()
 end
 
 -- ============================================================
---  GekkoJump_Activate
---  Resolves sequences — safe to call at tick 0.
---  Attachment scan is deferred to GekkoJump_ScanAttachments.
--- ============================================================
 function ENT:GekkoJump_Activate()
     self._seqJump = self:LookupSequence("jump")
     self._seqFall = self:LookupSequence("fall")
@@ -67,10 +63,6 @@ function ENT:GekkoJump_Activate()
     if self._seqLand == -1 then print("[GekkoJump] WARNING: 'land' not found") end
 end
 
--- ============================================================
---  GekkoJump_ScanAttachments
---  Called from a separate deferred timer (0.1s) so the model
---  attachment table is guaranteed populated.
 -- ============================================================
 function ENT:GekkoJump_ScanAttachments()
     self._jetAttachments = {}
@@ -135,6 +127,9 @@ function ENT:GekkoJump_Execute()
     if self._seqJump ~= -1 then
         self:ResetSequence(self._seqJump)
         self:SetPlaybackRate(1.0)
+        -- Stamp so GekkoUpdateAnimation won't clobber us with a competing reset
+        self.Gekko_LastSeqIdx  = self._seqJump
+        self.Gekko_LastSeqName = "jump"
     end
 
     self:GekkoJump_StartJetFX()
@@ -163,6 +158,9 @@ function ENT:GekkoJump_Think()
         if self._seqFall ~= -1 then
             self:ResetSequence(self._seqFall)
             self:SetPlaybackRate(1.0)
+            -- Stamp so GekkoUpdateAnimation won't clobber
+            self.Gekko_LastSeqIdx  = self._seqFall
+            self.Gekko_LastSeqName = "fall"
         end
         return
     end
@@ -176,6 +174,9 @@ function ENT:GekkoJump_Think()
         if self._seqLand ~= -1 then
             self:ResetSequence(self._seqLand)
             self:SetPlaybackRate(1.2)
+            -- Stamp so GekkoUpdateAnimation won't clobber
+            self.Gekko_LastSeqIdx  = self._seqLand
+            self.Gekko_LastSeqName = "land"
         end
         self:GekkoJump_LandImpact()
         return
@@ -184,6 +185,9 @@ function ENT:GekkoJump_Think()
     if state == JUMP_LAND and CurTime() > self:GetGekkoJumpTimer() then
         self:SetGekkoJumpState(JUMP_NONE)
         self:SetGekkoJumpTimer(0)
+        -- Clear stamp so normal walk/idle logic resumes freely
+        self.Gekko_LastSeqIdx  = -1
+        self.Gekko_LastSeqName = ""
         print("[GekkoJump] → NONE (lockout done)")
     end
 end
