@@ -6,6 +6,12 @@
 --    cidle  (seq 3) — crouched idle
 --    c_walk (seq 5) — crouched walk
 --
+--  Triggers (any one is enough to crouch):
+--    1. VJ Base native crouch flag (VJ_IsBeingCrouched)
+--    2. Solid ceiling within CROUCH_CEIL_HEIGHT units
+--    3. Random timed behaviour — fires every few seconds by chance,
+--       holds crouch for 3–10 seconds, then releases
+--
 --  Called from:
 --    ENT:Init()                 → self:GeckoCrouch_Init()
 --    ENT:GekkoUpdateAnimation() → self:GeckoCrouch_Update()
@@ -17,12 +23,19 @@
 --  Tuning constants
 -- ───────────────────────────────────────────────────────────
 local CROUCH_CEIL_HEIGHT  = 52    -- units above origin to trace for low ceiling
-local CROUCH_EXIT_LOCKOUT = 0.35  -- seconds to hold crouch after trigger drops
+local CROUCH_EXIT_LOCKOUT = 0.35  -- seconds to hold crouch after all triggers drop
 
 -- Hitbox heights
 local HITBOX_STAND_H  = 200   -- must match Init() SetCollisionBounds
 local HITBOX_CROUCH_H = 130
 local HITBOX_HALF_W   = 64
+
+-- Random crouch behaviour
+local RAND_CHECK_MIN  = 4     -- minimum seconds between roll attempts
+local RAND_CHECK_MAX  = 12    -- maximum seconds between roll attempts
+local RAND_CHANCE     = 0.30  -- 30 % probability each attempt fires a crouch
+local RAND_DUR_MIN    = 3     -- minimum crouch duration (seconds)
+local RAND_DUR_MAX    = 10    -- maximum crouch duration (seconds)
 
 -- ───────────────────────────────────────────────────────────
 --  Ceiling trace
@@ -35,7 +48,7 @@ local function CeilingCheck(ent)
         filter = ent,
         mask   = MASK_SOLID_BRUSHONLY,
     })
-    ent._gekkoCeilingHit = tr.Hit  -- expose to debug line in init.lua
+    ent._gekkoCeilingHit = tr.Hit
     return tr.Hit
 end
 
@@ -43,11 +56,15 @@ end
 --  GeckoCrouch_Init
 -- ───────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
-    self._gekkoCrouching      = false
-    self._gekkoCrouchExitTime = 0
-    self._gekkoCeilingHit     = false
-    self.GekkoSeq_CrouchIdle  = -1
-    self.GekkoSeq_CrouchWalk  = -1
+    self._gekkoCrouching          = false
+    self._gekkoCrouchExitTime     = 0
+    self._gekkoCeilingHit         = false
+    self.GekkoSeq_CrouchIdle      = -1
+    self.GekkoSeq_CrouchWalk      = -1
+    -- Random crouch state
+    self._gekkoRandomCrouch       = false   -- true while random timer is active
+    self._gekkoRandomCrouchEndT   = 0       -- CurTime() when random crouch expires
+    self._gekkoRandomCrouchNextT  = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
     print("[GeckoCrouch] Init() — state vars created")
 end
 
@@ -72,6 +89,51 @@ function ENT:GeckoCrouch_CacheSeqs()
 end
 
 -- ───────────────────────────────────────────────────────────
+--  GeckoCrouch_TickRandom
+--  Called at the top of GeckoCrouch_Update every tick.
+--  Manages the random crouch timer independently of other triggers.
+-- ───────────────────────────────────────────────────────────
+local function TickRandom(ent)
+    local now = CurTime()
+
+    -- If a random crouch is currently active, check if it has expired
+    if ent._gekkoRandomCrouch then
+        if now >= ent._gekkoRandomCrouchEndT then
+            ent._gekkoRandomCrouch      = false
+            ent._gekkoRandomCrouchEndT  = 0
+            -- Schedule the next roll
+            ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+            print(string.format(
+                "[GeckoCrouch] Random crouch EXPIRED — next roll in %.1fs",
+                ent._gekkoRandomCrouchNextT - now
+            ))
+        end
+        return  -- still active OR just expired; either way no new roll this tick
+    end
+
+    -- Time to roll?
+    if now < ent._gekkoRandomCrouchNextT then return end
+
+    -- Roll the dice
+    if math.random() < RAND_CHANCE then
+        local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
+        ent._gekkoRandomCrouch    = true
+        ent._gekkoRandomCrouchEndT = now + dur
+        print(string.format(
+            "[GeckoCrouch] Random crouch TRIGGERED — will hold for %.1fs",
+            dur
+        ))
+    else
+        -- Failed roll — schedule next attempt
+        ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+        print(string.format(
+            "[GeckoCrouch] Random crouch roll FAILED — next attempt in %.1fs",
+            ent._gekkoRandomCrouchNextT - now
+        ))
+    end
+end
+
+-- ───────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
 --  Returns true  → crouch active, caller must return early
 --  Returns false → crouch inactive, caller runs normally
@@ -85,10 +147,12 @@ function ENT:GeckoCrouch_Update()
        jumpState == self.JUMP_LAND    or
        (self._gekkoJustJumped and CurTime() < self._gekkoJustJumped) then
         if self._gekkoCrouching then
-            self._gekkoCrouching      = false
-            self._gekkoCrouchExitTime = 0
-            self.VJ_CanMoveThink      = true
-            -- Restore standing hitbox when jump interrupts crouch
+            self._gekkoCrouching          = false
+            self._gekkoCrouchExitTime     = 0
+            self._gekkoRandomCrouch       = false   -- cancel random crouch on jump too
+            self._gekkoRandomCrouchEndT   = 0
+            self._gekkoRandomCrouchNextT  = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+            self.VJ_CanMoveThink          = true
             self:SetCollisionBounds(
                 Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
                 Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
@@ -103,19 +167,25 @@ function ENT:GeckoCrouch_Update()
         return false
     end
 
-    -- ── Evaluate triggers ────────────────────────────────────
-    local vjCrouch  = (self.VJ_IsBeingCrouched == true)
-    local ceilHit   = CeilingCheck(self)
-    local wantCrouch = vjCrouch or ceilHit
+    -- ── Tick the random crouch scheduler ──────────────────────
+    TickRandom(self)
 
-    -- Throttled diagnostic so we aren't spammed every tick
+    -- ── Evaluate all triggers (any one is enough) ──────────────
+    local vjCrouch   = (self.VJ_IsBeingCrouched == true)
+    local ceilHit    = CeilingCheck(self)
+    local randActive = self._gekkoRandomCrouch
+    local wantCrouch = vjCrouch or ceilHit or randActive
+
+    -- Throttled diagnostic
     if not self._crouchDiagT or CurTime() > self._crouchDiagT then
         print(string.format(
-            "[GeckoCrouch] Update | crouching=%s  wantCrouch=%s  VJ_IsBeingCrouched=%s  ceilHit=%s  cidle=%d  c_walk=%d",
+            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  ceil=%s  rand=%s  randEndsIn=%.1f  cidle=%d  c_walk=%d",
             tostring(self._gekkoCrouching),
             tostring(wantCrouch),
             tostring(vjCrouch),
             tostring(ceilHit),
+            tostring(randActive),
+            self._gekkoRandomCrouch and (self._gekkoRandomCrouchEndT - CurTime()) or 0,
             self.GekkoSeq_CrouchIdle or -1,
             self.GekkoSeq_CrouchWalk or -1
         ))
@@ -127,12 +197,11 @@ function ENT:GeckoCrouch_Update()
         if self._gekkoCrouching then
             if self._gekkoCrouchExitTime == 0 then
                 self._gekkoCrouchExitTime = CurTime() + CROUCH_EXIT_LOCKOUT
-                print("[GeckoCrouch] Trigger dropped — starting exit lockout")
+                print("[GeckoCrouch] All triggers dropped — starting exit lockout")
             end
             if CurTime() < self._gekkoCrouchExitTime then
-                wantCrouch = true  -- still inside lockout
+                wantCrouch = true
             else
-                -- Stand up
                 self._gekkoCrouching      = false
                 self._gekkoCrouchExitTime = 0
                 self.VJ_CanMoveThink      = true
@@ -140,7 +209,7 @@ function ENT:GeckoCrouch_Update()
                     Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
                     Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
                 )
-                print("[GeckoCrouch] → Standing | hitbox restored to h=" .. HITBOX_STAND_H)
+                print("[GeckoCrouch] → Standing | hitbox restored h=" .. HITBOX_STAND_H)
                 return false
             end
         else
@@ -157,7 +226,7 @@ function ENT:GeckoCrouch_Update()
             Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
             Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
         )
-        print("[GeckoCrouch] → Crouching | hitbox set to h=" .. HITBOX_CROUCH_H)
+        print("[GeckoCrouch] → Crouching | hitbox h=" .. HITBOX_CROUCH_H)
     end
 
     -- ── Sequences not yet cached ──────────────────────────────
