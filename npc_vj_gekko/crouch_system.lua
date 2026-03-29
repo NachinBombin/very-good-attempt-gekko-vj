@@ -8,9 +8,11 @@
 --
 --  Triggers (any one is enough to crouch):
 --    1. VJ Base native crouch flag (VJ_IsBeingCrouched)  — immediate
---    2. Solid ceiling — debounced: must be present for CEIL_ON_DEBOUNCE
---       seconds before activating, must be absent for CEIL_OFF_DEBOUNCE
---       seconds before releasing (prevents flicker on obstacles)
+--    2. Overhead check (2 traces, MASK_SOLID) — debounced:
+--         a) straight-up from torso to detect geometry directly above
+--         b) forward probe at torso height to detect incoming overhangs
+--       Must be present for CEIL_ON_DEBOUNCE seconds before activating;
+--       must be absent for CEIL_OFF_DEBOUNCE seconds before releasing.
 --    3. Random timed behaviour — fires every few seconds by chance,
 --       holds crouch for 3–10 seconds, then releases
 --
@@ -24,12 +26,17 @@
 -- ───────────────────────────────────────────────────────────
 --  Tuning constants
 -- ───────────────────────────────────────────────────────────
-local CROUCH_CEIL_HEIGHT  = 52    -- units above origin to trace for low ceiling
-local CROUCH_EXIT_LOCKOUT = 0.35  -- seconds to hold crouch after ALL triggers drop
+local CROUCH_EXIT_LOCKOUT = 0.35
 
--- Ceiling debounce: prevents flicker when geometry changes tick-to-tick
-local CEIL_ON_DEBOUNCE    = 0.30  -- ceil must stay TRUE  this long before crouch fires
-local CEIL_OFF_DEBOUNCE   = 0.50  -- ceil must stay FALSE this long before trigger clears
+-- Overhead trace parameters
+local CEIL_UP_Z_START   = 50    -- start upward trace this many units above origin
+local CEIL_UP_Z_END     = 72    -- end of upward trace (standing clearance needed)
+local CEIL_FWD_DIST     = 100   -- how far ahead the forward probe looks
+local CEIL_FWD_Z        = 90    -- Z of forward probe (torso/head height)
+
+-- Ceiling debounce
+local CEIL_ON_DEBOUNCE  = 0.25
+local CEIL_OFF_DEBOUNCE = 0.50
 
 -- Hitbox heights
 local HITBOX_STAND_H  = 200
@@ -44,47 +51,61 @@ local RAND_DUR_MIN    = 3
 local RAND_DUR_MAX    = 10
 
 -- ───────────────────────────────────────────────────────────
---  Raw ceiling trace (returns instant bool)
+--  Raw overhead check — two traces, hits props + brushes
 -- ───────────────────────────────────────────────────────────
 local function RawCeilingCheck(ent)
     local pos = ent:GetPos()
-    local tr  = util.TraceLine({
-        start  = pos + Vector(0, 0, 4),
-        endpos = pos + Vector(0, 0, CROUCH_CEIL_HEIGHT),
+
+    -- Trace A: straight up from torso level
+    local trUp = util.TraceLine({
+        start  = pos + Vector(0, 0, CEIL_UP_Z_START),
+        endpos = pos + Vector(0, 0, CEIL_UP_Z_END),
         filter = ent,
-        mask   = MASK_SOLID_BRUSHONLY,
+        mask   = MASK_SOLID,
     })
-    return tr.Hit
+    if trUp.Hit then return true, "up" end
+
+    -- Trace B: forward probe at head height to anticipate incoming overhang
+    local fwd = ent:GetForward()
+    fwd.z = 0
+    fwd:Normalize()
+    local fwdOrigin = pos + Vector(0, 0, CEIL_FWD_Z)
+    local trFwd = util.TraceLine({
+        start  = fwdOrigin,
+        endpos = fwdOrigin + fwd * CEIL_FWD_DIST,
+        filter = ent,
+        mask   = MASK_SOLID,
+    })
+    if trFwd.Hit then return true, "fwd" end
+
+    return false, "none"
 end
 
 -- ───────────────────────────────────────────────────────────
 --  Debounced ceiling check
---  Updates _gekkoCeilDebounced (the stable bool used as trigger)
 -- ───────────────────────────────────────────────────────────
 local function TickCeiling(ent)
     local now = CurTime()
-    local raw = RawCeilingCheck(ent)
-    ent._gekkoCeilingHit = raw   -- expose raw value for debug line
+    local raw, src = RawCeilingCheck(ent)
+    ent._gekkoCeilingHit = raw
 
     if raw then
-        -- Raw is high — reset the "off" timer, advance the "on" timer
         ent._gekkoCeilOffSince = nil
         if not ent._gekkoCeilOnSince then
             ent._gekkoCeilOnSince = now
-            print("[GeckoCrouch] Ceiling trace HIT — debounce started")
+            print("[GeckoCrouch] Ceiling HIT (" .. src .. ") — debounce started")
         elseif now - ent._gekkoCeilOnSince >= CEIL_ON_DEBOUNCE then
             if not ent._gekkoCeilDebounced then
                 ent._gekkoCeilDebounced = true
-                print("[GeckoCrouch] Ceiling trigger CONFIRMED (held " ..  string.format("%.2f", now - ent._gekkoCeilOnSince) .. "s)")
+                print(string.format("[GeckoCrouch] Ceiling CONFIRMED via '%s' (held %.2fs)", src, now - ent._gekkoCeilOnSince))
             end
         end
     else
-        -- Raw is low — reset the "on" timer, advance the "off" timer
         ent._gekkoCeilOnSince = nil
         if ent._gekkoCeilDebounced then
             if not ent._gekkoCeilOffSince then
                 ent._gekkoCeilOffSince = now
-                print("[GeckoCrouch] Ceiling trace CLEAR — off-debounce started")
+                print("[GeckoCrouch] Ceiling CLEAR — off-debounce started")
             elseif now - ent._gekkoCeilOffSince >= CEIL_OFF_DEBOUNCE then
                 ent._gekkoCeilDebounced = false
                 ent._gekkoCeilOffSince  = nil
@@ -105,13 +126,12 @@ function ENT:GeckoCrouch_Init()
     self._gekkoCrouching          = false
     self._gekkoCrouchExitTime     = 0
     self._gekkoCeilingHit         = false
-    self._gekkoCeilDebounced      = false   -- stable debounced ceiling bool
-    self._gekkoCeilOnSince        = nil     -- when raw went high
-    self._gekkoCeilOffSince       = nil     -- when raw went low after debounce was active
+    self._gekkoCeilDebounced      = false
+    self._gekkoCeilOnSince        = nil
+    self._gekkoCeilOffSince       = nil
     self.GekkoSeq_CrouchIdle      = -1
     self.GekkoSeq_CrouchWalk      = -1
     self._gekkoCrouchSeqSet       = -1
-    -- Random crouch state
     self._gekkoRandomCrouch       = false
     self._gekkoRandomCrouchEndT   = 0
     self._gekkoRandomCrouchNextT  = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -139,47 +159,33 @@ function ENT:GeckoCrouch_CacheSeqs()
 end
 
 -- ───────────────────────────────────────────────────────────
---  TickRandom — manages the random crouch timer
+--  TickRandom
 -- ───────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
-
     if ent._gekkoRandomCrouch then
         if now >= ent._gekkoRandomCrouchEndT then
             ent._gekkoRandomCrouch      = false
             ent._gekkoRandomCrouchEndT  = 0
             ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-            print(string.format(
-                "[GeckoCrouch] Random crouch EXPIRED — next roll in %.1fs",
-                ent._gekkoRandomCrouchNextT - now
-            ))
+            print(string.format("[GeckoCrouch] Random crouch EXPIRED — next roll in %.1fs", ent._gekkoRandomCrouchNextT - now))
         end
         return
     end
-
     if now < ent._gekkoRandomCrouchNextT then return end
-
     if math.random() < RAND_CHANCE then
         local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
         ent._gekkoRandomCrouch     = true
         ent._gekkoRandomCrouchEndT = now + dur
-        print(string.format(
-            "[GeckoCrouch] Random crouch TRIGGERED — will hold for %.1fs",
-            dur
-        ))
+        print(string.format("[GeckoCrouch] Random crouch TRIGGERED — will hold for %.1fs", dur))
     else
         ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-        print(string.format(
-            "[GeckoCrouch] Random crouch roll FAILED — next attempt in %.1fs",
-            ent._gekkoRandomCrouchNextT - now
-        ))
+        print(string.format("[GeckoCrouch] Random crouch roll FAILED — next attempt in %.1fs", ent._gekkoRandomCrouchNextT - now))
     end
 end
 
 -- ───────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
---  Returns true  → crouch active, caller must return early
---  Returns false → crouch inactive, caller runs normally
 -- ───────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
 
@@ -204,41 +210,33 @@ function ENT:GeckoCrouch_Update()
                 Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
                 Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
             )
-            print("[GeckoCrouch] Jump interrupted crouch — forced stand hitbox")
+            print("[GeckoCrouch] Jump interrupted crouch")
         end
         return false
     end
 
-    -- ── Suppress active ─────────────────────────────────────────
     if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
         return false
     end
 
-    -- ── Tick sub-systems ─────────────────────────────────────────
     TickRandom(self)
-    local ceilHit  = TickCeiling(self)   -- debounced
+    local ceilHit = TickCeiling(self)
 
-    -- ── Evaluate all triggers ─────────────────────────────────
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local randActive = self._gekkoRandomCrouch
     local wantCrouch = vjCrouch or ceilHit or randActive
 
-    -- Throttled diagnostic
     if not self._crouchDiagT or CurTime() > self._crouchDiagT then
         print(string.format(
             "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  ceil=%s(raw=%s)  rand=%s  randEndsIn=%.1f",
-            tostring(self._gekkoCrouching),
-            tostring(wantCrouch),
-            tostring(vjCrouch),
-            tostring(ceilHit),
-            tostring(self._gekkoCeilingHit),
+            tostring(self._gekkoCrouching), tostring(wantCrouch),
+            tostring(vjCrouch), tostring(ceilHit), tostring(self._gekkoCeilingHit),
             tostring(randActive),
             self._gekkoRandomCrouch and (self._gekkoRandomCrouchEndT - CurTime()) or 0
         ))
         self._crouchDiagT = CurTime() + 2
     end
 
-    -- ── Handle exit with lockout ──────────────────────────────
     if not wantCrouch then
         if self._gekkoCrouching then
             if self._gekkoCrouchExitTime == 0 then
@@ -266,7 +264,6 @@ function ENT:GeckoCrouch_Update()
         self._gekkoCrouchExitTime = 0
     end
 
-    -- ── Enter crouch ─────────────────────────────────────────
     if not self._gekkoCrouching then
         self._gekkoCrouching = true
         self:SetCollisionBounds(
@@ -276,20 +273,14 @@ function ENT:GeckoCrouch_Update()
         print("[GeckoCrouch] → Crouching | hitbox h=" .. HITBOX_CROUCH_H)
     end
 
-    -- ── Sequences not yet cached ──────────────────────────────
     if self.GekkoSeq_CrouchIdle == -1 then return false end
 
-    -- ── Pick cidle or c_walk ──────────────────────────────────
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
     local moving = speed2 > (16 * 16)
 
-    local targetSeq
-    if moving and self.GekkoSeq_CrouchWalk ~= -1 then
-        targetSeq = self.GekkoSeq_CrouchWalk
-    else
-        targetSeq = self.GekkoSeq_CrouchIdle
-    end
+    local targetSeq = (moving and self.GekkoSeq_CrouchWalk ~= -1)
+        and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
@@ -304,10 +295,8 @@ function ENT:GeckoCrouch_Update()
         end
         self.Gekko_LastSeqIdx  = targetSeq
         self.Gekko_LastSeqName = moving and "c_walk" or "cidle"
-        print(string.format(
-            "[GeckoCrouch] Sequence set → %s (seq %d)  moving=%s",
-            self.Gekko_LastSeqName, targetSeq, tostring(moving)
-        ))
+        print(string.format("[GeckoCrouch] Sequence set → %s (seq %d)  moving=%s",
+            self.Gekko_LastSeqName, targetSeq, tostring(moving)))
     else
         self:SetSequence(targetSeq)
     end
