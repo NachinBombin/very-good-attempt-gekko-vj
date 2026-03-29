@@ -10,65 +10,67 @@ ENT.AdminSpawnable        = true
 ENT.AutomaticFrameAdvance = true
 ENT.IsVJBaseSNPC          = true
 
-ENT.Model    = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
+ENT.Model = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
 
 ENT.VJ_NPC_Class = {"CLASS_COMBINE"}
 ENT.HullType     = HULL_LARGE
 ENT.StartHealth  = 3000
 
+ENT.StopMovingWhileAttacking        = false
+
+
+ENT.VJ_NPC_UsesCustomMoveAnimation = true
+
 ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
--- WalkSpeed: normal patrol/approach pace
--- RunSpeed:  engaged when enemy is >900 units away (set in OnThink)
-ENT.WalkSpeed                = 90
-ENT.RunSpeed                 = 180
 
-ENT.TurningSpeed = 1000
+-- Real-world nav speeds.
+-- The engine caps ground NPC movement at ~280 u/s regardless of this value.
+-- Walk and run visually differ only through animation — not actual movement speed.
+ENT.WalkSpeed = 184
+ENT.RunSpeed  = 184
 
-ENT.SightDistance = 18000
-ENT.EnemyTimeout  = 60
+-- VJ Base run-to-enemy: disabled.
+-- Speed and animation are fully controlled in init.lua.
+ENT.VJ_RunToEnemy         = false
+ENT.VJ_RunToEnemyDistance = 0
+
+ENT.TurningSpeed  = 100
+ENT.SightDistance = 48000
+ENT.EnemyTimeout  = 160
+
+ENT.VJ_NPC_UseGestures = false
 
 ENT.ConstantlyFaceEnemy             = true
 ENT.ConstantlyFaceEnemy_IfVisible   = true
 ENT.ConstantlyFaceEnemy_IfAttacking = true
 ENT.ConstantlyFaceEnemy_Postures    = "Both"
-ENT.ConstantlyFaceEnemy_MinDistance = 0
+ENT.ConstantlyFaceEnemy_MinDistance = 1
 
--- ====== Animation Tables ======
-ENT.AnimTbl_Idle         = {"idle"}
-ENT.AnimTbl_Walk         = {"walk"}
-ENT.AnimTbl_Run          = {"run"}
-ENT.AnimTbl_RangeAttack  = {"idle"}
-ENT.AnimTbl_Flinch       = false
-ENT.AnimTbl_Death        = false
+-- Walk/Run animation is handled entirely by TranslateActivity in init.lua.
+-- Do NOT define AnimTbl_Walk or AnimTbl_Run here — causes "temptable is nil" spam.
 
--- ====== Melee: DISABLED ======
 ENT.HasMeleeAttack = false
 
--- ====== Range ======
 ENT.HasRangeAttack                        = true
 ENT.RangeAttackProjectiles                = false
-ENT.RangeAttackMinDistance                = 900
-ENT.RangeAttackMaxDistance                = 6000
+ENT.RangeAttackMinDistance                = 0
+ENT.RangeAttackMaxDistance                = 16000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
 ENT.NextRangeAttackTime                   = 4
-ENT.NextAnyAttackTime_Range               = 1.5
+ENT.NextAnyAttackTime_Range               = 2
 
--- Prevents Source engine applying bullet/explosion force
--- impulses to the NPC physics body (no more jumping on hit).
 ENT.DisablePhysicsOnDamage = true
 
--- ====== Sounds ======
-ENT.HasSounds        = true
-ENT.NoIdleChatter    = true
-ENT.SoundTbl_Death   = {
+ENT.HasSounds     = true
+ENT.NoIdleChatter = true
+ENT.SoundTbl_Death = {
     "mechassault_2/mechs/mech_explode1.ogg",
     "mechassault_2/mechs/mech_explode2.ogg",
 }
-ENT.SoundTbl_Alert   = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
+ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
 
--- ====== Blood ======
 ENT.Bleeds     = true
 ENT.BloodColor = BLOOD_COLOR_RED

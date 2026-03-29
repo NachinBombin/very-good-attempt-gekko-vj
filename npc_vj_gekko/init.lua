@@ -2,42 +2,24 @@ include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 
--- ============================================================
---  ATTACHMENT INDICES
---  att 3  = machine gun barrel  (b_l_gunrack region)
---  att 9  = left  rocket launcher barrel  (b_l_hand region)
---  att 10 = right rocket launcher barrel  (b_r_hand region)
--- ============================================================
-local ATT_MACHINEGUN   = 3
-local ATT_MISSILE_L    = 9
-local ATT_MISSILE_R    = 10
+local ATT_MACHINEGUN = 3
+local ATT_MISSILE_L  = 9
+local ATT_MISSILE_R  = 10
 
--- ============================================================
---  ANIMATION CALIBRATION
--- ============================================================
-local ANIM_WALK_SPEED    = 200
-local ANIM_RUN_SPEED     = 200
+local ANIM_WALK_SPEED    = 184
+local ANIM_RUN_SPEED     = 20
 
-local RUN_ENGAGE_DIST    = 900
-local RUN_DISENGAGE_DIST = 750
+local RUN_ENGAGE_DIST    = 3500
+local RUN_DISENGAGE_DIST = 1900
 
--- MG burst config
-local MG_ROUNDS    = 12
-local MG_INTERVAL  = 0.1
-local MG_DAMAGE    = 10
-local MG_SPREAD    = 4
+local MG_ROUNDS   = 24
+local MG_INTERVAL = 0.13
+local MG_DAMAGE   = 20
+local MG_SPREAD   = 0.5
 
--- Weapon mode constants
 local WMODE_MG      = 1
 local WMODE_MISSILE = 2
 
--- ============================================================
---  HELPER: resolve the active enemy from either VJ Base or engine
---  VJ Base sets self.VJ_TheEnemy while an attack schedule is running,
---  but clears it during scan/idle intervals.
---  self:GetEnemy() is the engine-level field and remains valid as
---  long as the NPC has a living target, so it fills the gap.
--- ============================================================
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -46,25 +28,31 @@ local function GetActiveEnemy(ent)
     return nil
 end
 
--- ============================================================
---  ANIMATION
--- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
     local walkSeq = self:LookupSequence("walk")
     local runSeq  = self:LookupSequence("run")
     local idleSeq = self:LookupSequence("idle")
 
-    self.AnimationTranslations[ACT_IDLE]     = idleSeq
-    self.AnimationTranslations[ACT_WALK]     = walkSeq
-    self.AnimationTranslations[ACT_RUN]      = runSeq
-    self.AnimationTranslations[ACT_WALK_AIM] = walkSeq
-    self.AnimationTranslations[ACT_RUN_AIM]  = runSeq
+    self.AnimationTranslations[ACT_IDLE]                  = idleSeq
+    self.AnimationTranslations[ACT_WALK]                  = runSeq
+    self.AnimationTranslations[ACT_RUN]                   = walkSeq
+    self.AnimationTranslations[ACT_WALK_AIM]              = runSeq
+    self.AnimationTranslations[ACT_RUN_AIM]               = walkSeq
 
-    self.GekkoSeq_Walk = walkSeq
-    self.GekkoSeq_Run  = runSeq
+    -- Prevent attack activities from triggering unknown sequences
+    self.AnimationTranslations[ACT_RANGE_ATTACK1]         = idleSeq
+    self.AnimationTranslations[ACT_RANGE_ATTACK2]         = idleSeq
+    self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK1] = idleSeq
+    self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK2] = idleSeq
+    self.AnimationTranslations[ACT_IDLE_ANGRY]            = idleSeq
+    self.AnimationTranslations[ACT_COMBAT_IDLE]           = idleSeq
+
+    self.GekkoSeq_Walk = runSeq
+    self.GekkoSeq_Run  = walkSeq
     self.GekkoSeq_Idle = idleSeq
 
-    print(string.format("[GekkoNPC] AnimTrans  idle->%d  walk->%d  run->%d", idleSeq, walkSeq, runSeq))
+    print(string.format("[GekkoNPC] AnimTrans  idle->%d  visualWalk->%d  visualRun->%d",
+        idleSeq, runSeq, walkSeq))
 end
 
 function ENT:TranslateActivity(act)
@@ -81,22 +69,29 @@ end
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    -- VJ Base creature NPCs: GetVelocity() is the correct speed source.
-    -- GetAbsVelocity() always returns 0 for AI-schedule-driven creatures.
-    local vel = self:GetVelocity():Length()
+    local now    = CurTime()
+    local curPos = self:GetPos()
+    local vel    = 0
+
+    if self._gekkoLastPos and self._gekkoLastTime then
+        local dt = now - self._gekkoLastTime
+        if dt > 0 then
+            vel = (curPos - self._gekkoLastPos):Length() / dt
+        end
+    end
+
+    self._gekkoLastPos  = curPos
+    self._gekkoLastTime = now
 
     local enemy = GetActiveEnemy(self)
     local dist  = 0
     if IsValid(enemy) then
         dist = self:GetPos():Distance(enemy:GetPos())
-        self._gekkoLastEnemyPos  = enemy:GetPos()   -- cache for fallback
         self._gekkoLastEnemyDist = dist
     elseif self._gekkoLastEnemyDist then
-        -- Use last known distance so hysteresis isn't reset by a momentary nil
         dist = self._gekkoLastEnemyDist
     end
 
-    -- Hysteresis: engage run above RUN_ENGAGE_DIST, drop below RUN_DISENGAGE_DIST
     if dist > RUN_ENGAGE_DIST then
         self._gekkoRunning = true
     elseif dist < RUN_DISENGAGE_DIST then
@@ -105,22 +100,35 @@ function ENT:GekkoUpdateAnimation()
 
     local targetSeq, arate
 
-    if vel > 6 then
+    if vel > 5 then
         if self._gekkoRunning then
-            targetSeq = "run"
+            targetSeq = self.GekkoSeq_Run
             arate     = vel / ANIM_RUN_SPEED
         else
-            targetSeq = "walk"
+            targetSeq = self.GekkoSeq_Walk
             arate     = vel / ANIM_WALK_SPEED
         end
+    elseif self._gekkoRunning then
+        -- Stopped momentarily but still in run state — hold run pose
+        targetSeq = self.GekkoSeq_Run
+        arate     = 0.5
     else
-        targetSeq = "idle"
+        targetSeq = self.GekkoSeq_Idle
         arate     = 1.0
     end
 
-    if targetSeq ~= self.Gekko_LastSeqName then
+    arate = math.Clamp(arate, 0.5, 3.0)
+
+    if targetSeq ~= self.Gekko_LastSeqIdx then
         self:ResetSequence(targetSeq)
-        self.Gekko_LastSeqName = targetSeq
+        self.Gekko_LastSeqIdx = targetSeq
+        if targetSeq == self.GekkoSeq_Run then
+            self.Gekko_LastSeqName = "run"
+        elseif targetSeq == self.GekkoSeq_Walk then
+            self.Gekko_LastSeqName = "walk"
+        else
+            self.Gekko_LastSeqName = "idle"
+        end
     end
 
     self:SetPlaybackRate(arate)
@@ -128,61 +136,46 @@ function ENT:GekkoUpdateAnimation()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
--- ============================================================
---  INIT
--- ============================================================
 function ENT:Init()
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 256))
     self:SetSkin(1)
 
-    self.GekkoSpineBone    = self:LookupBone("b_spine4")
-    self.GekkoLGunBone     = self:LookupBone("b_l_gunrack")
-    self.GekkoRGunBone     = self:LookupBone("b_r_gunrack")
+    self.GekkoSpineBone = self:LookupBone("b_spine4")
+    self.GekkoLGunBone  = self:LookupBone("b_l_gunrack")
+    self.GekkoRGunBone  = self:LookupBone("b_r_gunrack")
 
     self.Gekko_NextDebugT    = 0
     self.Gekko_LastSeqName   = ""
+    self.Gekko_LastSeqIdx    = -1
     self._missileCount       = 0
     self._mgBurstActive      = false
     self._weaponMode         = WMODE_MG
     self._gekkoRunning       = false
-    self._gekkoLastEnemyPos  = nil
     self._gekkoLastEnemyDist = nil
+    self._gekkoLastPos       = self:GetPos()
+    self._gekkoLastTime      = CurTime() - 0.1
 
     local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
     local misLAtt = self:GetAttachment(ATT_MISSILE_L)
     local misRAtt = self:GetAttachment(ATT_MISSILE_R)
-    print(string.format(
-        "[GekkoNPC] Init  Spine4=%d  LGun=%d  RGun=%d",
-        self.GekkoSpineBone, self.GekkoLGunBone, self.GekkoRGunBone
-    ))
-    print(string.format(
-        "[GekkoNPC] Attachments  MG=%s  MissileL=%s  MissileR=%s",
+
+    print(string.format("[GekkoNPC] Init  Spine4=%d  LGun=%d  RGun=%d",
+        self.GekkoSpineBone or -1,
+        self.GekkoLGunBone  or -1,
+        self.GekkoRGunBone  or -1))
+    print(string.format("[GekkoNPC] Attachments  MG=%s  MissileL=%s  MissileR=%s",
         mgAtt   and "OK" or "MISSING",
         misLAtt and "OK" or "MISSING",
-        misRAtt and "OK" or "MISSING"
-    ))
+        misRAtt and "OK" or "MISSING"))
 end
 
--- ============================================================
---  DAMAGE / KNOCKBACK SUPPRESSION
--- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
 
--- ============================================================
---  THINK
--- ============================================================
 function ENT:OnThink()
-    -- Sync physical move speed with run state
-    if self._gekkoRunning then
-        self.MoveSpeed = self.RunSpeed
-    else
-        self.MoveSpeed = self.WalkSpeed
-    end
-
     self:GekkoUpdateAnimation()
 
     if CurTime() > self.Gekko_NextDebugT then
@@ -191,47 +184,37 @@ function ENT:OnThink()
         if IsValid(enemy) then
             dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
         elseif self._gekkoLastEnemyDist then
-            dist = math.floor(self._gekkoLastEnemyDist)  -- show cached, not -1
+            dist = math.floor(self._gekkoLastEnemyDist)
         else
-            dist = -1  -- genuinely no enemy ever seen
+            dist = -1
         end
 
-        local vel = self:GetVelocity():Length()
-        -- src: VJ_TheEnemy=valid | engine:GetEnemy()=valid | cached | none
         local src = "none"
-        if IsValid(self.VJ_TheEnemy) then
-            src = "vj"
-        elseif IsValid(self:GetEnemy()) then
-            src = "engine"
-        elseif self._gekkoLastEnemyDist then
-            src = "cached"
+        if IsValid(self.VJ_TheEnemy)    then src = "vj"
+        elseif IsValid(self:GetEnemy()) then src = "engine"
+        elseif self._gekkoLastEnemyDist then src = "cached"
         end
 
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d  src=%s",
-            vel,
+            "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d  src=%s  MoveSpeed=%d",
+            self:GetNWFloat("GekkoSpeed", 0),
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
-            dist,
-            src
+            dist, src,
+            self.MoveSpeed or 0
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
 end
 
--- ============================================================
---  RANGE ATTACK
--- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
 
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
-
-    local mode = self._weaponMode
+    local mode   = self._weaponMode
     self._weaponMode = (mode == WMODE_MG) and WMODE_MISSILE or WMODE_MG
 
-    -- ---- Machine Gun Burst ----
     if mode == WMODE_MG then
         if self._mgBurstActive then return true end
         self._mgBurstActive = true
@@ -291,18 +274,11 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         return true
     end
 
-    -- ---- Missile ----
     self._missileCount = (self._missileCount or 0) + 1
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-
     local misAtt = self:GetAttachment(missileAttIdx)
-    local src
-    if misAtt then
-        src = misAtt.Pos
-    else
-        src = self:GetPos() + Vector(0, 0, 160)
-    end
-    local dir = (aimPos - src):GetNormalized()
+    local src    = misAtt and misAtt.Pos or (self:GetPos() + Vector(0, 0, 160))
+    local dir    = (aimPos - src):GetNormalized()
 
     local rocket = ents.Create("obj_vj_rocket")
     if IsValid(rocket) then
@@ -323,9 +299,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     return true
 end
 
--- ============================================================
---  DEATH
--- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
@@ -333,7 +306,10 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
-        self:EmitSound(VJ.PICK({"weapons/mgs3/explosion_01.wav", "weapons/mgs3/explosion_02.wav"}), 511, 100, 2)
+        self:EmitSound(VJ.PICK({
+            "weapons/mgs3/explosion_01.wav",
+            "weapons/mgs3/explosion_02.wav"
+        }), 511, 100, 2)
         util.BlastDamage(self, attacker, pos, 512, 256)
     end)
 end
