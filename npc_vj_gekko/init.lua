@@ -1,7 +1,15 @@
+-- ============================================================
+--  npc_vj_gekko / init.lua
+--  DIAGNOSTIC BUILD — deferred activate fix applied
+-- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
+include("jump_system.lua")
 
+-- ============================================================
+--  Constants
+-- ============================================================
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L  = 9
 local ATT_MISSILE_R  = 10
@@ -20,6 +28,11 @@ local MG_SPREAD   = 0.5
 local WMODE_MG      = 1
 local WMODE_MISSILE = 2
 
+local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
+
+-- ============================================================
+--  Helpers
+-- ============================================================
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -28,18 +41,33 @@ local function GetActiveEnemy(ent)
     return nil
 end
 
+local function SafeResetSequence(ent, seq)
+    if seq and seq ~= -1 then
+        ent:ResetSequence(seq)
+    end
+end
+
+-- ============================================================
+--  Animation translations
+-- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
+    if not self.AnimationTranslations then
+        self.AnimationTranslations = {}
+    end
+
     local walkSeq = self:LookupSequence("walk")
     local runSeq  = self:LookupSequence("run")
     local idleSeq = self:LookupSequence("idle")
+
+    walkSeq = (walkSeq and walkSeq ~= -1) and walkSeq or 0
+    runSeq  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
+    idleSeq = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
     self.AnimationTranslations[ACT_IDLE]                  = idleSeq
     self.AnimationTranslations[ACT_WALK]                  = runSeq
     self.AnimationTranslations[ACT_RUN]                   = walkSeq
     self.AnimationTranslations[ACT_WALK_AIM]              = runSeq
     self.AnimationTranslations[ACT_RUN_AIM]               = walkSeq
-
-    -- Prevent attack activities from triggering unknown sequences
     self.AnimationTranslations[ACT_RANGE_ATTACK1]         = idleSeq
     self.AnimationTranslations[ACT_RANGE_ATTACK2]         = idleSeq
     self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK1] = idleSeq
@@ -50,9 +78,6 @@ function ENT:SetAnimationTranslations(wepHoldType)
     self.GekkoSeq_Walk = runSeq
     self.GekkoSeq_Run  = walkSeq
     self.GekkoSeq_Idle = idleSeq
-
-    print(string.format("[GekkoNPC] AnimTrans  idle->%d  visualWalk->%d  visualRun->%d",
-        idleSeq, runSeq, walkSeq))
 end
 
 function ENT:TranslateActivity(act)
@@ -66,8 +91,22 @@ function ENT:TranslateActivity(act)
     return self.BaseClass.TranslateActivity(self, act)
 end
 
+-- ============================================================
+--  Core animation update
+-- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
+
+    local jumpState = self:GetGekkoJumpState()
+
+    if jumpState == self.JUMP_RISING  or
+       jumpState == self.JUMP_FALLING or
+       jumpState == self.JUMP_LAND    or
+       (self._gekkoJustJumped and CurTime() < self._gekkoJustJumped) then
+        self:SetPoseParameter("move_x", 0)
+        self:SetPoseParameter("move_y", 0)
+        return
+    end
 
     local now    = CurTime()
     local curPos = self:GetPos()
@@ -109,7 +148,6 @@ function ENT:GekkoUpdateAnimation()
             arate     = vel / ANIM_WALK_SPEED
         end
     elseif self._gekkoRunning then
-        -- Stopped momentarily but still in run state — hold run pose
         targetSeq = self.GekkoSeq_Run
         arate     = 0.5
     else
@@ -120,7 +158,7 @@ function ENT:GekkoUpdateAnimation()
     arate = math.Clamp(arate, 0.5, 3.0)
 
     if targetSeq ~= self.Gekko_LastSeqIdx then
-        self:ResetSequence(targetSeq)
+        SafeResetSequence(self, targetSeq)
         self.Gekko_LastSeqIdx = targetSeq
         if targetSeq == self.GekkoSeq_Run then
             self.Gekko_LastSeqName = "run"
@@ -136,13 +174,16 @@ function ENT:GekkoUpdateAnimation()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
+-- ============================================================
+--  Init
+-- ============================================================
 function ENT:Init()
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 256))
     self:SetSkin(1)
 
-    self.GekkoSpineBone = self:LookupBone("b_spine4")
-    self.GekkoLGunBone  = self:LookupBone("b_l_gunrack")
-    self.GekkoRGunBone  = self:LookupBone("b_r_gunrack")
+    self.GekkoSpineBone = self:LookupBone("b_spine4")    or -1
+    self.GekkoLGunBone  = self:LookupBone("b_l_gunrack") or -1
+    self.GekkoRGunBone  = self:LookupBone("b_r_gunrack") or -1
 
     self.Gekko_NextDebugT    = 0
     self.Gekko_LastSeqName   = ""
@@ -155,66 +196,133 @@ function ENT:Init()
     self._gekkoLastPos       = self:GetPos()
     self._gekkoLastTime      = CurTime() - 0.1
 
-    local mgAtt   = self:GetAttachment(ATT_MACHINEGUN)
-    local misLAtt = self:GetAttachment(ATT_MISSILE_L)
-    local misRAtt = self:GetAttachment(ATT_MISSILE_R)
+    -- Jump state-only init: safe here before model loads
+    self:GekkoJump_Init()
 
-    print(string.format("[GekkoNPC] Init  Spine4=%d  LGun=%d  RGun=%d",
-        self.GekkoSpineBone or -1,
-        self.GekkoLGunBone  or -1,
-        self.GekkoRGunBone  or -1))
-    print(string.format("[GekkoNPC] Attachments  MG=%s  MissileL=%s  MissileR=%s",
-        mgAtt   and "OK" or "MISSING",
-        misLAtt and "OK" or "MISSING",
-        misRAtt and "OK" or "MISSING"))
+    -- ── DEFERRED ACTIVATE ────────────────────────────────────
+    -- VJ base does not call ENT:Activate() on this version.
+    -- timer.Simple(0) fires on the very next tick, after VJ has
+    -- finished its own init chain and the model is fully live.
+    local selfRef = self
+    timer.Simple(0, function()
+        if not IsValid(selfRef) then return end
+
+        -- Jump system: sequence resolve + attachment scan
+        selfRef:GekkoJump_Activate()
+
+        -- Re-resolve walk/run/idle now that model is loaded
+        local walkSeq = selfRef:LookupSequence("walk")
+        local runSeq  = selfRef:LookupSequence("run")
+        local idleSeq = selfRef:LookupSequence("idle")
+        selfRef.GekkoSeq_Walk = (walkSeq and walkSeq ~= -1) and walkSeq or 0
+        selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
+        selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
+
+        -- Re-resolve bones
+        selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
+        selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
+        selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
+
+        -- Attachment sanity check
+        local mgAtt   = selfRef:GetAttachment(ATT_MACHINEGUN)
+        local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
+        local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
+
+        print(string.format(
+            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
+            selfRef.GekkoSpineBone,
+            mgAtt   and "OK" or "MISSING",
+            misLAtt and "OK" or "MISSING",
+            misRAtt and "OK" or "MISSING"
+        ))
+    end)
+
+    print("[GekkoNPC] Init() complete — deferred activate queued")
 end
 
+-- ============================================================
+--  Activate — kept for forward compatibility with future VJ
+--  versions that may call it. Harmless if never invoked.
+-- ============================================================
+function ENT:Activate()
+    local base = self.BaseClass
+    if base and base.Activate and base.Activate ~= ENT.Activate then
+        base.Activate(self)
+    end
+    -- Intentionally empty: deferred timer in Init() handles all setup.
+    -- If this fires (future VJ version), it is safe to call GekkoJump_Activate
+    -- again because all its operations are idempotent.
+    print("[GekkoNPC] Activate() called by engine (future VJ path)")
+end
+
+-- ============================================================
+--  Damage override
+-- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
 
+-- ============================================================
+--  Think
+-- ============================================================
 function ENT:OnThink()
+    -- 1. Jump state machine
+    self:GekkoJump_Think()
+
+    -- 2. Jump AI decision
+    if self:GekkoJump_ShouldJump() then
+        self:GekkoJump_Execute()
+    end
+
+    -- 3. Walk/run/idle animation
     self:GekkoUpdateAnimation()
 
-    if CurTime() > self.Gekko_NextDebugT then
+    -- 4. Throttled 1Hz debug
+    if true and CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
-        local dist
+        local dist, src
+
         if IsValid(enemy) then
             dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
+            src  = IsValid(self.VJ_TheEnemy) and "vj" or "engine"
         elseif self._gekkoLastEnemyDist then
             dist = math.floor(self._gekkoLastEnemyDist)
+            src  = "cached"
         else
             dist = -1
-        end
-
-        local src = "none"
-        if IsValid(self.VJ_TheEnemy)    then src = "vj"
-        elseif IsValid(self:GetEnemy()) then src = "engine"
-        elseif self._gekkoLastEnemyDist then src = "cached"
+            src  = "none"
         end
 
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  running=%s  enemyDist=%d  src=%s  MoveSpeed=%d",
+            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s",
             self:GetNWFloat("GekkoSpeed", 0),
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
             dist, src,
-            self.MoveSpeed or 0
+            self.MoveSpeed or 0,
+            JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?"
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
 end
 
+-- ============================================================
+--  Range attack
+-- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
+
+    if self:GekkoJump_IsAirborne() then return true end
 
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     local mode   = self._weaponMode
     self._weaponMode = (mode == WMODE_MG) and WMODE_MISSILE or WMODE_MG
 
+    -- ── Machinegun burst ─────────────────────────────────────
     if mode == WMODE_MG then
         if self._mgBurstActive then return true end
         self._mgBurstActive = true
@@ -274,6 +382,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         return true
     end
 
+    -- ── TOW missile ──────────────────────────────────────────
     self._missileCount = (self._missileCount or 0) + 1
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local misAtt = self:GetAttachment(missileAttIdx)
@@ -299,10 +408,17 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     return true
 end
 
+-- ============================================================
+--  Death
+-- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos      = self:GetPos()
+
+    self:SetGekkoJumpState(self.JUMP_NONE)
+    self:SetMoveType(MOVETYPE_STEP)
+
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)

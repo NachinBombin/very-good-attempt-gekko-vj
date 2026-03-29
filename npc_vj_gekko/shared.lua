@@ -1,3 +1,6 @@
+-- ============================================================
+--  npc_vj_gekko / shared.lua
+-- ============================================================
 AddCSLuaFile()
 
 ENT.Base                  = "npc_vj_creature_base"
@@ -16,8 +19,7 @@ ENT.VJ_NPC_Class = {"CLASS_COMBINE"}
 ENT.HullType     = HULL_LARGE
 ENT.StartHealth  = 3000
 
-ENT.StopMovingWhileAttacking        = false
-
+ENT.StopMovingWhileAttacking = false
 
 ENT.VJ_NPC_UsesCustomMoveAnimation = true
 
@@ -26,14 +28,9 @@ ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
 
--- Real-world nav speeds.
--- The engine caps ground NPC movement at ~280 u/s regardless of this value.
--- Walk and run visually differ only through animation — not actual movement speed.
 ENT.WalkSpeed = 184
 ENT.RunSpeed  = 184
 
--- VJ Base run-to-enemy: disabled.
--- Speed and animation are fully controlled in init.lua.
 ENT.VJ_RunToEnemy         = false
 ENT.VJ_RunToEnemyDistance = 0
 
@@ -49,9 +46,27 @@ ENT.ConstantlyFaceEnemy_IfAttacking = true
 ENT.ConstantlyFaceEnemy_Postures    = "Both"
 ENT.ConstantlyFaceEnemy_MinDistance = 1
 
--- Walk/Run animation is handled entirely by TranslateActivity in init.lua.
--- Do NOT define AnimTbl_Walk or AnimTbl_Run here — causes "temptable is nil" spam.
+-- ============================================================
+--  NetworkVars
+--
+--  DO NOT call self.BaseClass.SetupDataTables(self) here.
+--  The VJ base does not expose SetupDataTables as an inheritable
+--  method — the engine calls each entity's SetupDataTables
+--  independently. Chaining it causes a nil-call crash.
+--
+--  Index rules for npc_vj_creature_base (as of current VJ release):
+--    Int   slots used by base: 0, 1, 2, 3, 4  → we use 5
+--    Float slots used by base: 0, 1, 2         → we use 3
+--  If you get "NetworkVar index out of range" bump these up by 1.
+-- ============================================================
+function ENT:SetupDataTables()
+    self:NetworkVar("Int",   5, "GekkoJumpState")  -- 0=none 1=rising 2=falling 3=landing
+    self:NetworkVar("Float", 3, "GekkoJumpTimer")  -- land-lockout countdown
+end
 
+-- ============================================================
+--  Attack config
+-- ============================================================
 ENT.HasMeleeAttack = false
 
 ENT.HasRangeAttack                        = true
@@ -62,15 +77,28 @@ ENT.TimeUntilRangeAttackProjectileRelease = 0.1
 ENT.NextRangeAttackTime                   = 4
 ENT.NextAnyAttackTime_Range               = 2
 
+-- ============================================================
+--  Physics / damage
+-- ============================================================
 ENT.DisablePhysicsOnDamage = true
 
+-- ============================================================
+--  Sounds
+-- ============================================================
 ENT.HasSounds     = true
 ENT.NoIdleChatter = true
+
 ENT.SoundTbl_Death = {
     "mechassault_2/mechs/mech_explode1.ogg",
     "mechassault_2/mechs/mech_explode2.ogg",
 }
 ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
 
+----------------------------------------------------------------------------------
+ENT.AnimationTranslations = {}
+
+-- ============================================================
+--  Blood / gore
+-- ============================================================
 ENT.Bleeds     = true
 ENT.BloodColor = BLOOD_COLOR_RED
