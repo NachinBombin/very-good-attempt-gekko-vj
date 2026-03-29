@@ -18,12 +18,14 @@
 -- ───────────────────────────────────────────────────────────
 local CROUCH_CEIL_HEIGHT  = 52    -- units above origin to trace for low ceiling
 local CROUCH_EXIT_LOCKOUT = 0.35  -- seconds to hold crouch after trigger drops
-                                  -- prevents flickering when barely clearing geometry
+
+-- Hitbox heights
+local HITBOX_STAND_H  = 200   -- must match Init() SetCollisionBounds
+local HITBOX_CROUCH_H = 130
+local HITBOX_HALF_W   = 64
 
 -- ───────────────────────────────────────────────────────────
 --  Ceiling trace
---  Returns true if there is solid brush geometry within
---  CROUCH_CEIL_HEIGHT units above the NPC's origin.
 -- ───────────────────────────────────────────────────────────
 local function CeilingCheck(ent)
     local pos = ent:GetPos()
@@ -33,44 +35,46 @@ local function CeilingCheck(ent)
         filter = ent,
         mask   = MASK_SOLID_BRUSHONLY,
     })
+    ent._gekkoCeilingHit = tr.Hit  -- expose to debug line in init.lua
     return tr.Hit
 end
 
 -- ───────────────────────────────────────────────────────────
 --  GeckoCrouch_Init
---  Call from ENT:Init() after jump init.
 -- ───────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
     self._gekkoCrouching      = false
     self._gekkoCrouchExitTime = 0
-    -- Sequence indices — populated in the deferred timer.Simple block
-    -- alongside GekkoSeq_Walk / Run / Idle
-    self.GekkoSeq_CrouchIdle = -1
-    self.GekkoSeq_CrouchWalk = -1
-    print("[GeckoCrouch] Init()")
+    self._gekkoCeilingHit     = false
+    self.GekkoSeq_CrouchIdle  = -1
+    self.GekkoSeq_CrouchWalk  = -1
+    print("[GeckoCrouch] Init() — state vars created")
 end
 
 -- ───────────────────────────────────────────────────────────
 --  GeckoCrouch_CacheSeqs
---  Call from inside the timer.Simple(0, ...) deferred block
---  in ENT:Init(), after the walk/run/idle lookups.
 -- ───────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_CacheSeqs()
     local cidle = self:LookupSequence("cidle")
     local cwalk = self:LookupSequence("c_walk")
     self.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
     self.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
-    print(string.format("[GeckoCrouch] Sequences cached | cidle=%d c_walk=%d",
-        self.GekkoSeq_CrouchIdle, self.GekkoSeq_CrouchWalk))
+    print(string.format(
+        "[GeckoCrouch] CacheSeqs | cidle=%d  c_walk=%d  (expected 3 and 5)",
+        self.GekkoSeq_CrouchIdle, self.GekkoSeq_CrouchWalk
+    ))
+    if self.GekkoSeq_CrouchIdle == -1 then
+        print("[GeckoCrouch] WARNING: 'cidle' sequence NOT FOUND — crouch anim will not play")
+    end
+    if self.GekkoSeq_CrouchWalk == -1 then
+        print("[GeckoCrouch] WARNING: 'c_walk' sequence NOT FOUND — crouch walk anim will not play")
+    end
 end
 
 -- ───────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
---  Call at the TOP of ENT:GekkoUpdateAnimation(), before any
---  walk/idle/run logic.
---
---  Returns true  → crouch is active, caller must return early
---  Returns false → crouch is inactive, caller runs normally
+--  Returns true  → crouch active, caller must return early
+--  Returns false → crouch inactive, caller runs normally
 -- ───────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
 
@@ -80,10 +84,16 @@ function ENT:GeckoCrouch_Update()
        jumpState == self.JUMP_FALLING or
        jumpState == self.JUMP_LAND    or
        (self._gekkoJustJumped and CurTime() < self._gekkoJustJumped) then
-        -- Silently drop crouch if it was active when we jumped
         if self._gekkoCrouching then
             self._gekkoCrouching      = false
             self._gekkoCrouchExitTime = 0
+            self.VJ_CanMoveThink      = true
+            -- Restore standing hitbox when jump interrupts crouch
+            self:SetCollisionBounds(
+                Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+                Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+            )
+            print("[GeckoCrouch] Jump interrupted crouch — forced stand hitbox")
         end
         return false
     end
@@ -93,52 +103,73 @@ function ENT:GeckoCrouch_Update()
         return false
     end
 
-    -- ── Decide if we WANT to crouch ──────────────────────────
-    -- Trigger 1: VJ Base set its native crouch flag
-    -- Trigger 2: physical ceiling overhead
-    local wantCrouch = (self.VJ_IsBeingCrouched == true) or CeilingCheck(self)
+    -- ── Evaluate triggers ────────────────────────────────────
+    local vjCrouch  = (self.VJ_IsBeingCrouched == true)
+    local ceilHit   = CeilingCheck(self)
+    local wantCrouch = vjCrouch or ceilHit
+
+    -- Throttled diagnostic so we aren't spammed every tick
+    if not self._crouchDiagT or CurTime() > self._crouchDiagT then
+        print(string.format(
+            "[GeckoCrouch] Update | crouching=%s  wantCrouch=%s  VJ_IsBeingCrouched=%s  ceilHit=%s  cidle=%d  c_walk=%d",
+            tostring(self._gekkoCrouching),
+            tostring(wantCrouch),
+            tostring(vjCrouch),
+            tostring(ceilHit),
+            self.GekkoSeq_CrouchIdle or -1,
+            self.GekkoSeq_CrouchWalk or -1
+        ))
+        self._crouchDiagT = CurTime() + 2
+    end
 
     -- ── Handle exit with lockout ──────────────────────────────
     if not wantCrouch then
         if self._gekkoCrouching then
-            -- Begin exit countdown if not already started
             if self._gekkoCrouchExitTime == 0 then
                 self._gekkoCrouchExitTime = CurTime() + CROUCH_EXIT_LOCKOUT
+                print("[GeckoCrouch] Trigger dropped — starting exit lockout")
             end
             if CurTime() < self._gekkoCrouchExitTime then
-                -- Still inside lockout — keep crouching
-                wantCrouch = true
+                wantCrouch = true  -- still inside lockout
             else
-                -- Lockout expired — stand up
+                -- Stand up
                 self._gekkoCrouching      = false
                 self._gekkoCrouchExitTime = 0
-                print("[GeckoCrouch] → Standing")
+                self.VJ_CanMoveThink      = true
+                self:SetCollisionBounds(
+                    Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+                    Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+                )
+                print("[GeckoCrouch] → Standing | hitbox restored to h=" .. HITBOX_STAND_H)
                 return false
             end
         else
-            -- Not crouching and no trigger — nothing to do
             return false
         end
     else
-        -- Trigger is active — reset exit timer
         self._gekkoCrouchExitTime = 0
     end
 
-    -- ── Enter crouch if not already in it ────────────────────
+    -- ── Enter crouch ─────────────────────────────────────────
     if not self._gekkoCrouching then
         self._gekkoCrouching = true
-        print("[GeckoCrouch] → Crouching")
+        self:SetCollisionBounds(
+            Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+            Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
+        )
+        print("[GeckoCrouch] → Crouching | hitbox set to h=" .. HITBOX_CROUCH_H)
     end
 
-    -- ── Sequences not yet cached (pre-deferred-timer) ────────
+    -- ── Sequences not yet cached ──────────────────────────────
     if self.GekkoSeq_CrouchIdle == -1 then
+        print("[GeckoCrouch] Update: sequences not yet cached — skipping anim")
         return false
     end
 
-    -- ── Pick cidle or c_walk based on horizontal speed ───────
+    -- ── Pick cidle or c_walk ──────────────────────────────────
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
-    local moving = speed2 > (16 * 16)  -- ~16 units/s threshold
+    local moving = speed2 > (16 * 16)
 
     local targetSeq
     if moving and self.GekkoSeq_CrouchWalk ~= -1 then
@@ -147,32 +178,30 @@ function ENT:GeckoCrouch_Update()
         targetSeq = self.GekkoSeq_CrouchIdle
     end
 
-    -- Only ResetSequence when it actually changes
     if self:GetSequence() ~= targetSeq then
         self:ResetSequence(targetSeq)
         self:SetCycle(0)
 
         if moving then
-            local speed   = math.sqrt(speed2)
-            local maxSpd  = (self.MoveSpeed and self.MoveSpeed > 0) and self.MoveSpeed or 150
-            local rate    = math.Clamp(speed / maxSpd, 0.3, 1.5)
-            self:SetPlaybackRate(rate)
+            local speed  = math.sqrt(speed2)
+            local maxSpd = (self.MoveSpeed and self.MoveSpeed > 0) and self.MoveSpeed or 150
+            self:SetPlaybackRate(math.Clamp(speed / maxSpd, 0.3, 1.5))
         else
             self:SetPlaybackRate(1.0)
         end
 
-        -- Keep debug tracking consistent with the rest of init.lua
         self.Gekko_LastSeqIdx  = targetSeq
         self.Gekko_LastSeqName = moving and "c_walk" or "cidle"
+        print(string.format(
+            "[GeckoCrouch] Sequence changed → %s (seq %d)  moving=%s",
+            self.Gekko_LastSeqName, targetSeq, tostring(moving)
+        ))
     end
 
-    -- Zero out VJ Base pose parameters so legs don't slide
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
-
-    -- Prevent VJ Base from reassigning movement this tick
     self.VJ_IsMoving     = false
     self.VJ_CanMoveThink = false
 
-    return true  -- crouch took control — caller should return early
+    return true
 end

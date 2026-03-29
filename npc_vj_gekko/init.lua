@@ -5,6 +5,7 @@ include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("jump_system.lua")
+include("crouch_system.lua")   -- ★ load crouch module
 
 -- ============================================================
 --  Constants
@@ -81,34 +82,34 @@ end
 
 -- ============================================================
 --  MaintainActivity override
---  VJ Base calls this to push locomotion sequences every tick.
---  We block it entirely during jump phases so nothing under us
---  can clobber the jump/fall/land ResetSequence we already set.
 -- ============================================================
 function ENT:MaintainActivity()
     if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
-        return  -- jump system owns the sequence right now
+        return
+    end
+    -- ★ Block while crouching — crouch_system owns the sequence
+    if self._gekkoCrouching then
+        return
     end
     self.BaseClass.MaintainActivity(self)
 end
 
 -- ============================================================
 --  VJ_AnimationThink override
---  VJ Base's secondary per-tick animation hook. Fires independently
---  of MaintainActivity and can clobber jump sequences via pose
---  parameters and SetPlaybackRate. Block it during suppression.
 -- ============================================================
 function ENT:VJ_AnimationThink()
     if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
-        return  -- jump system owns the sequence right now
+        return
+    end
+    -- ★ Block while crouching
+    if self._gekkoCrouching then
+        return
     end
     self.BaseClass.VJ_AnimationThink(self)
 end
 
 -- ============================================================
 --  TranslateActivity
---  Secondary guard: if VJ somehow gets past MaintainActivity,
---  redirect locomotion ACTs to the correct jump sequence.
 -- ============================================================
 function ENT:TranslateActivity(act)
     local jumpState = self:GetGekkoJumpState()
@@ -120,6 +121,12 @@ function ENT:TranslateActivity(act)
     end
     if jumpState == self.JUMP_LAND    and self._seqLand and self._seqLand ~= -1 then
         return self._seqLand
+    end
+
+    -- ★ Redirect to cidle while crouching
+    if self._gekkoCrouching then
+        local cidle = self.GekkoSeq_CrouchIdle
+        if cidle and cidle ~= -1 then return cidle end
     end
 
     if act == ACT_WALK or act == ACT_WALK_AIM then
@@ -134,14 +141,12 @@ end
 
 -- ============================================================
 --  Core animation update
---  Called every OnThink tick.  Bails completely during jumps.
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
     local jumpState = self:GetGekkoJumpState()
 
-    -- Full bail during any jump phase
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
        jumpState == self.JUMP_LAND    or
@@ -150,6 +155,9 @@ function ENT:GekkoUpdateAnimation()
         self:SetPoseParameter("move_y", 0)
         return
     end
+
+    -- ★ Run crouch logic first — returns true if crouch took control
+    if self:GeckoCrouch_Update() then return end
 
     local now    = CurTime()
     local curPos = self:GetPos()
@@ -221,7 +229,8 @@ end
 --  Init
 -- ============================================================
 function ENT:Init()
-    self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 256))
+    -- ★ Reduced standing hitbox height from 256 → 200
+    self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetSkin(1)
 
     self.GekkoSpineBone = self:LookupBone("b_spine4")    or -1
@@ -241,6 +250,7 @@ function ENT:Init()
     self._gekkoSuppressActivity = 0
 
     self:GekkoJump_Init()
+    self:GeckoCrouch_Init()   -- ★ init crouch state
 
     local selfRef = self
     timer.Simple(0, function()
@@ -255,6 +265,8 @@ function ENT:Init()
         selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
+        selfRef:GeckoCrouch_CacheSeqs()   -- ★ look up cidle + c_walk after model is ready
+
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
         selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
         selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
@@ -264,8 +276,9 @@ function ENT:Init()
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
 
         print(string.format(
-            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | cidle=%d c_walk=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
             selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
+            selfRef.GekkoSeq_CrouchIdle, selfRef.GekkoSeq_CrouchWalk,
             selfRef.GekkoSpineBone,
             mgAtt   and "OK" or "MISSING",
             misLAtt and "OK" or "MISSING",
@@ -324,13 +337,16 @@ function ENT:OnThink()
         end
 
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s",
+            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s  crouch=%s  VJ_Crouch=%s  ceiling=%s",
             self:GetNWFloat("GekkoSpeed", 0),
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
             dist, src,
             self.MoveSpeed or 0,
-            JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?"
+            JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
+            tostring(self._gekkoCrouching),
+            tostring(self.VJ_IsBeingCrouched),
+            tostring(self._gekkoCeilingHit)   -- set by crouch_system each tick
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
