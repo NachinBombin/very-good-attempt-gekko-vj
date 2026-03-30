@@ -49,8 +49,6 @@ end
 
 -- ============================================================
 --  GekkoOwnsAnimation
---  Returns true when Gekko's own systems (crouch or jump)
---  currently own the animation state and VJBase must not touch it.
 -- ============================================================
 local function GekkoOwnsAnimation(ent)
     if ent._gekkoCrouching then return true end
@@ -66,15 +64,6 @@ end
 
 -- ============================================================
 --  Animation translations
---
---  NOTE on walk/run mapping:
---    The model has two locomotion sequences:
---      seq 4 "walk" — normal bipedal walk  (speed ~184 u/s)
---      seq 6 "run"  — faster gait          (speed ~20 u/s cycle)
---    VJBase activity mapping convention:
---      ACT_WALK → used when moving at normal speed → "walk" seq
---      ACT_RUN  → used when closing on enemy fast  → "run"  seq
---    Previous code had these BACKWARDS (walk→ACT_RUN, run→ACT_WALK).
 -- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
     if not self.AnimationTranslations then
@@ -89,7 +78,6 @@ function ENT:SetAnimationTranslations(wepHoldType)
     runSeq  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
     idleSeq = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
-    -- Correct mapping: ACT_WALK → walk seq,  ACT_RUN → run seq
     self.AnimationTranslations[ACT_IDLE]                  = idleSeq
     self.AnimationTranslations[ACT_WALK]                  = walkSeq
     self.AnimationTranslations[ACT_RUN]                   = runSeq
@@ -108,33 +96,23 @@ function ENT:SetAnimationTranslations(wepHoldType)
 end
 
 -- ============================================================
---  MaintainIdleAnimation override
---  Blocks VJBase idle-animation logic while Gekko owns the state.
+--  VJBase animation overrides
 -- ============================================================
 function ENT:MaintainIdleAnimation(force)
     if GekkoOwnsAnimation(self) then return end
     self.BaseClass.MaintainIdleAnimation(self, force)
 end
 
--- ============================================================
---  MaintainActivity override
--- ============================================================
 function ENT:MaintainActivity()
     if GekkoOwnsAnimation(self) then return end
     self.BaseClass.MaintainActivity(self)
 end
 
--- ============================================================
---  VJ_AnimationThink override
--- ============================================================
 function ENT:VJ_AnimationThink()
     if GekkoOwnsAnimation(self) then return end
     self.BaseClass.VJ_AnimationThink(self)
 end
 
--- ============================================================
---  OnSelectSchedule override
--- ============================================================
 function ENT:OnSelectSchedule()
     if GekkoOwnsAnimation(self) then
         return self:GetCurrentSchedule()
@@ -142,9 +120,6 @@ function ENT:OnSelectSchedule()
     return self.BaseClass.OnSelectSchedule(self)
 end
 
--- ============================================================
---  OnStartTask override
--- ============================================================
 function ENT:OnStartTask(taskID, taskData)
     if GekkoOwnsAnimation(self) then return end
     self.BaseClass.OnStartTask(self, taskID, taskData)
@@ -152,13 +127,6 @@ end
 
 -- ============================================================
 --  TranslateActivity
---
---  Jump sequences handled first, then AnimationTranslations
---  (which is patched to c_walk by PatchTranslationsForCrouch
---  while crouching), then BaseClass fallback.
---
---  Do NOT add ACT_IDLE / ACT_WALK / ACT_RUN fast-paths that
---  bypass AnimationTranslations — the crouch patch would be skipped.
 -- ============================================================
 function ENT:TranslateActivity(act)
     local jumpState = self:GetGekkoJumpState()
@@ -199,8 +167,12 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    -- Run crouch state-machine — returns true if crouch is active.
-    if self:GeckoCrouch_Update() then return end
+    -- FIX 3: write Gekko_LastSeqName here so debug output stays accurate
+    -- while the crouch path is active.
+    if self:GeckoCrouch_Update() then
+        self.Gekko_LastSeqName = "c_walk"
+        return
+    end
 
     local now    = CurTime()
     local curPos = self:GetPos()
@@ -279,9 +251,6 @@ local function SafeInitVJTables(ent)
     if not ent.VJ_IdleSounds     then ent.VJ_IdleSounds     = {} end
     if not ent.VJ_FootstepSounds then ent.VJ_FootstepSounds = {} end
     if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
-    -- VJBase MaintainIdleAnimation reads VJ_AnimationTable every tick
-    -- and spams 'temptable is nil' when it is absent.  It must be a
-    -- table (can be empty) — VJBase will populate it when needed.
     if not ent.VJ_AnimationTable then ent.VJ_AnimationTable = {} end
 end
 
@@ -378,11 +347,10 @@ end
 -- ============================================================
 --  Think
 --
---  ORDER MATTERS:
+--  ORDER:
 --    1. GekkoJump_Think / GekkoJump_Execute
 --    2. GekkoUpdateAnimation  (state machine + normal anim)
---    3. GeckoCrouch_AnimApply (if crouching) — runs LAST so it
---       always wins over anything VJBase wrote above it
+--    3. GeckoCrouch_AnimApply (if crouching) — runs LAST, always wins
 -- ============================================================
 function ENT:OnThink()
     self:GekkoJump_Think()

@@ -8,19 +8,15 @@
 --    3. Ceiling trace (TraceLine upward from head)         — immediate
 --    4. Random timed behaviour                             — timer-based
 --
---  Animation contract  (matches the original mgs_mech pattern):
+--  Animation contract:
 --    GeckoCrouch_AnimApply() is called EVERY think tick from
 --    OnThink *after* VJBase has had its turn.
 --
---    On the FIRST tick after entering crouch (_gekkoCrouchJustEntered
---    == true) we call ResetSequence(c_walk) + SetCycle(0) ONCE,
---    then clear the flag.
---
---    All subsequent ticks we ONLY call SetPlaybackRate — we never
---    call ResetSequence again unless the flag is raised again.
---    This is the same logic as the original vehicle's UpdateAnimation:
---      if sequence ~= currentSeqName then ResetSequence(sequence) end
---      self:SetPlaybackRate(arate)   -- every tick, no SetCycle
+--    Every tick: if GetSequence() ~= c_walk, call ResetSequence(c_walk).
+--    SetCycle(0) is only called on TRUE fresh entry
+--    (_gekkoCrouchJustEntered == true) so mid-crouch re-assertions
+--    (e.g. after jump steals the sequence) continue from the current
+--    cycle position instead of snapping to frame 0.
 --
 --  Movement contract:
 --    EnterCrouch zeros physics velocity + sets MoveSpeed=0 + calls
@@ -52,8 +48,6 @@ local RAND_DUR_MIN      = 3
 local RAND_DUR_MAX      = 10
 
 -- Playback rate while the mech is stationary in crouch.
--- A very small non-zero value keeps the animation alive without
--- visibly cycling when standing still.
 local CWALK_STATIONARY_RATE = 0.05
 
 -- ─────────────────────────────────────────────────────────────
@@ -259,19 +253,11 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  EnterCrouch
---
---  IMPORTANT: SetMaxSpeed() is a player-only method.
---  Do NOT call it on an NPC — it will crash.
---  To slow the NPC we zero the physics velocity, cancel the
---  nav path with StopMoving(), and set the VJBase speed vars
---  to 0 so the scheduler won't re-accelerate it.
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, randDuration)
     local now = CurTime()
     ent._gekkoCrouching          = true
-    -- Raise the flag — GeckoCrouch_AnimApply will call
-    -- ResetSequence exactly once on the very next tick, then clear it.
-    ent._gekkoCrouchJustEntered  = true
+    ent._gekkoCrouchJustEntered  = true   -- AnimApply will SetCycle(0) once
     local holdLen = CROUCH_HOLD_MIN
     if randDuration and randDuration > holdLen then
         holdLen = randDuration
@@ -282,22 +268,18 @@ local function EnterCrouch(ent, randDuration)
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
 
-    -- Resize collision hull
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
 
-    -- Zero movement so the mech halts instead of sliding.
-    -- NOTE: SetMaxSpeed() is player-only — do NOT call it here.
     ent:SetAbsVelocity(Vector(0, 0, 0))
     ent:StopMoving()
     ent.MoveSpeed = 0
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
 
-    -- Patch translations so TranslateActivity agrees
     if ent.GekkoSeq_CrouchWalk and ent.GekkoSeq_CrouchWalk ~= -1 then
         PatchTranslationsForCrouch(ent, ent.GekkoSeq_CrouchWalk)
     end
@@ -308,8 +290,6 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  ExitCrouch
---
---  NOTE: SetMaxSpeed() is player-only — do NOT call it here.
 -- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
     local now = CurTime()
@@ -327,15 +307,12 @@ local function ExitCrouch(ent)
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
-    -- Restore collision hull
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
 
-    -- Restore movement speeds from cached values.
-    -- NOTE: SetMaxSpeed() is player-only — do NOT call it here.
     ent.MoveSpeed = ent.StartWalkSpeed or ent.StartMoveSpeed or 150
     ent.RunSpeed  = ent.StartRunSpeed  or 300
     ent.WalkSpeed = ent.StartWalkSpeed or 150
@@ -349,36 +326,44 @@ end
 --
 --  Called every think tick from OnThink, AFTER VJBase has run.
 --
---  Pattern mirrors the original mgs_mech vehicle UpdateAnimation():
---    • ResetSequence is called ONCE — only on the first tick after
---      entering crouch (_gekkoCrouchJustEntered == true).
---    • Every subsequent tick we ONLY call SetPlaybackRate.
---    • We never call SetCycle(0) in a loop — that would freeze the
---      animation at frame 0 on every tick.
---
---  The GekkoOwnsAnimation() guards in MaintainIdleAnimation /
---  MaintainActivity / VJ_AnimationThink already prevent VJBase from
---  switching the sequence away from c_walk, so we do NOT need to
---  check GetSequence() != cwalk here and reset again.
+--  FIX 1: reassert c_walk every tick if anything stole the sequence.
+--  SetCycle(0) is only issued on true fresh entry so that mid-crouch
+--  re-assertions (e.g. after jump's land sequence finishes) do NOT
+--  snap the animation back to frame 0 — they continue from wherever
+--  the cycle currently is.
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_AnimApply()
     local cwalk = self.GekkoSeq_CrouchWalk
     if not cwalk or cwalk == -1 then return end
 
-    -- ── ONE-TIME sequence kick on entry ──────────────────────
-    if self._gekkoCrouchJustEntered then
+    -- ── Reassert sequence every tick ─────────────────────────
+    -- If anything (jump system, VJBase idle hook) stole the sequence
+    -- away from c_walk, we take it back immediately.
+    if self:GetSequence() ~= cwalk then
         self:ResetSequence(cwalk)
-        self:SetCycle(0)
-        self._gekkoCrouchSeqSet      = cwalk
-        self.Gekko_LastSeqIdx        = cwalk
-        self.Gekko_LastSeqName       = "c_walk"
-        self._gekkoCrouchJustEntered = false
-        print(string.format("[GeckoCrouch] Seq RESET → c_walk (%d)  (entry kick)", cwalk))
+
+        if self._gekkoCrouchJustEntered then
+            -- True fresh entry: start from the beginning of the animation.
+            self:SetCycle(0)
+            self._gekkoCrouchJustEntered = false
+            print(string.format("[GeckoCrouch] Seq RESET → c_walk (%d)  (entry kick)", cwalk))
+        else
+            -- Mid-crouch re-assertion: do NOT reset cycle.
+            -- Let the animation continue from its current position.
+            print(string.format("[GeckoCrouch] Seq RECLAIMED → c_walk (%d)  (stolen recovery)", cwalk))
+        end
+
+        self._gekkoCrouchSeqSet   = cwalk
+        self.Gekko_LastSeqIdx     = cwalk
+        self.Gekko_LastSeqName    = "c_walk"
+    else
+        -- Sequence is already correct — just keep the flag clear.
+        if self._gekkoCrouchJustEntered then
+            self._gekkoCrouchJustEntered = false
+        end
     end
 
-    -- ── Every tick: correct playback rate only ────────────────
-    -- Compute rate from actual XY velocity, same as the vehicle does
-    -- with its MoveSpeed vector length.
+    -- ── Every tick: update playback rate ─────────────────────
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
     local rate
@@ -389,14 +374,15 @@ function ENT:GeckoCrouch_AnimApply()
             and self.StartMoveSpeed or 150
         rate = math.Clamp(speed / maxSpd, 0.3, 1.5)
     else
-        -- Stationary: keep a tiny non-zero rate so the model stays
-        -- at its current frame instead of snapping to frame 0.
         rate = CWALK_STATIONARY_RATE
     end
 
     self:SetPlaybackRate(rate)
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
+
+    -- Keep debug name current regardless of path taken above.
+    self.Gekko_LastSeqName = "c_walk"
 end
 
 -- ─────────────────────────────────────────────────────────────
