@@ -108,17 +108,25 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  TickRandom
---  NOTE: does NOT modify _gekkoCrouchHoldUntil.
---        That is set exclusively in EnterCrouch.
+--
+--  FIX: The expire check must only use _gekkoCrouchHoldUntil
+--  when the entity is actually crouching.  On the first tick
+--  that random fires, _gekkoCrouchHoldUntil is still 0 (from
+--  Init) because EnterCrouch hasn't run yet.  Without the
+--  _gekkoCrouching guard, "now >= 0" is always true and the
+--  random flag is immediately cleared before EnterCrouch can
+--  stamp the hold — causing a sub-frame crouch.
 -- ─────────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
 
     if ent._gekkoRandomCrouch then
-        -- Only expire if our own random timer says so AND the hold has elapsed.
-        -- This prevents TickRandom from ending a crouch that was extended by
-        -- the mandatory CROUCH_HOLD_MIN timer.
-        if now >= ent._gekkoRandomCrouchEndT and now >= ent._gekkoCrouchHoldUntil then
+        -- Expire only when:
+        --   (a) our own random duration has elapsed, AND
+        --   (b) either we are not yet crouching (pre-Enter tick),
+        --       OR the mandatory hold has also elapsed.
+        local holdDone = (not ent._gekkoCrouching) or (now >= ent._gekkoCrouchHoldUntil)
+        if now >= ent._gekkoRandomCrouchEndT and holdDone then
             ent._gekkoRandomCrouch      = false
             ent._gekkoRandomCrouchEndT  = 0
             ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -148,7 +156,9 @@ end
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
     self._gekkoCrouching         = false
-    self._gekkoCrouchHoldUntil   = 0
+    self._gekkoCrouchHoldUntil   = -1    -- Use -1 (not 0) so "now >= -1" is always
+                                          -- true when not crouching, and the safety
+                                          -- re-stamp guard never fires spuriously.
     self._gekkoObsRearmT         = 0
     self._gekkoObsOnSince        = nil
     self._gekkoObsDebounced      = false
@@ -207,7 +217,9 @@ end
 local function ExitCrouch(ent)
     local now = CurTime()
     ent._gekkoCrouching         = false
-    ent._gekkoCrouchHoldUntil   = 0
+    -- Do NOT zero _gekkoCrouchHoldUntil here.  Leave it at its last
+    -- stamped value (a time in the past) so the safety re-stamp guard
+    -- inside GeckoCrouch_Update never fires on the re-entry tick.
     ent._gekkoCrouchSeqSet      = -1
     ent._gekkoObsRearmT         = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince        = nil
@@ -298,12 +310,6 @@ function ENT:GeckoCrouch_Update()
         end
     else
         -- CROUCHING.
-
-        -- Safety: hold timer must never be zero while crouched.
-        if self._gekkoCrouchHoldUntil <= 0 then
-            self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
-            print("[GeckoCrouch] Hold re-stamped (was zero)")
-        end
 
         -- Exit only when:
         --   (a) the mandatory hold has fully elapsed, AND
