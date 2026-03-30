@@ -64,7 +64,10 @@ local RAND_DUR_MAX      = 10
 -- ─────────────────────────────────────────────────────────────
 -- Forward obstacle trace: crouch-height hull so it only catches
 -- obstacles low enough to actually require ducking.
-local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
+-- NOTE: mins.z is 10 (not 0) so the hull does not clip into the
+-- ground plane on flat terrain, which would cause constant false
+-- positives and trigger random crouching in open fields.
+local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 10)
 local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
 
 -- ─────────────────────────────────────────────────────────────
@@ -214,13 +217,16 @@ end
 
 local function ExitCrouch(ent)
     local now = CurTime()
-    ent._gekkoCrouching    = false
-    ent._gekkoCrouchSeqSet = -1
-    ent._gekkoObsRearmT    = now + STAND_REARM_DELAY
-    ent._gekkoObsOnSince   = nil
-    ent._gekkoObsDebounced = false
-    ent._gekkoObsHullHit   = false
-    ent._gekkoCeilingHit   = false
+    ent._gekkoCrouching         = false
+    ent._gekkoCrouchSeqSet      = -1
+    ent._gekkoObsRearmT         = now + STAND_REARM_DELAY
+    ent._gekkoObsOnSince        = nil
+    ent._gekkoObsDebounced      = false
+    ent._gekkoObsHullHit        = false
+    ent._gekkoCeilingHit        = false
+    ent._gekkoRandomCrouch      = false
+    ent._gekkoRandomCrouchEndT  = 0
+    ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
@@ -244,9 +250,6 @@ function ENT:GeckoCrouch_Update()
        jumpState == self.JUMP_LAND    or
        (self._gekkoJustJumped and now < self._gekkoJustJumped) then
         if self._gekkoCrouching then
-            self._gekkoRandomCrouch      = false
-            self._gekkoRandomCrouchEndT  = 0
-            self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
             ExitCrouch(self)
             print("[GeckoCrouch] Jump interrupted crouch")
         end
@@ -303,11 +306,7 @@ function ENT:GeckoCrouch_Update()
         end
 
         -- Exit only after the minimum hold AND all triggers have dropped.
-        -- No clearance trace — timer-only gate is correct for this NPC.
         if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
-            self._gekkoRandomCrouch      = false
-            self._gekkoRandomCrouchEndT  = 0
-            self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
             ExitCrouch(self)
             return false
         end
@@ -323,6 +322,12 @@ function ENT:GeckoCrouch_Update()
     local targetSeq = (moving and self.GekkoSeq_CrouchWalk ~= -1)
         and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
+    -- Only call ResetSequence when the target actually changes.
+    -- NEVER call SetSequence each tick — it resets the cycle to 0
+    -- every frame, causing the animation to restart ~60 times/sec
+    -- and producing the visible rapid up/down flicker.
+    -- Once ResetSequence is called, the engine advances the cycle
+    -- on its own; we must not touch it again until the seq changes.
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
         self:ResetSequence(targetSeq)
@@ -338,9 +343,8 @@ function ENT:GeckoCrouch_Update()
         self.Gekko_LastSeqName = moving and "c_walk" or "cidle"
         print(string.format("[GeckoCrouch] Seq → %s (%d) moving=%s",
             self.Gekko_LastSeqName, targetSeq, tostring(moving)))
-    else
-        self:SetSequence(targetSeq)
     end
+    -- (no else — engine owns the cycle from here)
 
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)

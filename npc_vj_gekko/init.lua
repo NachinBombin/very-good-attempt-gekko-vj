@@ -81,6 +81,19 @@ function ENT:SetAnimationTranslations(wepHoldType)
 end
 
 -- ============================================================
+--  MaintainIdleAnimation override
+--  VJBase registers a global Think hook (funcAnimThink) during
+--  Initialize() that calls MaintainIdleAnimation() every tick.
+--  This hook bypasses VJ_AnimationThink and MaintainActivity.
+--  While crouching, crouch_system owns the sequence entirely;
+--  we must prevent VJBase from fighting it via this path.
+-- ============================================================
+function ENT:MaintainIdleAnimation(force)
+    if self._gekkoCrouching then return end
+    self.BaseClass.MaintainIdleAnimation(self, force)
+end
+
+-- ============================================================
 --  MaintainActivity override
 -- ============================================================
 function ENT:MaintainActivity()
