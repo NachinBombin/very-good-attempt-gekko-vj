@@ -49,9 +49,13 @@ end
 
 -- ============================================================
 --  GekkoOwnsAnimation
+--  Returns true when a Gekko-owned system (jump / suppression)
+--  needs exclusive control of the animation.  Crouch is no longer
+--  listed here because crouch uses TranslateActivity instead of
+--  blocking VJBase — we WANT VJBase's animation system to run
+--  normally while crouching; it just gets redirected sequences.
 -- ============================================================
 local function GekkoOwnsAnimation(ent)
-    if ent._gekkoCrouching then return true end
     local js = ent:GetGekkoJumpState()
     if js == ent.JUMP_RISING or js == ent.JUMP_FALLING or js == ent.JUMP_LAND then
         return true
@@ -63,7 +67,7 @@ local function GekkoOwnsAnimation(ent)
 end
 
 -- ============================================================
---  Animation translations
+--  Animation translations  (standing / normal)
 -- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
     if not self.AnimationTranslations then
@@ -96,15 +100,94 @@ function ENT:SetAnimationTranslations(wepHoldType)
 end
 
 -- ============================================================
+--  TranslateActivity
+--
+--  Called by the engine every time it needs to resolve an
+--  activity to a sequence number.  Jump sequences take priority,
+--  then crouch redirects ACT_IDLE → cidle and locomotion
+--  activities → c_walk.  ACT_DO_NOT_DISTURB (used by all
+--  PlaySequence / attack animations) never reaches this function
+--  so attacks are untouched.
+-- ============================================================
+function ENT:TranslateActivity(act)
+    -- Jump has highest priority.
+    local jumpState = self:GetGekkoJumpState()
+    if jumpState == self.JUMP_RISING  and self._seqJump and self._seqJump ~= -1 then
+        return self._seqJump
+    end
+    if jumpState == self.JUMP_FALLING and self._seqFall and self._seqFall ~= -1 then
+        return self._seqFall
+    end
+    if jumpState == self.JUMP_LAND    and self._seqLand and self._seqLand ~= -1 then
+        return self._seqLand
+    end
+
+    -- Crouch redirect: map locomotion and idle activities to
+    -- crouch sequences so VJBase's activity system produces the
+    -- right sequence without any tick-fighting.
+    if self._gekkoCrouching then
+        local cwalk = self.GekkoSeq_CrouchWalk
+        local cidle = self.GekkoSeq_CrouchIdle
+
+        if act == ACT_WALK     or act == ACT_RUN     or
+           act == ACT_WALK_AIM or act == ACT_RUN_AIM then
+            if cwalk and cwalk ~= -1 then return cwalk end
+        end
+
+        if act == ACT_IDLE       or act == ACT_IDLE_ANGRY or
+           act == ACT_COMBAT_IDLE then
+            if cidle and cidle ~= -1 then return cidle end
+            if cwalk and cwalk ~= -1 then return cwalk end
+        end
+
+        -- Attack activities while crouching: use cidle as the base pose.
+        if act == ACT_RANGE_ATTACK1         or act == ACT_RANGE_ATTACK2         or
+           act == ACT_GESTURE_RANGE_ATTACK1 or act == ACT_GESTURE_RANGE_ATTACK2 then
+            if cidle and cidle ~= -1 then return cidle end
+            if cwalk and cwalk ~= -1 then return cwalk end
+        end
+    end
+
+    -- Normal translation table (standing).
+    if self.AnimationTranslations then
+        local translated = self.AnimationTranslations[act]
+        if translated ~= nil then
+            return translated
+        end
+    end
+
+    return self.BaseClass.TranslateActivity(self, act)
+end
+
+-- ============================================================
 --  VJBase animation overrides
 -- ============================================================
 function ENT:MaintainIdleAnimation(force)
     if GekkoOwnsAnimation(self) then return end
+
+    -- While crouching, VJBase's idle system would re-assert the
+    -- normal idle sequence.  Instead we set cidle directly and
+    -- loop it, then return without calling the base.
+    if self._gekkoCrouching then
+        local cidle = self.GekkoSeq_CrouchIdle
+        local cwalk = self.GekkoSeq_CrouchWalk
+        local seq   = (cidle and cidle ~= -1) and cidle or cwalk
+        if seq and seq ~= -1 and (force or self:GetSequence() ~= seq) then
+            self:ResetSequence(seq)
+            self:SetCycle(0)
+            self:SetPlaybackRate(0.05)   -- near-frozen idle
+        end
+        return
+    end
+
     self.BaseClass.MaintainIdleAnimation(self, force)
 end
 
 function ENT:MaintainActivity()
     if GekkoOwnsAnimation(self) then return end
+    -- While crouching, TranslateActivity handles everything;
+    -- allow VJBase's MaintainActivity to run normally so the
+    -- engine calls TranslateActivity and gets the right sequence.
     self.BaseClass.MaintainActivity(self)
 end
 
@@ -126,31 +209,6 @@ function ENT:OnStartTask(taskID, taskData)
 end
 
 -- ============================================================
---  TranslateActivity
--- ============================================================
-function ENT:TranslateActivity(act)
-    local jumpState = self:GetGekkoJumpState()
-    if jumpState == self.JUMP_RISING  and self._seqJump and self._seqJump ~= -1 then
-        return self._seqJump
-    end
-    if jumpState == self.JUMP_FALLING and self._seqFall and self._seqFall ~= -1 then
-        return self._seqFall
-    end
-    if jumpState == self.JUMP_LAND    and self._seqLand and self._seqLand ~= -1 then
-        return self._seqLand
-    end
-
-    if self.AnimationTranslations then
-        local translated = self.AnimationTranslations[act]
-        if translated ~= nil then
-            return translated
-        end
-    end
-
-    return self.BaseClass.TranslateActivity(self, act)
-end
-
--- ============================================================
 --  Core animation update  (called from OnThink each tick)
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
@@ -167,8 +225,9 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    -- FIX 3: write Gekko_LastSeqName here so debug output stays accurate
-    -- while the crouch path is active.
+    -- GeckoCrouch_Update runs the crouch state machine and
+    -- manages the playback rate.  TranslateActivity ensures
+    -- VJBase produces the right sequence automatically.
     if self:GeckoCrouch_Update() then
         self.Gekko_LastSeqName = "c_walk"
         return
@@ -310,9 +369,10 @@ function ENT:Init()
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
 
         print(string.format(
-            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | c_walk=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
             selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
             selfRef.GekkoSeq_CrouchWalk or -1,
+            selfRef.GekkoSeq_CrouchIdle or -1,
             selfRef.GekkoSpineBone,
             mgAtt   and "OK" or "MISSING",
             misLAtt and "OK" or "MISSING",
@@ -349,8 +409,9 @@ end
 --
 --  ORDER:
 --    1. GekkoJump_Think / GekkoJump_Execute
---    2. GekkoUpdateAnimation  (state machine + normal anim)
---    3. GeckoCrouch_AnimApply (if crouching) — runs LAST, always wins
+--    2. GekkoUpdateAnimation  (runs crouch state machine first;
+--       on a crouching tick it manages the playback rate and
+--       returns early — TranslateActivity handles the sequence)
 -- ============================================================
 function ENT:OnThink()
     self:GekkoJump_Think()
@@ -361,9 +422,9 @@ function ENT:OnThink()
 
     self:GekkoUpdateAnimation()
 
-    if self._gekkoCrouching then
-        self:GeckoCrouch_AnimApply()
-    end
+    -- GeckoCrouch_AnimApply() has been removed.
+    -- TranslateActivity + MaintainIdleAnimation override handle
+    -- all crouch animation without any tick-fighting.
 
     if true and CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
