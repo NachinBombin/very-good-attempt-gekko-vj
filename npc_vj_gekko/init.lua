@@ -48,25 +48,9 @@ local function SafeResetSequence(ent, seq)
 end
 
 -- ============================================================
---  GekkoOwnsAnimation
---  Returns true when a Gekko-owned system (jump / suppression)
---  needs exclusive control of the animation.
--- ============================================================
-local function GekkoOwnsAnimation(ent)
-    local js = ent:GetGekkoJumpState()
-    if js == ent.JUMP_RISING or js == ent.JUMP_FALLING or js == ent.JUMP_LAND then
-        return true
-    end
-    if ent._gekkoSuppressActivity and CurTime() < ent._gekkoSuppressActivity then
-        return true
-    end
-    return false
-end
-
--- ============================================================
 --  Animation translations  (standing / normal)
 -- ============================================================
-function ENT:SetAnimationTranslations(wepHoldType)
+function ENT:SetAnimationTranslations()
     if not self.AnimationTranslations then
         self.AnimationTranslations = {}
     end
@@ -98,12 +82,16 @@ end
 
 -- ============================================================
 --  Core animation update  (called from OnThink each tick)
+--
+--  KEY DESIGN: we call ResetSequence every tick unconditionally
+--  (not only on change) because VJBase's funcAnimThink fires
+--  BEFORE OnThink and resets the sequence via MaintainIdleAnimation
+--  on every single frame.  Only always-wins-last logic survives.
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
     local jumpState = self:GetGekkoJumpState()
-
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
        jumpState == self.JUMP_LAND    or
@@ -113,8 +101,15 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    if self:GeckoCrouch_Update() then return end
+    -- GeckoCrouch_Update handles its own ResetSequence every tick.
+    if self:GeckoCrouch_Update() then
+        -- Invalidate standing seq cache so the first tick after
+        -- standing up always re-applies the correct sequence.
+        self.Gekko_LastSeqIdx = -1
+        return
+    end
 
+    -- ── Standing locomotion ──────────────────────────────────
     local now    = CurTime()
     local curPos = self:GetPos()
     local vel    = 0
@@ -125,7 +120,6 @@ function ENT:GekkoUpdateAnimation()
             vel = (curPos - self._gekkoLastPos):Length() / dt
         end
     end
-
     self._gekkoLastPos  = curPos
     self._gekkoLastTime = now
 
@@ -145,7 +139,6 @@ function ENT:GekkoUpdateAnimation()
     end
 
     local targetSeq, arate
-
     if vel > 5 then
         if self._gekkoRunning then
             targetSeq = self.GekkoSeq_Run
@@ -164,17 +157,20 @@ function ENT:GekkoUpdateAnimation()
 
     arate = math.Clamp(arate, 0.5, 3.0)
 
-    if targetSeq ~= self.Gekko_LastSeqIdx then
+    -- Always call ResetSequence — VJBase overwrites it every frame
+    -- via its own Think hook, so we must always overwrite back.
+    if targetSeq and targetSeq ~= -1 then
         SafeResetSequence(self, targetSeq)
-        self.Gekko_LastSeqIdx = targetSeq
-        if targetSeq == self.GekkoSeq_Run then
-            self.Gekko_LastSeqName = "run"
-        elseif targetSeq == self.GekkoSeq_Walk then
-            self.Gekko_LastSeqName = "walk"
-        else
-            self.Gekko_LastSeqName = "idle"
-        end
     end
+
+    if targetSeq == self.GekkoSeq_Run then
+        self.Gekko_LastSeqName = "run"
+    elseif targetSeq == self.GekkoSeq_Walk then
+        self.Gekko_LastSeqName = "walk"
+    else
+        self.Gekko_LastSeqName = "idle"
+    end
+    self.Gekko_LastSeqIdx = targetSeq
 
     self:SetPlaybackRate(arate)
     self:SetNWFloat("GekkoSpeed", vel)
@@ -210,6 +206,7 @@ function ENT:Init()
     self.Gekko_LastSeqIdx    = -1
     self._missileCount       = 0
     self._mgBurstActive      = false
+    self._mgBurstEndT        = 0
     self._weaponMode         = WMODE_MG
     self._gekkoRunning       = false
     self._gekkoLastEnemyDist = nil
@@ -218,7 +215,6 @@ function ENT:Init()
     self._gekkoSuppressActivity = 0
 
     SafeInitVJTables(self)
-
     self:GekkoJump_Init()
     self:GeckoCrouch_Init()
 
@@ -243,8 +239,6 @@ function ENT:Init()
 
         -- Populate AnimationTranslations so native MaintainIdleAnimation
         -- resolves ACT_IDLE → seq 2 (idle) instead of seq 0 (ragdoll).
-        -- This is the standing-mode table; GeckoCrouch_Update overwrites
-        -- the active sequence directly while crouching.
         selfRef:SetAnimationTranslations()
 
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
@@ -256,7 +250,7 @@ function ENT:Init()
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
 
         print(string.format(
-            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            "[GekkoNPC] Deferred activate | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
             selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
             selfRef.GekkoSeq_CrouchWalk or -1,
             selfRef.GekkoSeq_CrouchIdle or -1,
@@ -279,7 +273,6 @@ function ENT:Activate()
         base.Activate(self)
     end
     SafeInitVJTables(self)
-    print("[GekkoNPC] Activate() called by engine (future VJ path)")
 end
 
 -- ============================================================
@@ -293,25 +286,24 @@ end
 
 -- ============================================================
 --  Think
---
---  ORDER:
---    1. GekkoJump_Think / GekkoJump_Execute
---    2. GekkoUpdateAnimation — runs after funcAnimThink (the VJBase
---       Think hook), so ResetSequence calls here win every frame.
 -- ============================================================
 function ENT:OnThink()
-    self:GekkoJump_Think()
+    -- Safety: unstick _mgBurstActive if the burst timer has expired
+    -- (can happen if entity was invalid mid-burst and timer never fired).
+    if self._mgBurstActive and CurTime() > self._mgBurstEndT then
+        self._mgBurstActive = false
+    end
 
+    self:GekkoJump_Think()
     if self:GekkoJump_ShouldJump() then
         self:GekkoJump_Execute()
     end
 
     self:GekkoUpdateAnimation()
 
-    if true and CurTime() > self.Gekko_NextDebugT then
+    if CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
         local dist, src
-
         if IsValid(enemy) then
             dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
             src  = IsValid(self.VJ_TheEnemy) and "vj" or "engine"
@@ -322,9 +314,8 @@ function ENT:OnThink()
             dist = -1
             src  = "none"
         end
-
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s  crouch=%s  VJ_Crouch=%s  ceiling=%s",
+            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s  crouch=%s  VJ_Crouch=%s  ceil=%s",
             self:GetNWFloat("GekkoSpeed", 0),
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
@@ -345,7 +336,6 @@ end
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
-
     if self:GekkoJump_IsAirborne() then return true end
 
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
@@ -355,6 +345,8 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if mode == WMODE_MG then
         if self._mgBurstActive then return true end
         self._mgBurstActive = true
+        -- Safety deadline: burst duration + 1s grace
+        self._mgBurstEndT = CurTime() + (MG_ROUNDS * MG_INTERVAL) + 1.0
         local entRef = self
 
         for i = 0, MG_ROUNDS - 1 do
@@ -407,10 +399,10 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                 end
             end)
         end
-
         return true
     end
 
+    -- Missile
     self._missileCount = (self._missileCount or 0) + 1
     local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local misAtt = self:GetAttachment(missileAttIdx)
@@ -432,7 +424,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     eff:SetOrigin(src)
     eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
-
     return true
 end
 

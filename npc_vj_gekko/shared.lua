@@ -24,10 +24,11 @@ ENT.StopMovingWhileAttacking = false
 ENT.VJ_NPC_UsesCustomMoveAnimation = true
 
 ENT.MovementType             = VJ_MOVETYPE_GROUND
--- Must be false: VJBase's Think sets move_x/move_y every tick when this
--- is true, fighting GekkoUpdateAnimation and GeckoCrouch_Update which
--- both zero those params.  GekkoUpdateAnimation handles pose params itself.
-ENT.UsePoseParameterMovement = false
+-- UsePoseParameterMovement must stay true so VJBase drives locomotion
+-- (moves the NPC toward enemies, schedules tasks, etc.).
+-- GeckoCrouch_Update wins the sequence battle by calling ResetSequence
+-- every tick from OnThink, which runs AFTER VJBase's Think hook.
+ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
 
