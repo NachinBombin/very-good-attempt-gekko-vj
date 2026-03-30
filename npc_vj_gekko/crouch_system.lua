@@ -1,39 +1,27 @@
 -- ============================================================
 --  crouch_system.lua
---  Gekko VJ NPC — Crouch mechanic  (clean rewrite)
+--  Gekko VJ NPC — Crouch mechanic
 --
---  STRATEGY (confirmed against VJBase source):
+--  STRATEGY:
 --
---    The previous approach installed a SetSequence shadow and
---    froze VJ_IsMoving every tick.  The shadow never worked
---    because GMod entity userdata does not support instance-level
---    method shadowing for engine-bound functions, and freezing
---    VJ_IsMoving broke combat AI.
+--    VJBase captures ENT.MaintainIdleAnimation into a local closure
+--    (local idleFunc = ENT.MaintainIdleAnimation) at file-load time,
+--    before any entity-instance code runs.  This means any override
+--    of ENT:MaintainIdleAnimation in init.lua is completely invisible
+--    to VJBase's funcAnimThink hook — it always calls the original
+--    GMod engine MaintainIdleAnimation directly, every Think tick.
 --
---    The correct approach is to redirect VJBase's own systems
---    BEFORE they produce the wrong sequence, not fight them after:
+--    That engine function resolves GetIdealActivity() → TranslateActivity
+--    → ResetSequence.  With an empty AnimationTranslations table it
+--    resolves to sequence 0 (ragdoll), locking the legs every ~1s.
 --
---    FIX 1 — TranslateActivity override  (in init.lua)
---      VJBase calls TranslateActivity(act) every time the engine
---      resolves an activity to a sequence number.  While crouching
---      we redirect ACT_WALK / ACT_RUN / ACT_WALK_AIM / ACT_RUN_AIM
---      to c_walk (seq 5) and ACT_IDLE to cidle (seq 3).
---      ACT_DO_NOT_DISTURB (used by PlaySequence / all attack anims)
---      never passes through TranslateActivity — attacks are
---      completely unaffected and work in full crouched pose.
---
---    FIX 2 — MaintainIdleAnimation override  (in init.lua)
---      VJBase registers a global Think hook (funcAnimThink) that
---      calls MaintainIdleAnimation every single engine frame.
---      When crouching and stationary that would re-assert ACT_IDLE
---      → seq "idle".  We override MaintainIdleAnimation so it
---      directly sets the cidle sequence and loops it, and skips
---      the base call entirely.  The ACT_DO_NOT_DISTURB guard
---      ensures attack sequences are never interrupted.
+--    The only reliable fix is to call ResetSequence ourselves from
+--    OnThink (which runs AFTER the Think hook), overwriting whatever
+--    MaintainIdleAnimation just set.  We do this unconditionally every
+--    tick inside GeckoCrouch_Update while crouching is active.
 --
 --    Hull resize, speed zeroing, and all triggers (VJ native,
---    ceiling, obstacle, random) are preserved from the previous
---    version unchanged.
+--    ceiling, obstacle, random) are unchanged.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -247,10 +235,6 @@ local function EnterCrouch(ent, randDuration)
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
 
-    -- _gekkoCrouching is now true, so TranslateActivity will return
-    -- cidle for ACT_IDLE.  Force MaintainIdleAnimation to apply it now.
-    ent:MaintainIdleAnimation(true)
-
     print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs  holdUntil=%.2f",
         HITBOX_CROUCH_H, holdLen, ent._gekkoCrouchHoldUntil))
 end
@@ -280,8 +264,7 @@ local function ExitCrouch(ent)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
 
-    -- Restore locomotion speeds from constants (VJBase may have
-    -- overwritten the Start* caches during the crouch).
+    -- Restore locomotion speeds.
     ent.MoveSpeed = DEFAULT_MOVE_SPEED
     ent.RunSpeed  = DEFAULT_RUN_SPEED
     ent.WalkSpeed = DEFAULT_WALK_SPEED
@@ -289,17 +272,13 @@ local function ExitCrouch(ent)
     -- Re-enable VJBase's movement thinkers.
     ent.VJ_CanMoveThink = true
 
-    -- _gekkoCrouching is now false, so TranslateActivity returns
-    -- normal activities again.  Force idle system to refresh.
-    ent:MaintainIdleAnimation(true)
-
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
 end
 
 -- ─────────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
 --  Called every tick from GekkoUpdateAnimation().
---  Returns true  → crouch active this tick
+--  Returns true  → crouch active this tick (caller must return)
 --  Returns false → crouch inactive
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
@@ -371,22 +350,36 @@ function ENT:GeckoCrouch_Update()
         end
     end
 
-    -- While crouching: manage playback rate.
-    -- TranslateActivity handles which sequence plays; we only set speed.
+    -- ── Sequence enforcement ──────────────────────────────────
+    -- VJBase's funcAnimThink fires BEFORE OnThink and calls the
+    -- native MaintainIdleAnimation, which resets the sequence to
+    -- whatever GetIdealActivity() resolves to (often seq 0 / ragdoll).
+    -- We overwrite it here unconditionally, every tick, because
+    -- OnThink always runs after the Think hook.
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
-    local rate
+    local rate, targetSeq
 
     if speed2 > (16 * 16) then
-        rate = math.Clamp(math.sqrt(speed2) / DEFAULT_MOVE_SPEED, 0.3, 1.5)
+        rate      = math.Clamp(math.sqrt(speed2) / DEFAULT_MOVE_SPEED, 0.3, 1.5)
+        targetSeq = self.GekkoSeq_CrouchWalk
     else
-        rate = CWALK_STATIONARY_RATE
+        rate      = CWALK_STATIONARY_RATE
+        targetSeq = (self.GekkoSeq_CrouchIdle ~= -1)
+                    and self.GekkoSeq_CrouchIdle
+                    or  self.GekkoSeq_CrouchWalk
     end
 
-    self:SetPlaybackRate(rate)
+    if targetSeq and targetSeq ~= -1 then
+        if self:GetSequence() ~= targetSeq then
+            self:ResetSequence(targetSeq)
+        end
+        self:SetPlaybackRate(rate)
+    end
+
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
-    self.Gekko_LastSeqName = "c_walk"
+    self.Gekko_LastSeqName = (targetSeq == self.GekkoSeq_CrouchWalk) and "c_walk" or "cidle"
 
     return true
 end

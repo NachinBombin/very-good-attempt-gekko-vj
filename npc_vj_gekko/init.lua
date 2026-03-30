@@ -50,10 +50,7 @@ end
 -- ============================================================
 --  GekkoOwnsAnimation
 --  Returns true when a Gekko-owned system (jump / suppression)
---  needs exclusive control of the animation.  Crouch is no longer
---  listed here because crouch uses TranslateActivity instead of
---  blocking VJBase — we WANT VJBase's animation system to run
---  normally while crouching; it just gets redirected sequences.
+--  needs exclusive control of the animation.
 -- ============================================================
 local function GekkoOwnsAnimation(ent)
     local js = ent:GetGekkoJumpState()
@@ -244,6 +241,12 @@ function ENT:Init()
 
         selfRef:GeckoCrouch_CacheSeqs()
 
+        -- Populate AnimationTranslations so native MaintainIdleAnimation
+        -- resolves ACT_IDLE → seq 2 (idle) instead of seq 0 (ragdoll).
+        -- This is the standing-mode table; GeckoCrouch_Update overwrites
+        -- the active sequence directly while crouching.
+        selfRef:SetAnimationTranslations()
+
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
         selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
         selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
@@ -293,9 +296,8 @@ end
 --
 --  ORDER:
 --    1. GekkoJump_Think / GekkoJump_Execute
---    2. GekkoUpdateAnimation  (runs crouch state machine first;
---       on a crouching tick GeckoCrouch_Update handles everything
---       and returns true, so we skip the rest)
+--    2. GekkoUpdateAnimation — runs after funcAnimThink (the VJBase
+--       Think hook), so ResetSequence calls here win every frame.
 -- ============================================================
 function ENT:OnThink()
     self:GekkoJump_Think()

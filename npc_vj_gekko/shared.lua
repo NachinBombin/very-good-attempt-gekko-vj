@@ -24,7 +24,10 @@ ENT.StopMovingWhileAttacking = false
 ENT.VJ_NPC_UsesCustomMoveAnimation = true
 
 ENT.MovementType             = VJ_MOVETYPE_GROUND
-ENT.UsePoseParameterMovement = true
+-- Must be false: VJBase's Think sets move_x/move_y every tick when this
+-- is true, fighting GekkoUpdateAnimation and GeckoCrouch_Update which
+-- both zero those params.  GekkoUpdateAnimation handles pose params itself.
+ENT.UsePoseParameterMovement = false
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
 
@@ -94,10 +97,7 @@ ENT.SoundTbl_Death = {
 }
 ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
 
--- VJ_AnimationTable must exist as a table; VJBase MaintainIdleAnimation
--- reads it every tick and prints 'temptable is nil' when it is absent.
 ENT.AnimationTranslations = {}
-ENT.VJ_AnimationTable     = {}
 
 -- ============================================================
 --  Blood / gore
