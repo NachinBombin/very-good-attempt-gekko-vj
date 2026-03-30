@@ -246,6 +246,23 @@ function ENT:GekkoUpdateAnimation()
 end
 
 -- ============================================================
+--  SafeInitVJTables
+--  Ensures all VJBase sound/damage tables exist so that
+--  VJ_ApplyDamageInfo never errors with "temptable is nil".
+--  Called from both Init() and Activate() because VJBase's
+--  BaseClass.Activate() may wipe or re-create these tables.
+-- ============================================================
+local function SafeInitVJTables(ent)
+    if not ent.VJ_AddOnDamage    then ent.VJ_AddOnDamage    = {} end
+    if not ent.VJ_DamageInfos    then ent.VJ_DamageInfos    = {} end
+    if not ent.VJ_DeathSounds    then ent.VJ_DeathSounds    = {} end
+    if not ent.VJ_PainSounds     then ent.VJ_PainSounds     = {} end
+    if not ent.VJ_IdleSounds     then ent.VJ_IdleSounds     = {} end
+    if not ent.VJ_FootstepSounds then ent.VJ_FootstepSounds = {} end
+    if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
+end
+
+-- ============================================================
 --  Init
 -- ============================================================
 function ENT:Init()
@@ -268,15 +285,7 @@ function ENT:Init()
     self._gekkoLastTime      = CurTime() - 0.1
     self._gekkoSuppressActivity = 0
 
-    -- Pre-init sound tables that VJBase may look up before Activate()
-    -- to prevent the "temptable is nil" error from VJ_ApplyDamageInfo.
-    if not self.VJ_AddOnDamage    then self.VJ_AddOnDamage    = {} end
-    if not self.VJ_DamageInfos    then self.VJ_DamageInfos    = {} end
-    if not self.VJ_DeathSounds    then self.VJ_DeathSounds    = {} end
-    if not self.VJ_PainSounds     then self.VJ_PainSounds     = {} end
-    if not self.VJ_IdleSounds     then self.VJ_IdleSounds     = {} end
-    if not self.VJ_FootstepSounds then self.VJ_FootstepSounds = {} end
-    if not self.AnimationTranslations then self.AnimationTranslations = {} end
+    SafeInitVJTables(self)
 
     self:GekkoJump_Init()
     self:GeckoCrouch_Init()
@@ -330,6 +339,8 @@ function ENT:Activate()
     if base and base.Activate and base.Activate ~= ENT.Activate then
         base.Activate(self)
     end
+    -- Re-guard tables after BaseClass.Activate may have altered them.
+    SafeInitVJTables(self)
     print("[GekkoNPC] Activate() called by engine (future VJ path)")
 end
 

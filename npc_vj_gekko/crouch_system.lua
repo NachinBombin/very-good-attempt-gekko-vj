@@ -108,24 +108,18 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  TickRandom
+--
+--  NOTE: This function only SETS the _gekkoRandomCrouch flag.
+--  It does NOT clear it — clearing is done exclusively inside
+--  GeckoCrouch_Update() once the hold timer has truly elapsed
+--  and the NPC is confirmed standing.  This prevents the flag
+--  from being cleared mid-jump or mid-crouch-animation.
 -- ─────────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
 
-    if ent._gekkoRandomCrouch then
-        -- Expire only when the random duration has elapsed AND the
-        -- mandatory hold has also elapsed.  Both are tracked in
-        -- _gekkoCrouchHoldUntil (stamped to max(CROUCH_HOLD_MIN,
-        -- randomDuration) in EnterCrouch), so a single check suffices.
-        if (not ent._gekkoCrouching) or (now >= ent._gekkoCrouchHoldUntil) then
-            ent._gekkoRandomCrouch      = false
-            ent._gekkoRandomCrouchEndT  = 0
-            ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-            print(string.format("[GeckoCrouch] Random EXPIRED — next roll in %.1fs",
-                ent._gekkoRandomCrouchNextT - now))
-        end
-        return
-    end
+    -- If already flagged, do nothing — let the state machine expire it.
+    if ent._gekkoRandomCrouch then return end
 
     if now < ent._gekkoRandomCrouchNextT then return end
 
@@ -207,8 +201,8 @@ local function EnterCrouch(ent, randDuration)
     ent.MoveSpeed = 0
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
-    print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs",
-        HITBOX_CROUCH_H, holdLen))
+    print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs  holdUntil=%.2f",
+        HITBOX_CROUCH_H, holdLen, ent._gekkoCrouchHoldUntil))
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -246,20 +240,20 @@ end
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
-    -- ── Jump interrupt — only allowed when the hold has fully expired ──
+    -- ── Jump interrupt ───────────────────────────────────────────
+    -- While airborne or in the landing phase, let the jump system
+    -- own the NPC entirely.  We preserve the crouching state so
+    -- that when the lockout ends we resume correctly.
+    -- We do NOT call ExitCrouch here — only the hold-expiry path
+    -- below should do that, once the NPC is back on the ground.
     local jumpState  = self:GetGekkoJumpState()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
                        jumpState == self.JUMP_LAND
 
     if jumpActive then
-        if self._gekkoCrouching then
-            if now >= self._gekkoCrouchHoldUntil then
-                ExitCrouch(self)
-                return false
-            end
-            return false
-        end
+        -- Return false so GekkoUpdateAnimation hands control to the
+        -- jump system, but do not modify any crouch state variables.
         return false
     end
 
@@ -268,6 +262,7 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Tick sub-systems ─────────────────────────────────────────
+    -- TickRandom only arms the flag; it never disarms it here.
     TickRandom(self)
 
     local obsHit = false
@@ -304,12 +299,30 @@ function ENT:GeckoCrouch_Update()
         end
     else
         -- CROUCHING.
-        -- Exit only when the mandatory hold (which covers the full
-        -- random duration when random-triggered) has elapsed AND
-        -- all triggers have dropped.
-        if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
-            ExitCrouch(self)
-            return false
+        -- Exit only when the mandatory hold has elapsed AND all triggers
+        -- have dropped.  When random-triggered, _gekkoRandomCrouch stays
+        -- true until holdUntil passes, so wantCrouch stays true for the
+        -- full intended duration without TickRandom needing to disarm it.
+        if now >= self._gekkoCrouchHoldUntil then
+            -- Hold has elapsed.  Disarm the random flag if it was the trigger.
+            if self._gekkoRandomCrouch then
+                self._gekkoRandomCrouch      = false
+                self._gekkoRandomCrouchEndT  = 0
+                self._gekkoRandomDuration    = 0
+                self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+                print(string.format("[GeckoCrouch] Random EXPIRED — next roll in %.1fs",
+                    self._gekkoRandomCrouchNextT - now))
+                -- Re-evaluate wantCrouch without the random flag.
+                wantCrouch = vjCrouch or obsHit
+            end
+
+            if not wantCrouch then
+                ExitCrouch(self)
+                return false
+            end
+            -- Another trigger still active — re-stamp hold for CROUCH_HOLD_MIN
+            -- to avoid flicker.
+            self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
         -- Still crouching: fall through to animation block.
     end
