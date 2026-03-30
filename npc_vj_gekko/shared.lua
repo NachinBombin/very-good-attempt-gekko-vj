@@ -94,8 +94,10 @@ ENT.SoundTbl_Death = {
 }
 ENT.SoundTbl_Alert = {"mgs4/gekko/se_stage_mg_shadowmoses_gek_alert.wav"}
 
-----------------------------------------------------------------------------------
+-- VJ_AnimationTable must exist as a table; VJBase MaintainIdleAnimation
+-- reads it every tick and prints 'temptable is nil' when it is absent.
 ENT.AnimationTranslations = {}
+ENT.VJ_AnimationTable     = {}
 
 -- ============================================================
 --  Blood / gore

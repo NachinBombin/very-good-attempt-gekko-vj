@@ -66,6 +66,15 @@ end
 
 -- ============================================================
 --  Animation translations
+--
+--  NOTE on walk/run mapping:
+--    The model has two locomotion sequences:
+--      seq 4 "walk" — normal bipedal walk  (speed ~184 u/s)
+--      seq 6 "run"  — faster gait          (speed ~20 u/s cycle)
+--    VJBase activity mapping convention:
+--      ACT_WALK → used when moving at normal speed → "walk" seq
+--      ACT_RUN  → used when closing on enemy fast  → "run"  seq
+--    Previous code had these BACKWARDS (walk→ACT_RUN, run→ACT_WALK).
 -- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
     if not self.AnimationTranslations then
@@ -80,11 +89,12 @@ function ENT:SetAnimationTranslations(wepHoldType)
     runSeq  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
     idleSeq = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
+    -- Correct mapping: ACT_WALK → walk seq,  ACT_RUN → run seq
     self.AnimationTranslations[ACT_IDLE]                  = idleSeq
-    self.AnimationTranslations[ACT_WALK]                  = runSeq
-    self.AnimationTranslations[ACT_RUN]                   = walkSeq
-    self.AnimationTranslations[ACT_WALK_AIM]              = runSeq
-    self.AnimationTranslations[ACT_RUN_AIM]               = walkSeq
+    self.AnimationTranslations[ACT_WALK]                  = walkSeq
+    self.AnimationTranslations[ACT_RUN]                   = runSeq
+    self.AnimationTranslations[ACT_WALK_AIM]              = walkSeq
+    self.AnimationTranslations[ACT_RUN_AIM]               = runSeq
     self.AnimationTranslations[ACT_RANGE_ATTACK1]         = idleSeq
     self.AnimationTranslations[ACT_RANGE_ATTACK2]         = idleSeq
     self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK1] = idleSeq
@@ -92,8 +102,8 @@ function ENT:SetAnimationTranslations(wepHoldType)
     self.AnimationTranslations[ACT_IDLE_ANGRY]            = idleSeq
     self.AnimationTranslations[ACT_COMBAT_IDLE]           = idleSeq
 
-    self.GekkoSeq_Walk = runSeq
-    self.GekkoSeq_Run  = walkSeq
+    self.GekkoSeq_Walk = walkSeq
+    self.GekkoSeq_Run  = runSeq
     self.GekkoSeq_Idle = idleSeq
 end
 
@@ -143,14 +153,12 @@ end
 -- ============================================================
 --  TranslateActivity
 --
---  Jump sequences are handled first.  For everything else we
---  fall through to AnimationTranslations (which is patched to
---  c_walk by PatchTranslationsForCrouch while crouching).
+--  Jump sequences handled first, then AnimationTranslations
+--  (which is patched to c_walk by PatchTranslationsForCrouch
+--  while crouching), then BaseClass fallback.
 --
---  IMPORTANT: Do NOT add ACT_IDLE / ACT_WALK / ACT_RUN fast-paths
---  here that bypass the AnimationTranslations table — if you do,
---  the crouch patch is silently skipped and the mech reverts to
---  idle while crouched.
+--  Do NOT add ACT_IDLE / ACT_WALK / ACT_RUN fast-paths that
+--  bypass AnimationTranslations — the crouch patch would be skipped.
 -- ============================================================
 function ENT:TranslateActivity(act)
     local jumpState = self:GetGekkoJumpState()
@@ -164,9 +172,6 @@ function ENT:TranslateActivity(act)
         return self._seqLand
     end
 
-    -- Check AnimationTranslations table first.
-    -- While crouching the table is patched to c_walk for every activity,
-    -- so this correctly returns c_walk without any extra logic needed.
     if self.AnimationTranslations then
         local translated = self.AnimationTranslations[act]
         if translated ~= nil then
@@ -195,8 +200,6 @@ function ENT:GekkoUpdateAnimation()
     end
 
     -- Run crouch state-machine — returns true if crouch is active.
-    -- Animation is NOT applied here; it is applied at the bottom of
-    -- OnThink via GeckoCrouch_AnimApply after VJBase has had its turn.
     if self:GeckoCrouch_Update() then return end
 
     local now    = CurTime()
@@ -276,6 +279,10 @@ local function SafeInitVJTables(ent)
     if not ent.VJ_IdleSounds     then ent.VJ_IdleSounds     = {} end
     if not ent.VJ_FootstepSounds then ent.VJ_FootstepSounds = {} end
     if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
+    -- VJBase MaintainIdleAnimation reads VJ_AnimationTable every tick
+    -- and spams 'temptable is nil' when it is absent.  It must be a
+    -- table (can be empty) — VJBase will populate it when needed.
+    if not ent.VJ_AnimationTable then ent.VJ_AnimationTable = {} end
 end
 
 -- ============================================================
@@ -374,7 +381,7 @@ end
 --  ORDER MATTERS:
 --    1. GekkoJump_Think / GekkoJump_Execute
 --    2. GekkoUpdateAnimation  (state machine + normal anim)
---    3. GeckoCrouch_AnimApply (if crouching) ← runs LAST so it
+--    3. GeckoCrouch_AnimApply (if crouching) — runs LAST so it
 --       always wins over anything VJBase wrote above it
 -- ============================================================
 function ENT:OnThink()
@@ -386,9 +393,6 @@ function ENT:OnThink()
 
     self:GekkoUpdateAnimation()
 
-    -- Reassert crouch animation every tick, after everything else has
-    -- run.  On the first tick after entering crouch (_gekkoCrouchJustEntered
-    -- == true) this unconditionally calls ResetSequence + SetCycle(0).
     if self._gekkoCrouching then
         self:GeckoCrouch_AnimApply()
     end
