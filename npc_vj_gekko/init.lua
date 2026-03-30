@@ -328,10 +328,13 @@ function ENT:Init()
         local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
 
+        -- FIX: GekkoSeq_CrouchIdle is set by GeckoCrouch_CacheSeqs only if the
+        -- model has a "cidle" sequence. Guard with "or -1" to avoid nil passed
+        -- to string.format (was causing "bad argument #5 to 'format'" crash).
         print(string.format(
-            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | cidle=%d c_walk=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | c_walk=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
             selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
-            selfRef.GekkoSeq_CrouchIdle, selfRef.GekkoSeq_CrouchWalk,
+            selfRef.GekkoSeq_CrouchWalk or -1,
             selfRef.GekkoSpineBone,
             mgAtt   and "OK" or "MISSING",
             misLAtt and "OK" or "MISSING",
