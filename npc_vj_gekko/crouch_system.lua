@@ -21,6 +21,13 @@
 --    crouch entry (or sequence change), then SetSequence every
 --    subsequent tick so the animation continues playing without
 --    restarting from frame 0 each tick.
+--
+--    Hull resize (SetCollisionBounds) is intentionally omitted.
+--    Runtime hull resizing on a VJBase NPC causes the engine to
+--    vertically reposition the entity every tick, producing the
+--    rapid up/down bobbing.  VJBase NPCs navigate via navmesh, not
+--    physics hull squeezing, so the resize never helped with
+--    tight-ceiling traversal anyway.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -52,7 +59,7 @@ local DEFAULT_WALK_SPEED = 150
 local CWALK_STATIONARY_RATE = 0.05
 
 -- ─────────────────────────────────────────────────────────────
---  Hull shapes
+--  Hull shapes (obstacle check only — not used for SetCollisionBounds)
 -- ─────────────────────────────────────────────────────────────
 local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 12)
 local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
@@ -221,10 +228,9 @@ local function EnterCrouch(ent, randDuration)
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
 
-    ent:SetCollisionBounds(
-        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
-        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
-    )
+    -- No SetCollisionBounds — runtime hull resize causes vertical jitter
+    -- on VJBase NPCs. Navigation is handled by navmesh, not physics hull.
+
     ent:SetNWBool("GekkoIsCrouching", true)
 
     -- Stop movement so entry does not look like a running slide.
@@ -234,8 +240,8 @@ local function EnterCrouch(ent, randDuration)
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
 
-    print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs  holdUntil=%.2f",
-        HITBOX_CROUCH_H, holdLen, ent._gekkoCrouchHoldUntil))
+    print(string.format("[GeckoCrouch] → Crouching holdLen=%.1fs  holdUntil=%.2f",
+        holdLen, ent._gekkoCrouchHoldUntil))
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -257,10 +263,8 @@ local function ExitCrouch(ent)
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
-    ent:SetCollisionBounds(
-        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
-        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
-    )
+    -- No SetCollisionBounds — see EnterCrouch comment.
+
     ent:SetNWBool("GekkoIsCrouching", false)
 
     -- Restore locomotion speeds.
@@ -271,7 +275,7 @@ local function ExitCrouch(ent)
     -- Re-enable VJBase's movement thinkers.
     ent.VJ_CanMoveThink = true
 
-    print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
+    print("[GeckoCrouch] → Standing")
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -376,7 +380,7 @@ function ENT:GeckoCrouch_Update()
             self:ResetSequence(targetSeq)
             self._gekkoCrouchSeqSet = targetSeq
         else
-            -- Same sequence as last tick: just keep it active without restarting.
+            -- Same sequence as last tick: keep it active without restarting.
             self:SetSequence(targetSeq)
         end
         self:SetPlaybackRate(rate)
