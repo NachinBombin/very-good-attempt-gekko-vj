@@ -8,17 +8,25 @@
 --    3. Ceiling trace (TraceLine upward from head)         — immediate
 --    4. Random timed behaviour                             — timer-based
 --
---  Animation contract:
+--  Animation contract  (matches the original mgs_mech pattern):
 --    GeckoCrouch_AnimApply() is called EVERY think tick from
 --    OnThink *after* VJBase has had its turn.
+--
 --    On the FIRST tick after entering crouch (_gekkoCrouchJustEntered
---    == true) we ALWAYS call ResetSequence + SetCycle(0).
---    Subsequent ticks only reassert SetPlaybackRate.
+--    == true) we call ResetSequence(c_walk) + SetCycle(0) ONCE,
+--    then clear the flag.
+--
+--    All subsequent ticks we ONLY call SetPlaybackRate — we never
+--    call ResetSequence again unless the flag is raised again.
+--    This is the same logic as the original vehicle's UpdateAnimation:
+--      if sequence ~= currentSeqName then ResetSequence(sequence) end
+--      self:SetPlaybackRate(arate)   -- every tick, no SetCycle
 --
 --  Movement contract:
 --    EnterCrouch zeros physics velocity + sets MoveSpeed=0 + calls
 --    StopMoving so the NPC actually halts instead of sliding.
 --    ExitCrouch restores speeds from Start* cache.
+--    NOTE: SetMaxSpeed() is a PLAYER-only method — never call it on NPCs.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -43,6 +51,9 @@ local RAND_CHANCE       = 0.69
 local RAND_DUR_MIN      = 3
 local RAND_DUR_MAX      = 10
 
+-- Playback rate while the mech is stationary in crouch.
+-- A very small non-zero value keeps the animation alive without
+-- visibly cycling when standing still.
 local CWALK_STATIONARY_RATE = 0.05
 
 -- ─────────────────────────────────────────────────────────────
@@ -249,18 +260,17 @@ end
 -- ─────────────────────────────────────────────────────────────
 --  EnterCrouch
 --
---  KEY FIX for sliding:
---    Setting MoveSpeed/RunSpeed/WalkSpeed = 0 only affects future
---    VJBase movement decisions.  The NPC's existing physics velocity
---    is untouched and the engine keeps propelling it forward.
---    We must:
---      1. self:SetAbsVelocity(Vector(0,0,0))  — zero physics vel
---      2. self:StopMoving()                   — cancel active nav path
---      3. self:SetMaxSpeed(0)                 — cap engine speed to 0
+--  IMPORTANT: SetMaxSpeed() is a player-only method.
+--  Do NOT call it on an NPC — it will crash.
+--  To slow the NPC we zero the physics velocity, cancel the
+--  nav path with StopMoving(), and set the VJBase speed vars
+--  to 0 so the scheduler won't re-accelerate it.
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, randDuration)
     local now = CurTime()
     ent._gekkoCrouching          = true
+    -- Raise the flag — GeckoCrouch_AnimApply will call
+    -- ResetSequence exactly once on the very next tick, then clear it.
     ent._gekkoCrouchJustEntered  = true
     local holdLen = CROUCH_HOLD_MIN
     if randDuration and randDuration > holdLen then
@@ -279,10 +289,10 @@ local function EnterCrouch(ent, randDuration)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
 
-    -- Zero movement so the mech halts instead of sliding
-    ent:SetAbsVelocity(Vector(0, 0, 0))  -- kill physics velocity NOW
-    ent:StopMoving()                      -- cancel nav path
-    ent:SetMaxSpeed(0)                    -- cap engine-driven speed
+    -- Zero movement so the mech halts instead of sliding.
+    -- NOTE: SetMaxSpeed() is player-only — do NOT call it here.
+    ent:SetAbsVelocity(Vector(0, 0, 0))
+    ent:StopMoving()
     ent.MoveSpeed = 0
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
@@ -298,6 +308,8 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  ExitCrouch
+--
+--  NOTE: SetMaxSpeed() is player-only — do NOT call it here.
 -- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
     local now = CurTime()
@@ -322,11 +334,11 @@ local function ExitCrouch(ent)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
 
-    -- Restore movement speeds
-    ent.MoveSpeed = ent.StartMoveSpeed or 150
+    -- Restore movement speeds from cached values.
+    -- NOTE: SetMaxSpeed() is player-only — do NOT call it here.
+    ent.MoveSpeed = ent.StartWalkSpeed or ent.StartMoveSpeed or 150
     ent.RunSpeed  = ent.StartRunSpeed  or 300
     ent.WalkSpeed = ent.StartWalkSpeed or 150
-    ent:SetMaxSpeed(ent.MoveSpeed)  -- lift the cap
 
     RestoreTranslations(ent)
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
@@ -336,15 +348,37 @@ end
 --  GeckoCrouch_AnimApply
 --
 --  Called every think tick from OnThink, AFTER VJBase has run.
---  Reasserts c_walk sequence and correct playback rate.
+--
+--  Pattern mirrors the original mgs_mech vehicle UpdateAnimation():
+--    • ResetSequence is called ONCE — only on the first tick after
+--      entering crouch (_gekkoCrouchJustEntered == true).
+--    • Every subsequent tick we ONLY call SetPlaybackRate.
+--    • We never call SetCycle(0) in a loop — that would freeze the
+--      animation at frame 0 on every tick.
+--
+--  The GekkoOwnsAnimation() guards in MaintainIdleAnimation /
+--  MaintainActivity / VJ_AnimationThink already prevent VJBase from
+--  switching the sequence away from c_walk, so we do NOT need to
+--  check GetSequence() != cwalk here and reset again.
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_AnimApply()
     local cwalk = self.GekkoSeq_CrouchWalk
     if not cwalk or cwalk == -1 then return end
 
-    -- Compute playback rate from XY speed.
-    -- While crouching MoveSpeed=0 so the mech is stationary;
-    -- use CWALK_STATIONARY_RATE so the legs don't freeze.
+    -- ── ONE-TIME sequence kick on entry ──────────────────────
+    if self._gekkoCrouchJustEntered then
+        self:ResetSequence(cwalk)
+        self:SetCycle(0)
+        self._gekkoCrouchSeqSet      = cwalk
+        self.Gekko_LastSeqIdx        = cwalk
+        self.Gekko_LastSeqName       = "c_walk"
+        self._gekkoCrouchJustEntered = false
+        print(string.format("[GeckoCrouch] Seq RESET → c_walk (%d)  (entry kick)", cwalk))
+    end
+
+    -- ── Every tick: correct playback rate only ────────────────
+    -- Compute rate from actual XY velocity, same as the vehicle does
+    -- with its MoveSpeed vector length.
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
     local rate
@@ -355,20 +389,9 @@ function ENT:GeckoCrouch_AnimApply()
             and self.StartMoveSpeed or 150
         rate = math.Clamp(speed / maxSpd, 0.3, 1.5)
     else
+        -- Stationary: keep a tiny non-zero rate so the model stays
+        -- at its current frame instead of snapping to frame 0.
         rate = CWALK_STATIONARY_RATE
-    end
-
-    -- Force-kick on the very first tick after entering crouch,
-    -- OR recover if something changed the sequence away from c_walk.
-    if self._gekkoCrouchJustEntered or self:GetSequence() ~= cwalk then
-        self:ResetSequence(cwalk)
-        self:SetCycle(0)
-        self._gekkoCrouchSeqSet      = cwalk
-        self.Gekko_LastSeqIdx        = cwalk
-        self.Gekko_LastSeqName       = "c_walk"
-        self._gekkoCrouchJustEntered = false
-        print(string.format("[GeckoCrouch] Seq → c_walk (%d)  justEntered=%s",
-            cwalk, tostring(self._gekkoCrouchJustEntered)))
     end
 
     self:SetPlaybackRate(rate)
