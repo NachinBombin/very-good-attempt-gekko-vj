@@ -100,10 +100,7 @@ function ENT:MaintainActivity()
     if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
         return
     end
-    -- ★ Block while crouching — crouch_system owns the sequence
-    if self._gekkoCrouching then
-        return
-    end
+    if self._gekkoCrouching then return end
     self.BaseClass.MaintainActivity(self)
 end
 
@@ -114,10 +111,7 @@ function ENT:VJ_AnimationThink()
     if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
         return
     end
-    -- ★ Block while crouching
-    if self._gekkoCrouching then
-        return
-    end
+    if self._gekkoCrouching then return end
     self.BaseClass.VJ_AnimationThink(self)
 end
 
@@ -136,7 +130,6 @@ function ENT:TranslateActivity(act)
         return self._seqLand
     end
 
-    -- ★ Redirect to cidle while crouching
     if self._gekkoCrouching then
         local cidle = self.GekkoSeq_CrouchIdle
         if cidle and cidle ~= -1 then return cidle end
@@ -242,7 +235,6 @@ end
 --  Init
 -- ============================================================
 function ENT:Init()
-    -- ★ Reduced standing hitbox height from 256 → 200
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetSkin(1)
 
@@ -263,13 +255,18 @@ function ENT:Init()
     self._gekkoSuppressActivity = 0
 
     self:GekkoJump_Init()
-    self:GeckoCrouch_Init()   -- ★ init crouch state
+    self:GeckoCrouch_Init()
 
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
 
         selfRef:GekkoJump_Activate()
+
+        -- Cache the NPC's base move speeds so ExitCrouch can restore them.
+        selfRef.StartMoveSpeed = selfRef.MoveSpeed or 150
+        selfRef.StartRunSpeed  = selfRef.RunSpeed  or 300
+        selfRef.StartWalkSpeed = selfRef.WalkSpeed or 150
 
         local walkSeq = selfRef:LookupSequence("walk")
         local runSeq  = selfRef:LookupSequence("run")
@@ -278,7 +275,7 @@ function ENT:Init()
         selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
-        selfRef:GeckoCrouch_CacheSeqs()   -- ★ look up cidle + c_walk after model is ready
+        selfRef:GeckoCrouch_CacheSeqs()
 
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
         selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
@@ -359,7 +356,7 @@ function ENT:OnThink()
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching),
             tostring(self.VJ_IsBeingCrouched),
-            tostring(self._gekkoCeilingHit)   -- set by crouch_system each tick
+            tostring(self._gekkoCeilingHit)
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end

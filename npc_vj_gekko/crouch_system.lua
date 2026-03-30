@@ -97,10 +97,6 @@ end
 --  Runs ONLY while standing AND the re-arm timer has elapsed.
 --  Debounces the raw trace result before committing to a crouch.
 --  Returns true once a sustained hit is confirmed.
---
---  NOTE: writes _gekkoObsHullHit (NOT _gekkoCeilingHit) for the
---  debug HUD.  Keeping these two fields separate prevents obstacle
---  trace results from bleeding into stand-up decisions.
 -- ─────────────────────────────────────────────────────────────
 local function TickObstacle(ent)
     local now = CurTime()
@@ -112,7 +108,7 @@ local function TickObstacle(ent)
     end
 
     local raw = RawObstacleCheck(ent)
-    ent._gekkoObsHullHit = raw   -- debug HUD only — never used for exit decisions
+    ent._gekkoObsHullHit = raw
 
     if raw then
         if not ent._gekkoObsOnSince then
@@ -170,8 +166,8 @@ function ENT:GeckoCrouch_Init()
     self._gekkoObsRearmT         = 0
     self._gekkoObsOnSince        = nil
     self._gekkoObsDebounced      = false
-    self._gekkoObsHullHit        = false   -- debug HUD: forward obstacle trace result
-    self._gekkoCeilingHit        = false   -- debug HUD: kept for init.lua compat, always false now
+    self._gekkoObsHullHit        = false
+    self._gekkoCeilingHit        = false
     self.GekkoSeq_CrouchIdle     = -1
     self.GekkoSeq_CrouchWalk     = -1
     self._gekkoCrouchSeqSet      = -1
@@ -205,12 +201,18 @@ local function EnterCrouch(ent)
     ent._gekkoCrouchSeqSet    = -1
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
-    ent._gekkoObsHullHit      = false   -- clear stale obstacle data from standing phase
-    ent._gekkoCeilingHit      = false   -- clear for HUD consistency
+    ent._gekkoObsHullHit      = false
+    ent._gekkoCeilingHit      = false
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
+    -- Broadcast crouch state to clients for cl_init animation sync
+    ent:SetNWBool("GekkoIsCrouching", true)
+    -- Freeze NPC movement so it doesn't noclip through the obstacle
+    ent.MoveSpeed    = 0
+    ent.RunSpeed     = 0
+    ent.WalkSpeed    = 0
     ent.VJ_CanMoveThink = false
     print("[GeckoCrouch] → Crouching h=" .. HITBOX_CROUCH_H)
 end
@@ -231,6 +233,11 @@ local function ExitCrouch(ent)
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
+    -- Restore movement speeds (values set by VJBase shared.lua)
+    ent:SetNWBool("GekkoIsCrouching", false)
+    ent.MoveSpeed    = ent.StartMoveSpeed    or 150
+    ent.RunSpeed     = ent.StartRunSpeed     or 300
+    ent.WalkSpeed    = ent.StartWalkSpeed    or 150
     ent.VJ_CanMoveThink = true
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
 end
@@ -314,7 +321,11 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Crouch is active: drive the animation ─────────────────────
-    if self.GekkoSeq_CrouchIdle == -1 then return true end
+    if self.GekkoSeq_CrouchIdle == -1 then
+        -- Sequences not cached yet (deferred timer hasn't fired).
+        -- Still return true so VJBase doesn't stomp with idle.
+        return true
+    end
 
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
@@ -322,19 +333,17 @@ function ENT:GeckoCrouch_Update()
     local targetSeq = (moving and self.GekkoSeq_CrouchWalk ~= -1)
         and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
-    -- Only call ResetSequence when the target actually changes.
-    -- NEVER call SetSequence each tick — it resets the cycle to 0
-    -- every frame, causing the animation to restart ~60 times/sec
-    -- and producing the visible rapid up/down flicker.
-    -- Once ResetSequence is called, the engine advances the cycle
-    -- on its own; we must not touch it again until the seq changes.
+    -- Only call ResetSequence when the target sequence actually changes.
+    -- Never call SetSequence each tick — it resets the cycle to frame 0
+    -- every tick and causes rapid up/down flicker.
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
         self:ResetSequence(targetSeq)
         self:SetCycle(0)
         if moving then
             local speed  = math.sqrt(speed2)
-            local maxSpd = (self.MoveSpeed and self.MoveSpeed > 0) and self.MoveSpeed or 150
+            local maxSpd = (self.StartMoveSpeed and self.StartMoveSpeed > 0)
+                and self.StartMoveSpeed or 150
             self:SetPlaybackRate(math.Clamp(speed / maxSpd, 0.3, 1.5))
         else
             self:SetPlaybackRate(1.0)
@@ -344,7 +353,15 @@ function ENT:GeckoCrouch_Update()
         print(string.format("[GeckoCrouch] Seq → %s (%d) moving=%s",
             self.Gekko_LastSeqName, targetSeq, tostring(moving)))
     end
-    -- (no else — engine owns the cycle from here)
+
+    -- Advance the animation cycle manually every tick.
+    -- VJBase's funcAnimThink hook also calls FrameAdvance on its own
+    -- path, but while crouching MaintainIdleAnimation is blocked and
+    -- VJ_AnimationThink returns early — so the engine will not auto-
+    -- advance unless we do it here.  Without this call the sequence
+    -- sits at cycle 0 and the model appears to be in its reference
+    -- pose (noclip / T-pose look).
+    self:FrameAdvance(FrameTime())
 
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
