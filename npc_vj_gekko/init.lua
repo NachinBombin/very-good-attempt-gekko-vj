@@ -99,11 +99,7 @@ end
 
 -- ============================================================
 --  MaintainIdleAnimation override
---  VJBase registers a global Think hook (funcAnimThink) during
---  Initialize() that calls MaintainIdleAnimation() every tick,
---  bypassing VJ_AnimationThink entirely.  While crouching OR
---  during a jump phase we must block it so our own sequence
---  control is not overwritten.
+--  Blocks VJBase idle-animation logic while Gekko owns the state.
 -- ============================================================
 function ENT:MaintainIdleAnimation(force)
     if GekkoOwnsAnimation(self) then return end
@@ -146,6 +142,9 @@ end
 
 -- ============================================================
 --  TranslateActivity
+--  While crouching the AnimationTranslations table is already
+--  patched to c_walk for every activity, so the table lookup
+--  below returns the right sequence automatically.
 -- ============================================================
 function ENT:TranslateActivity(act)
     local jumpState = self:GetGekkoJumpState()
@@ -159,10 +158,8 @@ function ENT:TranslateActivity(act)
         return self._seqLand
     end
 
-    if self._gekkoCrouching then
-        local cidle = self.GekkoSeq_CrouchIdle
-        if cidle and cidle ~= -1 then return cidle end
-    end
+    -- Crouch: AnimationTranslations already patched to c_walk.
+    -- Fall through to the normal table lookup below.
 
     if act == ACT_WALK or act == ACT_WALK_AIM then
         return self.GekkoSeq_Walk or act
@@ -175,7 +172,11 @@ function ENT:TranslateActivity(act)
 end
 
 -- ============================================================
---  Core animation update
+--  Core animation update  (called from OnThink each tick)
+--  GeckoCrouch_Update() now only handles state transitions and
+--  returns true/false.  The actual animation reassertion while
+--  crouching is done via GeckoCrouch_AnimApply() at the BOTTOM
+--  of OnThink, AFTER VJBase has run — ensuring we always win.
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
@@ -191,7 +192,8 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    -- Run crouch logic first — returns true if crouch owns this tick.
+    -- Run crouch state-machine — returns true if crouch is active.
+    -- Animation is NOT applied here; it is applied in OnThink below.
     if self:GeckoCrouch_Update() then return end
 
     local now    = CurTime()
@@ -328,9 +330,6 @@ function ENT:Init()
         local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
 
-        -- FIX: GekkoSeq_CrouchIdle is set by GeckoCrouch_CacheSeqs only if the
-        -- model has a "cidle" sequence. Guard with "or -1" to avoid nil passed
-        -- to string.format (was causing "bad argument #5 to 'format'" crash).
         print(string.format(
             "[GekkoNPC] Deferred activate complete | walk=%d run=%d idle=%d | c_walk=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
             selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
@@ -368,6 +367,12 @@ end
 
 -- ============================================================
 --  Think
+--
+--  ORDER MATTERS:
+--    1. GekkoJump_Think / GekkoJump_Execute
+--    2. GekkoUpdateAnimation  (state machine + normal anim)
+--    3. GeckoCrouch_AnimApply (if crouching) ← runs LAST so it
+--       always wins over anything VJBase wrote above it
 -- ============================================================
 function ENT:OnThink()
     self:GekkoJump_Think()
@@ -377,6 +382,13 @@ function ENT:OnThink()
     end
 
     self:GekkoUpdateAnimation()
+
+    -- KEY FIX: reassert crouch animation every tick, after everything
+    -- else has run.  This ensures VJBase's funcAnimThink hook (which
+    -- fires during the think pass) cannot overwrite our sequence.
+    if self._gekkoCrouching then
+        self:GeckoCrouch_AnimApply()
+    end
 
     if true and CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
