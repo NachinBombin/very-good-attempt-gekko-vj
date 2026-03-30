@@ -100,115 +100,6 @@ function ENT:SetAnimationTranslations(wepHoldType)
 end
 
 -- ============================================================
---  TranslateActivity
---
---  Called by the engine every time it needs to resolve an
---  activity to a sequence number.  Jump sequences take priority,
---  then crouch redirects ACT_IDLE → cidle and locomotion
---  activities → c_walk.  ACT_DO_NOT_DISTURB (used by all
---  PlaySequence / attack animations) never reaches this function
---  so attacks are untouched.
--- ============================================================
-function ENT:TranslateActivity(act)
-    -- Jump has highest priority.
-    local jumpState = self:GetGekkoJumpState()
-    if jumpState == self.JUMP_RISING  and self._seqJump and self._seqJump ~= -1 then
-        return self._seqJump
-    end
-    if jumpState == self.JUMP_FALLING and self._seqFall and self._seqFall ~= -1 then
-        return self._seqFall
-    end
-    if jumpState == self.JUMP_LAND    and self._seqLand and self._seqLand ~= -1 then
-        return self._seqLand
-    end
-
-    -- Crouch redirect: map locomotion and idle activities to
-    -- crouch sequences so VJBase's activity system produces the
-    -- right sequence without any tick-fighting.
-    if self._gekkoCrouching then
-        local cwalk = self.GekkoSeq_CrouchWalk
-        local cidle = self.GekkoSeq_CrouchIdle
-
-        if act == ACT_WALK     or act == ACT_RUN     or
-           act == ACT_WALK_AIM or act == ACT_RUN_AIM then
-            if cwalk and cwalk ~= -1 then return cwalk end
-        end
-
-        if act == ACT_IDLE       or act == ACT_IDLE_ANGRY or
-           act == ACT_COMBAT_IDLE then
-            if cidle and cidle ~= -1 then return cidle end
-            if cwalk and cwalk ~= -1 then return cwalk end
-        end
-
-        -- Attack activities while crouching: use cidle as the base pose.
-        if act == ACT_RANGE_ATTACK1         or act == ACT_RANGE_ATTACK2         or
-           act == ACT_GESTURE_RANGE_ATTACK1 or act == ACT_GESTURE_RANGE_ATTACK2 then
-            if cidle and cidle ~= -1 then return cidle end
-            if cwalk and cwalk ~= -1 then return cwalk end
-        end
-    end
-
-    -- Normal translation table (standing).
-    if self.AnimationTranslations then
-        local translated = self.AnimationTranslations[act]
-        if translated ~= nil then
-            return translated
-        end
-    end
-
-    return self.BaseClass.TranslateActivity(self, act)
-end
-
--- ============================================================
---  VJBase animation overrides
--- ============================================================
-function ENT:MaintainIdleAnimation(force)
-    if GekkoOwnsAnimation(self) then return end
-
-    -- While crouching, VJBase's idle system would re-assert the
-    -- normal idle sequence.  Instead we set cidle directly and
-    -- loop it, then return without calling the base.
-    if self._gekkoCrouching then
-        local cidle = self.GekkoSeq_CrouchIdle
-        local cwalk = self.GekkoSeq_CrouchWalk
-        local seq   = (cidle and cidle ~= -1) and cidle or cwalk
-        if seq and seq ~= -1 and (force or self:GetSequence() ~= seq) then
-            self:ResetSequence(seq)
-            self:SetCycle(0)
-            self:SetPlaybackRate(0.05)   -- near-frozen idle
-        end
-        return
-    end
-
-    self.BaseClass.MaintainIdleAnimation(self, force)
-end
-
-function ENT:MaintainActivity()
-    if GekkoOwnsAnimation(self) then return end
-    -- While crouching, TranslateActivity handles everything;
-    -- allow VJBase's MaintainActivity to run normally so the
-    -- engine calls TranslateActivity and gets the right sequence.
-    self.BaseClass.MaintainActivity(self)
-end
-
-function ENT:VJ_AnimationThink()
-    if GekkoOwnsAnimation(self) then return end
-    self.BaseClass.VJ_AnimationThink(self)
-end
-
-function ENT:OnSelectSchedule()
-    if GekkoOwnsAnimation(self) then
-        return self:GetCurrentSchedule()
-    end
-    return self.BaseClass.OnSelectSchedule(self)
-end
-
-function ENT:OnStartTask(taskID, taskData)
-    if GekkoOwnsAnimation(self) then return end
-    self.BaseClass.OnStartTask(self, taskID, taskData)
-end
-
--- ============================================================
 --  Core animation update  (called from OnThink each tick)
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
@@ -225,13 +116,7 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    -- GeckoCrouch_Update runs the crouch state machine and
-    -- manages the playback rate.  TranslateActivity ensures
-    -- VJBase produces the right sequence automatically.
-    if self:GeckoCrouch_Update() then
-        self.Gekko_LastSeqName = "c_walk"
-        return
-    end
+    if self:GeckoCrouch_Update() then return end
 
     local now    = CurTime()
     local curPos = self:GetPos()
@@ -310,7 +195,6 @@ local function SafeInitVJTables(ent)
     if not ent.VJ_IdleSounds     then ent.VJ_IdleSounds     = {} end
     if not ent.VJ_FootstepSounds then ent.VJ_FootstepSounds = {} end
     if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
-    if not ent.VJ_AnimationTable then ent.VJ_AnimationTable = {} end
 end
 
 -- ============================================================
@@ -410,8 +294,8 @@ end
 --  ORDER:
 --    1. GekkoJump_Think / GekkoJump_Execute
 --    2. GekkoUpdateAnimation  (runs crouch state machine first;
---       on a crouching tick it manages the playback rate and
---       returns early — TranslateActivity handles the sequence)
+--       on a crouching tick GeckoCrouch_Update handles everything
+--       and returns true, so we skip the rest)
 -- ============================================================
 function ENT:OnThink()
     self:GekkoJump_Think()
@@ -421,10 +305,6 @@ function ENT:OnThink()
     end
 
     self:GekkoUpdateAnimation()
-
-    -- GeckoCrouch_AnimApply() has been removed.
-    -- TranslateActivity + MaintainIdleAnimation override handle
-    -- all crouch animation without any tick-fighting.
 
     if true and CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
