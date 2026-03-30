@@ -15,6 +15,12 @@ local JUMP_GROUND_DIST    = 24
 local JUMP_MIN_ENEMY_DIST = 600
 local JUMP_MAX_ENEMY_DIST = 19400
 
+-- Safety timeout: if RISING state lasts longer than this without
+-- the NPC actually leaving the ground, abort and return to NONE.
+-- This catches cases where MOVETYPE_FLYGRAVITY fails silently
+-- (e.g. VJBase resets the movetype before physics kicks in).
+local JUMP_RISING_TIMEOUT = 1.5
+
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
     local tr = util.TraceHull({
@@ -32,14 +38,15 @@ end
 function ENT:GekkoJump_Init()
     self:SetGekkoJumpState(JUMP_NONE)
     self:SetGekkoJumpTimer(0)
-    self._jumpCooldown    = 0
-    self._gekkoJustJumped = 0
-    self._jetAttachments  = {}
-    self._seqJump = -1
-    self._seqFall = -1
-    self._seqLand = -1
+    self._jumpCooldown        = 0
+    self._gekkoJustJumped     = 0
+    self._jetAttachments      = {}
+    self._seqJump             = -1
+    self._seqFall             = -1
+    self._seqLand             = -1
+    self._jumpRisingStartTime = 0   -- used for the RISING timeout
+    self._jumpDidLiftoff      = false
 
-    -- FIX: was self.JUMP_FALLING = JUMP_RISING (typo aliased RISING→FALLING)
     self.JUMP_NONE    = JUMP_NONE
     self.JUMP_RISING  = JUMP_RISING
     self.JUMP_FALLING = JUMP_FALLING
@@ -102,8 +109,7 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
---  ForceSeq
---  Single authoritative place to slam a jump-phase sequence.
+--  ForceSeq — single authoritative place to slam a jump-phase sequence.
 -- ============================================================
 local function ForceSeq(ent, seq, rate)
     ent:ResetSequence(seq)
@@ -127,27 +133,25 @@ function ENT:GekkoJump_Execute()
     fwd.z = 0
     fwd:Normalize()
 
-    -- Lock the yaw so the NPC faces the enemy and stops steering mid-air
     local launchYaw = fwd:Angle().y
     self:SetAngles(Angle(0, launchYaw, 0))
 
-    -- FIX: Switch to FLYGRAVITY BEFORE applying velocity.
-    -- MOVETYPE_STEP suppresses external velocity on NPCs — the impulse
-    -- was being silently discarded every tick by the NPC locomotion code.
+    -- Switch to FLYGRAVITY BEFORE applying velocity.
+    -- MOVETYPE_STEP suppresses external velocity on NPCs.
     self:SetMoveType(MOVETYPE_FLYGRAVITY)
 
-    -- Apply velocity AFTER movetype change so the physics object accepts it.
     local vel = self:GetVelocity()
     vel.z     = JUMP_FORCE
     vel       = vel + fwd * JUMP_FORWARD_FORCE
     self:SetVelocity(vel)
 
-    -- Kill the AI navigation schedule so the NPC brain stops trying to steer
     self:SetSchedule(SCHED_NONE)
 
     self:SetGekkoJumpState(JUMP_RISING)
-    self._jumpCooldown    = CurTime() + JUMP_COOLDOWN
-    self._gekkoJustJumped = CurTime() + 0.3
+    self._jumpCooldown        = CurTime() + JUMP_COOLDOWN
+    self._gekkoJustJumped     = CurTime() + 0.3
+    self._jumpRisingStartTime = CurTime()   -- start the RISING timeout clock
+    self._jumpDidLiftoff      = false        -- will be set true once velZ > 0
 
     print("[GekkoJump] EXECUTE → RISING  seqJump=" .. self._seqJump)
 
@@ -165,13 +169,11 @@ function ENT:GekkoJump_Think()
 
     local vel      = self:GetVelocity()
     local grounded = GekkoIsGrounded(self)
+    local now      = CurTime()
 
-    -- --------------------------------------------------------
-    --  RISING / FALLING: keep suppression alive and freeze
-    --  physics-induced pitch/roll so the Gekko doesn't tumble.
-    -- --------------------------------------------------------
+    -- Keep suppression alive and freeze physics-induced pitch/roll.
     if state == JUMP_RISING or state == JUMP_FALLING then
-        self._gekkoSuppressActivity = CurTime() + 0.5
+        self._gekkoSuppressActivity = now + 0.5
         self.VJ_IsMoving     = false
         self.VJ_CanMoveThink = false
 
@@ -181,29 +183,61 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    if not self._jumpThinkPrint or CurTime() > self._jumpThinkPrint then
+    if not self._jumpThinkPrint or now > self._jumpThinkPrint then
         print(string.format(
             "[GekkoJump] Think | state=%d  velZ=%.1f  grounded=%s",
             state, vel.z, tostring(grounded)
         ))
-        self._jumpThinkPrint = CurTime() + 0.2
+        self._jumpThinkPrint = now + 0.2
     end
 
     -- --------------------------------------------------------
-    --  RISING → FALLING
+    --  RISING: confirm liftoff, handle timeout
     -- --------------------------------------------------------
-    if state == JUMP_RISING and vel.z < 0 then
-        self:SetGekkoJumpState(JUMP_FALLING)
-        self:GekkoJump_StopJetFX()
-        print("[GekkoJump] → FALLING  seqFall=" .. self._seqFall)
-        if self._seqFall ~= -1 then
-            ForceSeq(self, self._seqFall, 1.0)
+    if state == JUMP_RISING then
+        -- Mark that the NPC actually left the ground.
+        if vel.z > 50 then
+            self._jumpDidLiftoff = true
         end
-        return
+
+        -- RISING timeout: if we've been in RISING too long without
+        -- actually becoming airborne, the impulse was lost (VJBase
+        -- probably reset MOVETYPE_STEP before physics ran).
+        -- Abort cleanly back to NONE so the NPC is not locked up.
+        if not self._jumpDidLiftoff and
+           (now - self._jumpRisingStartTime) > JUMP_RISING_TIMEOUT then
+            print(string.format(
+                "[GekkoJump] RISING TIMEOUT (%.1fs, velZ=%.1f) — aborting jump",
+                now - self._jumpRisingStartTime, vel.z
+            ))
+            self:SetGekkoJumpState(JUMP_NONE)
+            self:SetGekkoJumpTimer(0)
+            self:SetMoveType(MOVETYPE_STEP)
+            self:SetVelocity(Vector(0, 0, 0))
+            self.Gekko_LastSeqIdx  = -1
+            self.Gekko_LastSeqName = ""
+            self._gekkoSuppressActivity = now + 0.15
+            self.VJ_CanMoveThink = true
+            -- Set a longer cooldown so the NPC doesn't immediately try again.
+            self._jumpCooldown = now + JUMP_COOLDOWN * 2
+            self:GekkoJump_StopJetFX()
+            return
+        end
+
+        -- Normal RISING → FALLING transition.
+        if vel.z < 0 then
+            self:SetGekkoJumpState(JUMP_FALLING)
+            self:GekkoJump_StopJetFX()
+            print("[GekkoJump] → FALLING  seqFall=" .. self._seqFall)
+            if self._seqFall ~= -1 then
+                ForceSeq(self, self._seqFall, 1.0)
+            end
+            return
+        end
     end
 
     -- --------------------------------------------------------
-    --  FALLING: keep the fall anim alive.
+    --  FALLING: keep fall anim alive.
     -- --------------------------------------------------------
     if state == JUMP_FALLING then
         if self._seqFall ~= -1 then
@@ -222,7 +256,7 @@ function ENT:GekkoJump_Think()
     -- --------------------------------------------------------
     if state == JUMP_FALLING and grounded then
         self:SetGekkoJumpState(JUMP_LAND)
-        self:SetGekkoJumpTimer(CurTime() + JUMP_LAND_LOCKOUT)
+        self:SetGekkoJumpTimer(now + JUMP_LAND_LOCKOUT)
         self:SetMoveType(MOVETYPE_STEP)
         self:SetVelocity(Vector(0, 0, 0))
         local a = self:GetAngles()
@@ -238,12 +272,12 @@ function ENT:GekkoJump_Think()
     -- --------------------------------------------------------
     --  LAND → NONE
     -- --------------------------------------------------------
-    if state == JUMP_LAND and CurTime() > self:GetGekkoJumpTimer() then
+    if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         self:SetGekkoJumpState(JUMP_NONE)
         self:SetGekkoJumpTimer(0)
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
-        self._gekkoSuppressActivity = CurTime() + 0.15
+        self._gekkoSuppressActivity = now + 0.15
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
             self:ResetSequence(self.GekkoSeq_Idle)
             self:SetPlaybackRate(1.0)
