@@ -7,13 +7,13 @@ local JUMP_RISING  = 1
 local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
-local JUMP_FORCE          = 450
-local JUMP_FORWARD_FORCE  = 200
+local JUMP_FORCE          = 1000
+local JUMP_FORWARD_FORCE  = 300
 local JUMP_LAND_LOCKOUT   = 1.4   -- matches land anim duration
-local JUMP_COOLDOWN       = 6.0
+local JUMP_COOLDOWN       = 8.0
 local JUMP_GROUND_DIST    = 24
 local JUMP_MIN_ENEMY_DIST = 600
-local JUMP_MAX_ENEMY_DIST = 4400
+local JUMP_MAX_ENEMY_DIST = 19400
 
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
@@ -40,7 +40,7 @@ function ENT:GekkoJump_Init()
     self._seqLand = -1
 
     self.JUMP_NONE    = JUMP_NONE
-    self.JUMP_RISING  = JUMP_RISING
+    self.JUMP_FALLING  = JUMP_RISING
     self.JUMP_FALLING = JUMP_FALLING
     self.JUMP_LAND    = JUMP_LAND
 
@@ -94,9 +94,11 @@ function ENT:GekkoJump_ShouldJump()
     local enemy = self:GetEnemy()
     if not IsValid(enemy)                    then return false end
 
-    local dist = self:GetPos():Distance(enemy:GetPos())
-    if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
-    if (enemy:GetPos().z - self:GetPos().z) < -200 then return false end
+    local dist = self:GetPos():Distance2D(enemy:GetPos())
+
+-- Now this only checks if they are horizontally close enough
+if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
+   
 
     return true
 end

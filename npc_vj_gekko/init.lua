@@ -17,13 +17,13 @@ local ATT_MISSILE_R  = 10
 local ANIM_WALK_SPEED    = 184
 local ANIM_RUN_SPEED     = 20
 
-local RUN_ENGAGE_DIST    = 3500
-local RUN_DISENGAGE_DIST = 1900
+local RUN_ENGAGE_DIST    = 2000
+local RUN_DISENGAGE_DIST = 1600
 
 local MG_ROUNDS   = 24
-local MG_INTERVAL = 0.13
+local MG_INTERVAL = 0.149
 local MG_DAMAGE   = 20
-local MG_SPREAD   = 0.5
+local MG_SPREAD   = 0.4
 
 local WMODE_MG      = 1
 local WMODE_MISSILE = 2
