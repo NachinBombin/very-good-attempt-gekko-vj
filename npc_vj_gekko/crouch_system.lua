@@ -1,49 +1,39 @@
 -- ============================================================
 --  crouch_system.lua
---  Gekko VJ NPC — Crouch mechanic
+--  Gekko VJ NPC — Crouch mechanic  (clean rewrite)
 --
---  THE PROBLEM (confirmed by log):
---    "Seq RECLAIMED" fires every single tick — something steals
---    the sequence back on every engine frame.  The culprit is
---    VJBase's global Think hook (registered via hook.Add in
---    VJ_SNPC_Base:Initialize).  That hook calls its own anim
---    function directly on the entity outside of OnThink, so our
---    MaintainActivity / MaintainIdleAnimation overrides are only
---    reached when VJBase chooses to call them — the global hook
---    bypasses them entirely.
+--  STRATEGY (confirmed against VJBase source):
 --
---  COMPLETE FIX — three layers:
+--    The previous approach installed a SetSequence shadow and
+--    froze VJ_IsMoving every tick.  The shadow never worked
+--    because GMod entity userdata does not support instance-level
+--    method shadowing for engine-bound functions, and freezing
+--    VJ_IsMoving broke combat AI.
 --
---    LAYER 1 — SetSequence override (lowest level, bulletproof)
---      We shadow self.SetSequence on the live entity instance.
---      Any call that tries to set a sequence other than c_walk
---      while crouching is silently dropped.  Only our own code
---      (GeckoCrouch_AnimApply) passes the _gekkoSeqAllowed flag
---      to bypass the guard.
+--    The correct approach is to redirect VJBase's own systems
+--    BEFORE they produce the wrong sequence, not fight them after:
 --
---    LAYER 2 — VJ movement/schedule suppression
---      VJBase's thinker also drives NPC scheduling and movement
---      which can interrupt combat AI (causing the "stops fighting"
---      behaviour and the spins).  We freeze VJ_IsMoving,
---      VJ_CanMoveThink, and VJ_ScheduleEnded each think tick
---      while crouching so VJBase thinks the NPC is stationary
---      and doesn't reassign schedules or spin it to face new
---      directions mid-crouch.
+--    FIX 1 — TranslateActivity override  (in init.lua)
+--      VJBase calls TranslateActivity(act) every time the engine
+--      resolves an activity to a sequence number.  While crouching
+--      we redirect ACT_WALK / ACT_RUN / ACT_WALK_AIM / ACT_RUN_AIM
+--      to c_walk (seq 5) and ACT_IDLE to cidle (seq 3).
+--      ACT_DO_NOT_DISTURB (used by PlaySequence / all attack anims)
+--      never passes through TranslateActivity — attacks are
+--      completely unaffected and work in full crouched pose.
 --
---    LAYER 3 — hard constant speed restore on ExitCrouch
---      Rather than relying on Start* caches (which VJBase can
---      overwrite during a crouch), we restore from the module-
---      level speed constants that were valid at spawn.
+--    FIX 2 — MaintainIdleAnimation override  (in init.lua)
+--      VJBase registers a global Think hook (funcAnimThink) that
+--      calls MaintainIdleAnimation every single engine frame.
+--      When crouching and stationary that would re-assert ACT_IDLE
+--      → seq "idle".  We override MaintainIdleAnimation so it
+--      directly sets the cidle sequence and loops it, and skips
+--      the base call entirely.  The ACT_DO_NOT_DISTURB guard
+--      ensures attack sequences are never interrupted.
 --
---  Triggers (any one is enough to crouch):
---    1. VJ Base native crouch flag (VJ_IsBeingCrouched)   — immediate
---    2. Standing-hull lookahead (TraceHull forward)        — debounced
---    3. Ceiling trace (TraceLine upward from head)         — immediate
---    4. Random timed behaviour                             — timer-based
---
---  Animation contract:
---    GeckoCrouch_AnimApply() is called EVERY think tick from
---    OnThink *after* VJBase has had its turn.
+--    Hull resize, speed zeroing, and all triggers (VJ native,
+--    ceiling, obstacle, random) are preserved from the previous
+--    version unchanged.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -62,19 +52,16 @@ local CEIL_CHECK_INTERVAL = 0.12
 local CEIL_CLEARANCE      = 60
 local CEIL_TRACE_EXTRA    = 80
 
-local RAND_CHECK_MIN    = 6
-local RAND_CHECK_MAX    = 16
-local RAND_CHANCE       = 0.69
-local RAND_DUR_MIN      = 3
-local RAND_DUR_MAX      = 10
+local RAND_CHECK_MIN  = 6
+local RAND_CHECK_MAX  = 16
+local RAND_CHANCE     = 0.69
+local RAND_DUR_MIN    = 3
+local RAND_DUR_MAX    = 10
 
--- Default locomotion speeds — used for hard restore on ExitCrouch.
--- These must match the shared.lua / VJ ENT defaults for this NPC.
 local DEFAULT_MOVE_SPEED = 150
 local DEFAULT_RUN_SPEED  = 300
 local DEFAULT_WALK_SPEED = 150
 
--- Playback rate while the mech is stationary in crouch.
 local CWALK_STATIONARY_RATE = 0.05
 
 -- ─────────────────────────────────────────────────────────────
@@ -82,66 +69,6 @@ local CWALK_STATIONARY_RATE = 0.05
 -- ─────────────────────────────────────────────────────────────
 local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 12)
 local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
-
--- ─────────────────────────────────────────────────────────────
---  Activity list patched in AnimationTranslations while crouching
--- ─────────────────────────────────────────────────────────────
-local CROUCH_OVERRIDE_ACTS = {
-    ACT_IDLE,
-    ACT_WALK,
-    ACT_RUN,
-    ACT_WALK_AIM,
-    ACT_RUN_AIM,
-    ACT_RANGE_ATTACK1,
-    ACT_RANGE_ATTACK2,
-    ACT_GESTURE_RANGE_ATTACK1,
-    ACT_GESTURE_RANGE_ATTACK2,
-    ACT_IDLE_ANGRY,
-    ACT_COMBAT_IDLE,
-}
-
--- ─────────────────────────────────────────────────────────────
---  LAYER 1 — SetSequence override
---
---  We store the engine's real SetSequence as a module-local and
---  install a shadow function on the entity *instance* (not the
---  class) in EnterCrouch.  The shadow blocks any sequence change
---  that isn't ours.  We remove the shadow in ExitCrouch.
---
---  _gekkoSeqAllowed is a one-shot flag: set it to true immediately
---  before our authoritative call, then it clears itself.
--- ─────────────────────────────────────────────────────────────
-local _realSetSequence = nil   -- cached on first use
-
-local function InstallSetSequenceGuard(ent)
-    -- Cache the real engine method once.
-    if not _realSetSequence then
-        _realSetSequence = ent.SetSequence
-    end
-
-    -- Shadow on the instance table (overrides the class method).
-    ent.SetSequence = function(self, seq)
-        if self._gekkoCrouching then
-            if self._gekkoSeqAllowed then
-                self._gekkoSeqAllowed = false  -- consume the pass
-                _realSetSequence(self, seq)
-            end
-            -- Silent drop — VJBase, engine activities, etc. are blocked.
-            return
-        end
-        -- Not crouching — pass through normally.
-        _realSetSequence(self, seq)
-    end
-
-    ent._gekkoSetSeqGuardInstalled = true
-end
-
-local function RemoveSetSequenceGuard(ent)
-    if not ent._gekkoSetSeqGuardInstalled then return end
-    -- Restore the class method by nilling the instance key.
-    ent.SetSequence = nil
-    ent._gekkoSetSeqGuardInstalled = false
-end
 
 -- ─────────────────────────────────────────────────────────────
 --  RawObstacleCheck
@@ -163,7 +90,7 @@ local function RawObstacleCheck(ent)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  CeilingCheck
+--  CeilingCheck  (debounced)
 -- ─────────────────────────────────────────────────────────────
 local function CeilingCheck(ent)
     local now = CurTime()
@@ -185,14 +112,14 @@ local function CeilingCheck(ent)
 
     local hit = false
     if tr.Hit then
-        local ceilZ    = tr.HitPos.z
-        local hullTopZ = pos.z + HITBOX_STAND_H
-        local gap      = ceilZ - hullTopZ
+        local gap = tr.HitPos.z - (pos.z + HITBOX_STAND_H)
         hit = (gap <= CEIL_CLEARANCE)
-        print(string.format(
-            "[GeckoCrouch] CeilingTrace | hit=true  ceilZ=%.1f  hullTopZ=%.1f  gap=%.1f  TRIGGERING=%s",
-            ceilZ, hullTopZ, gap, tostring(hit)
-        ))
+        if hit then
+            print(string.format(
+                "[GeckoCrouch] CeilingTrace | gap=%.1f → CROUCHING",
+                gap
+            ))
+        end
     end
 
     ent._gekkoCeilingHit = hit
@@ -224,8 +151,6 @@ local function TickObstacle(ent)
         elseif now - ent._gekkoObsOnSince >= OBS_ON_DEBOUNCE then
             if not ent._gekkoObsDebounced then
                 ent._gekkoObsDebounced = true
-                print(string.format("[GeckoCrouch] Obstacle CONFIRMED (held %.2fs)",
-                    now - ent._gekkoObsOnSince))
             end
         end
     else
@@ -269,14 +194,13 @@ function ENT:GeckoCrouch_Init()
     self._gekkoCeilingHit          = false
     self._gekkoCeilNextT           = 0
     self.GekkoSeq_CrouchWalk       = -1
+    self.GekkoSeq_CrouchIdle       = -1
     self._gekkoCrouchSeqSet        = -1
     self._gekkoRandomCrouch        = false
     self._gekkoRandomCrouchEndT    = 0
     self._gekkoRandomDuration      = 0
     self._gekkoRandomCrouchNextT   = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-    self._gekkoSeqAllowed          = false
-    self._gekkoSetSeqGuardInstalled = false
-    print("[GeckoCrouch] Init() — state vars created")
+    print("[GeckoCrouch] Init() complete")
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -284,43 +208,13 @@ end
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_CacheSeqs()
     local cwalk = self:LookupSequence("c_walk")
+    local cidle = self:LookupSequence("cidle")
     self.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
+    self.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
     print(string.format(
-        "[GeckoCrouch] CacheSeqs | c_walk=%d  (cidle not used)",
-        self.GekkoSeq_CrouchWalk
+        "[GeckoCrouch] CacheSeqs | c_walk=%d  cidle=%d",
+        self.GekkoSeq_CrouchWalk, self.GekkoSeq_CrouchIdle
     ))
-end
-
--- ─────────────────────────────────────────────────────────────
---  PatchTranslationsForCrouch
--- ─────────────────────────────────────────────────────────────
-local function PatchTranslationsForCrouch(ent, cwalk)
-    if not ent.AnimationTranslations then
-        ent.AnimationTranslations = {}
-    end
-    if not ent._gekkoOrigTranslations then
-        ent._gekkoOrigTranslations = {}
-        for _, act in ipairs(CROUCH_OVERRIDE_ACTS) do
-            ent._gekkoOrigTranslations[act] = ent.AnimationTranslations[act]
-        end
-    end
-    for _, act in ipairs(CROUCH_OVERRIDE_ACTS) do
-        ent.AnimationTranslations[act] = cwalk
-    end
-end
-
--- ─────────────────────────────────────────────────────────────
---  RestoreTranslations
--- ─────────────────────────────────────────────────────────────
-local function RestoreTranslations(ent)
-    if not ent._gekkoOrigTranslations then return end
-    if not ent.AnimationTranslations then
-        ent.AnimationTranslations = {}
-    end
-    for _, act in ipairs(CROUCH_OVERRIDE_ACTS) do
-        ent.AnimationTranslations[act] = ent._gekkoOrigTranslations[act]
-    end
-    ent._gekkoOrigTranslations = nil
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -328,8 +222,8 @@ end
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, randDuration)
     local now = CurTime()
-    ent._gekkoCrouching          = true
-    ent._gekkoCrouchJustEntered  = true   -- AnimApply will SetCycle(0) once
+    ent._gekkoCrouching         = true
+    ent._gekkoCrouchJustEntered = true
     local holdLen = CROUCH_HOLD_MIN
     if randDuration and randDuration > holdLen then
         holdLen = randDuration
@@ -346,24 +240,16 @@ local function EnterCrouch(ent, randDuration)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
 
+    -- Stop movement so entry does not look like a running slide.
     ent:SetAbsVelocity(Vector(0, 0, 0))
     ent:StopMoving()
     ent.MoveSpeed = 0
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
 
-    -- LAYER 2: Freeze VJBase movement thinkers so it stops trying to
-    -- assign schedules and spin the NPC while crouching.
-    ent.VJ_IsMoving      = false
-    ent.VJ_CanMoveThink  = false
-
-    if ent.GekkoSeq_CrouchWalk and ent.GekkoSeq_CrouchWalk ~= -1 then
-        PatchTranslationsForCrouch(ent, ent.GekkoSeq_CrouchWalk)
-    end
-
-    -- LAYER 1: Install the SetSequence guard AFTER patching translations
-    -- so the very first ResetSequence call from AnimApply goes through.
-    InstallSetSequenceGuard(ent)
+    -- _gekkoCrouching is now true, so TranslateActivity will return
+    -- cidle for ACT_IDLE.  Force MaintainIdleAnimation to apply it now.
+    ent:MaintainIdleAnimation(true)
 
     print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs  holdUntil=%.2f",
         HITBOX_CROUCH_H, holdLen, ent._gekkoCrouchHoldUntil))
@@ -388,107 +274,38 @@ local function ExitCrouch(ent)
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
-    -- LAYER 1: Remove the SetSequence guard first so the reset below
-    -- goes through the real engine function.
-    RemoveSetSequenceGuard(ent)
-
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
 
-    -- LAYER 3: Hard restore from constants, not from Start* caches
-    -- (VJBase may have clobbered them during the crouch).
+    -- Restore locomotion speeds from constants (VJBase may have
+    -- overwritten the Start* caches during the crouch).
     ent.MoveSpeed = DEFAULT_MOVE_SPEED
     ent.RunSpeed  = DEFAULT_RUN_SPEED
     ent.WalkSpeed = DEFAULT_WALK_SPEED
 
-    -- LAYER 2: Re-enable VJBase movement thinkers.
+    -- Re-enable VJBase's movement thinkers.
     ent.VJ_CanMoveThink = true
 
-    RestoreTranslations(ent)
+    -- _gekkoCrouching is now false, so TranslateActivity returns
+    -- normal activities again.  Force idle system to refresh.
+    ent:MaintainIdleAnimation(true)
+
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  GeckoCrouch_AnimApply
---
---  Called every think tick from OnThink, AFTER VJBase has run.
---
---  With the SetSequence guard installed, "stolen recovery" lines
---  should vanish entirely — no other code can change the sequence
---  while crouching.  This function only needs to:
---    1. On fresh entry: issue ResetSequence(c_walk) + SetCycle(0).
---    2. Every tick: keep playback rate correct.
---
---  We still keep the GetSequence() != cwalk safety check as a
---  belt-and-suspenders fallback (e.g. sequence reset by engine
---  console commands, map transitions, etc.).
--- ─────────────────────────────────────────────────────────────
-function ENT:GeckoCrouch_AnimApply()
-    local cwalk = self.GekkoSeq_CrouchWalk
-    if not cwalk or cwalk == -1 then return end
-
-    -- ── Reassert sequence if needed ──────────────────────────
-    if self:GetSequence() ~= cwalk then
-        -- Authorised write — set the pass flag before calling.
-        self._gekkoSeqAllowed = true
-        self:ResetSequence(cwalk)
-        -- Guard may not have been installed yet on the very first tick;
-        -- ensure the flag is always cleared.
-        self._gekkoSeqAllowed = false
-
-        if self._gekkoCrouchJustEntered then
-            self:SetCycle(0)
-            self._gekkoCrouchJustEntered = false
-            print(string.format("[GeckoCrouch] Seq RESET → c_walk (%d)  (entry kick)", cwalk))
-        else
-            print(string.format("[GeckoCrouch] Seq RECLAIMED → c_walk (%d)  (stolen recovery)", cwalk))
-        end
-
-        self._gekkoCrouchSeqSet   = cwalk
-        self.Gekko_LastSeqIdx     = cwalk
-        self.Gekko_LastSeqName    = "c_walk"
-    else
-        if self._gekkoCrouchJustEntered then
-            self._gekkoCrouchJustEntered = false
-        end
-    end
-
-    -- ── LAYER 2 tick: keep VJBase movement thinkers frozen ───
-    -- VJBase resets these flags internally on each of its own ticks,
-    -- so we must re-freeze them every think tick while crouching.
-    self.VJ_IsMoving     = false
-    self.VJ_CanMoveThink = false
-
-    -- ── Every tick: update playback rate ─────────────────────
-    local vel    = self:GetVelocity()
-    local speed2 = vel.x * vel.x + vel.y * vel.y
-    local rate
-
-    if speed2 > (16 * 16) then
-        local speed  = math.sqrt(speed2)
-        rate = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.3, 1.5)
-    else
-        rate = CWALK_STATIONARY_RATE
-    end
-
-    self:SetPlaybackRate(rate)
-    self:SetPoseParameter("move_x", 0)
-    self:SetPoseParameter("move_y", 0)
-
-    self.Gekko_LastSeqName = "c_walk"
-end
-
--- ─────────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
---  Returns true  → crouch active
+--  Called every tick from GekkoUpdateAnimation().
+--  Returns true  → crouch active this tick
 --  Returns false → crouch inactive
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
+    -- Never crouch during a jump.
     local jumpState  = self:GetGekkoJumpState()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
@@ -529,6 +346,7 @@ function ENT:GeckoCrouch_Update()
             return false
         end
     else
+        -- Extend hold while ceiling is still low.
         if ceilHit then
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
@@ -548,9 +366,27 @@ function ENT:GeckoCrouch_Update()
                 ExitCrouch(self)
                 return false
             end
+            -- Another trigger still active; keep crouching.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
     end
+
+    -- While crouching: manage playback rate.
+    -- TranslateActivity handles which sequence plays; we only set speed.
+    local vel    = self:GetVelocity()
+    local speed2 = vel.x * vel.x + vel.y * vel.y
+    local rate
+
+    if speed2 > (16 * 16) then
+        rate = math.Clamp(math.sqrt(speed2) / DEFAULT_MOVE_SPEED, 0.3, 1.5)
+    else
+        rate = CWALK_STATIONARY_RATE
+    end
+
+    self:SetPlaybackRate(rate)
+    self:SetPoseParameter("move_x", 0)
+    self:SetPoseParameter("move_y", 0)
+    self.Gekko_LastSeqName = "c_walk"
 
     return true
 end
