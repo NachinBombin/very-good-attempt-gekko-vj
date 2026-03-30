@@ -102,12 +102,7 @@ function ENT:GekkoUpdateAnimation()
     end
 
     -- GeckoCrouch_Update handles its own ResetSequence every tick.
-    if self:GeckoCrouch_Update() then
-        -- Invalidate standing seq cache so the first tick after
-        -- standing up always re-applies the correct sequence.
-        self.Gekko_LastSeqIdx = -1
-        return
-    end
+    if self:GeckoCrouch_Update() then return end
 
     -- ── Standing locomotion ──────────────────────────────────
     local now    = CurTime()
