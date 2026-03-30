@@ -142,9 +142,15 @@ end
 
 -- ============================================================
 --  TranslateActivity
---  While crouching the AnimationTranslations table is already
---  patched to c_walk for every activity, so the table lookup
---  below returns the right sequence automatically.
+--
+--  Jump sequences are handled first.  For everything else we
+--  fall through to AnimationTranslations (which is patched to
+--  c_walk by PatchTranslationsForCrouch while crouching).
+--
+--  IMPORTANT: Do NOT add ACT_IDLE / ACT_WALK / ACT_RUN fast-paths
+--  here that bypass the AnimationTranslations table — if you do,
+--  the crouch patch is silently skipped and the mech reverts to
+--  idle while crouched.
 -- ============================================================
 function ENT:TranslateActivity(act)
     local jumpState = self:GetGekkoJumpState()
@@ -158,25 +164,21 @@ function ENT:TranslateActivity(act)
         return self._seqLand
     end
 
-    -- Crouch: AnimationTranslations already patched to c_walk.
-    -- Fall through to the normal table lookup below.
-
-    if act == ACT_WALK or act == ACT_WALK_AIM then
-        return self.GekkoSeq_Walk or act
-    elseif act == ACT_RUN or act == ACT_RUN_AIM then
-        return self.GekkoSeq_Run or act
-    elseif act == ACT_IDLE then
-        return self.GekkoSeq_Idle or act
+    -- Check AnimationTranslations table first.
+    -- While crouching the table is patched to c_walk for every activity,
+    -- so this correctly returns c_walk without any extra logic needed.
+    if self.AnimationTranslations then
+        local translated = self.AnimationTranslations[act]
+        if translated ~= nil then
+            return translated
+        end
     end
+
     return self.BaseClass.TranslateActivity(self, act)
 end
 
 -- ============================================================
 --  Core animation update  (called from OnThink each tick)
---  GeckoCrouch_Update() now only handles state transitions and
---  returns true/false.  The actual animation reassertion while
---  crouching is done via GeckoCrouch_AnimApply() at the BOTTOM
---  of OnThink, AFTER VJBase has run — ensuring we always win.
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
@@ -193,7 +195,8 @@ function ENT:GekkoUpdateAnimation()
     end
 
     -- Run crouch state-machine — returns true if crouch is active.
-    -- Animation is NOT applied here; it is applied in OnThink below.
+    -- Animation is NOT applied here; it is applied at the bottom of
+    -- OnThink via GeckoCrouch_AnimApply after VJBase has had its turn.
     if self:GeckoCrouch_Update() then return end
 
     local now    = CurTime()
@@ -383,9 +386,9 @@ function ENT:OnThink()
 
     self:GekkoUpdateAnimation()
 
-    -- KEY FIX: reassert crouch animation every tick, after everything
-    -- else has run.  This ensures VJBase's funcAnimThink hook (which
-    -- fires during the think pass) cannot overwrite our sequence.
+    -- Reassert crouch animation every tick, after everything else has
+    -- run.  On the first tick after entering crouch (_gekkoCrouchJustEntered
+    -- == true) this unconditionally calls ResetSequence + SetCycle(0).
     if self._gekkoCrouching then
         self:GeckoCrouch_AnimApply()
     end
