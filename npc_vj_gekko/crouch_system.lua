@@ -46,10 +46,12 @@ local RAND_DUR_MAX    = 10
 local HULL_STAND_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
 local HULL_STAND_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
 
--- Vertical clearance uses only the extra Z slice needed to go from
--- crouched height to standing height (avoids re-testing the floor)
+-- Vertical clearance: the Z slice from crouched top → standing top
+-- TraceHull requires start ~= endpos; sweep 1 unit upward so the
+-- engine actually runs the test.
 local HULL_VERT_MIN  = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, HITBOX_CROUCH_H)
 local HULL_VERT_MAX  = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+local VERT_SWEEP_OFF = Vector(0, 0, 1)   -- tiny upward offset so sweep is non-zero
 
 -- ─────────────────────────────────────────────────────────────
 --  RawObstacleCheck
@@ -78,6 +80,8 @@ end
 --  RawClearanceCheck
 --  Called while CROUCHING.  Checks if the Z slice from crouched
 --  top to standing top is clear directly above the NPC.
+--  A 1-unit upward sweep is used because Source's TraceHull
+--  skips zero-length sweeps entirely.
 --  Returns true  → ceiling is blocking → cannot stand yet.
 --  Returns false → overhead is clear   → safe to stand.
 -- ─────────────────────────────────────────────────────────────
@@ -85,7 +89,7 @@ local function RawClearanceCheck(ent)
     local pos = ent:GetPos()
     local tr = util.TraceHull({
         start  = pos,
-        endpos = pos,   -- zero-length sweep; just tests the volume
+        endpos = pos + VERT_SWEEP_OFF,   -- 1-unit upward; non-zero so the hull test runs
         mins   = HULL_VERT_MIN,
         maxs   = HULL_VERT_MAX,
         filter = ent,
@@ -269,6 +273,11 @@ function ENT:GeckoCrouch_Update()
             if CurTime() < self._gekkoCrouchExitTime then
                 wantCrouch = true
             else
+                -- Reset the hull debounce so the standing lookahead starts fresh
+                self._gekkoCeilDebounced  = false
+                self._gekkoCeilOnSince    = nil
+                self._gekkoCeilOffSince   = nil
+
                 self._gekkoCrouching      = false
                 self._gekkoCrouchExitTime = 0
                 self._gekkoCrouchSeqSet   = -1
