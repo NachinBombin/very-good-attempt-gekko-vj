@@ -17,63 +17,70 @@
 --                               STANDING  (STAND_REARM_DELAY before
 --                                          obstacle trace fires again)
 --
---  Exit gate is timer-only.  A ceiling clearance check was attempted
---  in earlier revisions but produced false-positives on flat ground
---  because TraceLine from (pos+CROUCH_H) to (pos+STAND_H) clips into
---  world/skybox brushes on most maps.  For a walking tank on terrain
---  a simple hold timer is the correct and sufficient guard.
+--  Key design rules
+--  ─────────────────
+--  • Jump CANNOT interrupt a crouch while the hold timer is active.
+--    Previously the jump system fired on the same tick as EnterCrouch,
+--    hit the early-exit block at the top of GeckoCrouch_Update, called
+--    ExitCrouch, and left the NPC standing one tick later.  Now we only
+--    allow a jump to break out of a crouch after the hold has expired
+--    AND wantCrouch is already false — i.e. the NPC was already about
+--    to stand up on its own.
 --
---  Called from:
---    ENT:Init()                 → self:GeckoCrouch_Init()
---    ENT:GekkoUpdateAnimation() → self:GeckoCrouch_Update()
+--  • The obstacle trace fires ONLY while moving (vel > 5).  A stationary
+--    NPC never needs to duck under an obstacle it is not approaching.
+--    This is the main source of the "flat field false-positive" bug: the
+--    NPC stops moving, the trace still fires because the wall is still
+--    in front of it, the crouch is entered, EnterCrouch sets MoveSpeed=0,
+--    the trace now returns false next tick (no longer approaching), the
+--    hold timer expires, the NPC stands — loop repeats.
+--
+--  • wantCrouch is evaluated AFTER TickObstacle so the hold timer is the
+--    sole exit guard once the NPC has committed to a crouch.
+--
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
 --  Tuning constants
 -- ─────────────────────────────────────────────────────────────
 
--- Minimum time the NPC must stay crouched before exit is evaluated.
-local CROUCH_HOLD_MIN   = 1.2
+-- Minimum time the NPC stays crouched regardless of trigger state.
+local CROUCH_HOLD_MIN   = 2.0
 
--- After standing back up, delay before the forward obstacle trace
--- is re-armed.  Prevents the trace from firing on the same frame
--- the NPC returns to standing height.
-local STAND_REARM_DELAY = 0.6
+-- After standing, delay before obstacle trace is re-armed.
+local STAND_REARM_DELAY = 0.8
 
 -- Forward lookahead distance (units).
-local HULL_LOOKAHEAD    = 80
+local HULL_LOOKAHEAD    = 96
 
--- Obstacle debounce: trace must report a hit for this long before
--- committing to a crouch.
-local OBS_ON_DEBOUNCE   = 0.20
+-- Obstacle debounce: trace must report hit for this long before crouching.
+local OBS_ON_DEBOUNCE   = 0.25
 
--- Hitbox heights (units above entity origin / foot level).
+-- Hitbox heights (units above foot origin).
 local HITBOX_STAND_H    = 200
 local HITBOX_CROUCH_H   = 130
 local HITBOX_HALF_W     = 64
 
+-- Velocity threshold below which the obstacle trace is skipped.
+-- A stopped NPC does not need to duck under obstacles it is not moving toward.
+local OBS_MIN_VELOCITY  = 20
+
 -- Random crouch behaviour
-local RAND_CHECK_MIN    = 4
-local RAND_CHECK_MAX    = 12
-local RAND_CHANCE       = 0.30
+local RAND_CHECK_MIN    = 6
+local RAND_CHECK_MAX    = 16
+local RAND_CHANCE       = 0.25
 local RAND_DUR_MIN      = 3
 local RAND_DUR_MAX      = 10
 
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes (computed once)
 -- ─────────────────────────────────────────────────────────────
--- Forward obstacle trace: crouch-height hull so it only catches
--- obstacles low enough to actually require ducking.
--- NOTE: mins.z is 10 (not 0) so the hull does not clip into the
--- ground plane on flat terrain, which would cause constant false
--- positives and trigger random crouching in open fields.
-local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 10)
+-- mins.z = 12 so the hull does not clip the ground plane.
+local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 12)
 local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
 
 -- ─────────────────────────────────────────────────────────────
---  RawObstacleCheck  (standing only)
---  Projects the crouch-height hull straight ahead.
---  Returns true → something blocks the path at crouch height.
+--  RawObstacleCheck  (standing + moving only)
 -- ─────────────────────────────────────────────────────────────
 local function RawObstacleCheck(ent)
     local pos = ent:GetPos()
@@ -94,14 +101,23 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  TickObstacle
---  Runs ONLY while standing AND the re-arm timer has elapsed.
---  Debounces the raw trace result before committing to a crouch.
---  Returns true once a sustained hit is confirmed.
+--  Only runs while STANDING and moving fast enough.
 -- ─────────────────────────────────────────────────────────────
 local function TickObstacle(ent)
     local now = CurTime()
 
+    -- Re-arm guard
     if now < ent._gekkoObsRearmT then
+        ent._gekkoObsOnSince  = nil
+        ent._gekkoObsHullHit  = false
+        return false
+    end
+
+    -- Skip if the NPC is essentially stationary — a stopped NPC will
+    -- never clear the obstacle by crouching and just loop in place.
+    local vel = ent:GetVelocity()
+    local spd = vel.x * vel.x + vel.y * vel.y
+    if spd < OBS_MIN_VELOCITY * OBS_MIN_VELOCITY then
         ent._gekkoObsOnSince  = nil
         ent._gekkoObsHullHit  = false
         return false
@@ -192,7 +208,7 @@ function ENT:GeckoCrouch_CacheSeqs()
 end
 
 -- ─────────────────────────────────────────────────────────────
---  EnterCrouch / ExitCrouch  — state transition helpers
+--  EnterCrouch / ExitCrouch
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent)
     local now = CurTime()
@@ -207,9 +223,8 @@ local function EnterCrouch(ent)
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
-    -- Broadcast crouch state to clients for cl_init animation sync
     ent:SetNWBool("GekkoIsCrouching", true)
-    -- Freeze NPC movement so it doesn't noclip through the obstacle
+    -- Freeze movement so the NPC waits under the obstacle.
     ent.MoveSpeed    = 0
     ent.RunSpeed     = 0
     ent.WalkSpeed    = 0
@@ -233,7 +248,6 @@ local function ExitCrouch(ent)
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
-    -- Restore movement speeds (values set by VJBase shared.lua)
     ent:SetNWBool("GekkoIsCrouching", false)
     ent.MoveSpeed    = ent.StartMoveSpeed    or 150
     ent.RunSpeed     = ent.StartRunSpeed     or 300
@@ -244,22 +258,36 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
---  Returns true  → crouch is active, caller must return early
---  Returns false → crouch is inactive, caller continues normally
+--  Returns true  → crouch active, caller must return early.
+--  Returns false → crouch inactive, caller continues normally.
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
-    -- ── Jump takes absolute priority ──────────────────────────────
+    -- ── Jump interrupt — only allowed when hold has already expired ───
+    -- CRITICAL FIX: Do NOT let a fresh jump exit a newly-entered crouch.
+    -- Previously the jump fired on the same tick as EnterCrouch, hit this
+    -- block, called ExitCrouch, and the NPC was standing again one tick
+    -- later — appearing to never crouch at all.
+    -- We now only exit for a jump when the hold timer has run out AND
+    -- wantCrouch is already false (i.e. the NPC was about to stand anyway).
     local jumpState = self:GetGekkoJumpState()
-    if jumpState == self.JUMP_RISING  or
-       jumpState == self.JUMP_FALLING or
-       jumpState == self.JUMP_LAND    or
-       (self._gekkoJustJumped and now < self._gekkoJustJumped) then
-        if self._gekkoCrouching then
+    local jumpActive = jumpState == self.JUMP_RISING  or
+                       jumpState == self.JUMP_FALLING or
+                       jumpState == self.JUMP_LAND    or
+                       (self._gekkoJustJumped and now < self._gekkoJustJumped)
+
+    if jumpActive and self._gekkoCrouching then
+        -- Only allow jump to break the crouch if the hold has fully expired.
+        if now >= self._gekkoCrouchHoldUntil then
             ExitCrouch(self)
-            print("[GeckoCrouch] Jump interrupted crouch")
+            print("[GeckoCrouch] Jump interrupted crouch (hold expired)")
+            return false
+        else
+            -- Hold still active: suppress jump, stay crouched.
+            -- Fall through to animation block.
         end
+    elseif jumpActive then
         return false
     end
 
@@ -270,7 +298,6 @@ function ENT:GeckoCrouch_Update()
     -- ── Tick sub-systems ──────────────────────────────────────────
     TickRandom(self)
 
-    -- Obstacle lookahead only runs while STANDING.
     local obsHit = false
     if not self._gekkoCrouching then
         obsHit = TickObstacle(self)
@@ -295,7 +322,6 @@ function ENT:GeckoCrouch_Update()
 
     -- ── State machine ─────────────────────────────────────────────
     if not self._gekkoCrouching then
-        -- STANDING → only enter if a trigger is active.
         if wantCrouch then
             EnterCrouch(self)
             -- Fall through to animation block on this same tick.
@@ -305,25 +331,23 @@ function ENT:GeckoCrouch_Update()
     else
         -- CROUCHING.
 
-        -- Safety stamp: guard against any edge case where the hold
-        -- was never set (e.g. jump interrupt re-entry).
+        -- Safety: guard against hold timer never being set.
         if self._gekkoCrouchHoldUntil <= 0 then
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
             print("[GeckoCrouch] Hold re-stamped (was zero)")
         end
 
-        -- Exit only after the minimum hold AND all triggers have dropped.
+        -- Exit only when the hold has fully elapsed AND all triggers dropped.
         if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
             ExitCrouch(self)
             return false
         end
-        -- Still crouching: hold active or a trigger is still live.
+        -- Still crouching.
     end
 
-    -- ── Crouch is active: drive the animation ─────────────────────
+    -- ── Crouch is active: drive animation ────────────────────────
     if self.GekkoSeq_CrouchIdle == -1 then
-        -- Sequences not cached yet (deferred timer hasn't fired).
-        -- Still return true so VJBase doesn't stomp with idle.
+        -- Sequences not cached yet — still block VJBase.
         return true
     end
 
@@ -333,9 +357,7 @@ function ENT:GeckoCrouch_Update()
     local targetSeq = (moving and self.GekkoSeq_CrouchWalk ~= -1)
         and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
-    -- Only call ResetSequence when the target sequence actually changes.
-    -- Never call SetSequence each tick — it resets the cycle to frame 0
-    -- every tick and causes rapid up/down flicker.
+    -- Only call ResetSequence when the sequence actually changes.
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
         self:ResetSequence(targetSeq)
@@ -354,13 +376,7 @@ function ENT:GeckoCrouch_Update()
             self.Gekko_LastSeqName, targetSeq, tostring(moving)))
     end
 
-    -- Advance the animation cycle manually every tick.
-    -- VJBase's funcAnimThink hook also calls FrameAdvance on its own
-    -- path, but while crouching MaintainIdleAnimation is blocked and
-    -- VJ_AnimationThink returns early — so the engine will not auto-
-    -- advance unless we do it here.  Without this call the sequence
-    -- sits at cycle 0 and the model appears to be in its reference
-    -- pose (noclip / T-pose look).
+    -- Advance animation cycle manually every tick.
     self:FrameAdvance(FrameTime())
 
     self:SetPoseParameter("move_x", 0)
