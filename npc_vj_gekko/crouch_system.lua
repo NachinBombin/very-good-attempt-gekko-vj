@@ -33,14 +33,26 @@ local HITBOX_CROUCH_H   = 130
 local HITBOX_HALF_W     = 64
 local OBS_MIN_VELOCITY  = 20
 
--- Ceiling check: trace upward from eye height.
--- CEIL_CLEARANCE is the minimum overhead space needed before
--- we consider the ceiling "close enough to crouch".
--- The Gekko standing hull is 200 units tall; we fire a line
--- from the top of the hull.  If something is within
--- CEIL_CLEARANCE units above that point, wantCrouch becomes true.
-local CEIL_CHECK_INTERVAL = 0.15   -- seconds between ceiling traces (perf)
-local CEIL_CLEARANCE      = 40     -- units of headroom needed above the hull top
+-- Ceiling check: fire a line straight up from the top of the standing hull.
+--
+-- CEIL_CLEARANCE: how many units of headroom we need above the hull top
+--   before we consider the ceiling "not an issue".  If something is
+--   within CEIL_CLEARANCE units above the hull top, wantCrouch becomes true.
+--
+-- CEIL_TRACE_EXTRA: extra units traced beyond CEIL_CLEARANCE so that
+--   ceilings which are further away are still discovered and the NPC
+--   has time to react before it actually clips.
+--
+--   The full trace travels:
+--     from  pos.z + (HITBOX_STAND_H - 4)    ← just below hull top
+--     to    pos.z + HITBOX_STAND_H + CEIL_CLEARANCE + CEIL_TRACE_EXTRA
+--
+--   Any hit whose HitPos is within CEIL_CLEARANCE above the hull top
+--   triggers a crouch.  Hits further away are logged but ignored.
+--
+local CEIL_CHECK_INTERVAL = 0.12   -- seconds between ceiling traces
+local CEIL_CLEARANCE      = 60     -- units: headroom needed to stay standing
+local CEIL_TRACE_EXTRA    = 80     -- extra lookahead so the NPC pre-crouches
 
 local RAND_CHECK_MIN    = 6
 local RAND_CHECK_MAX    = 16
@@ -77,42 +89,51 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  CeilingCheck
---  Fires a line straight up from the top of the standing hull.
---  Returns true when the ceiling is too close to stand under.
---  Throttled by CEIL_CHECK_INTERVAL so it doesn't fire every tick.
+--
+--  Fires a line from just below the top of the standing hull
+--  upward by (CEIL_CLEARANCE + CEIL_TRACE_EXTRA) units.
+--
+--  A hit whose HitPos.z is within CEIL_CLEARANCE of the hull
+--  top means the ceiling is too close — return true (crouch).
+--
+--  Throttled by CEIL_CHECK_INTERVAL for performance.
 -- ─────────────────────────────────────────────────────────────
 local function CeilingCheck(ent)
     local now = CurTime()
     if now < (ent._gekkoCeilNextT or 0) then
-        -- Return the cached result between checks.
         return ent._gekkoCeilingHit
     end
     ent._gekkoCeilNextT = now + CEIL_CHECK_INTERVAL
 
     local pos = ent:GetPos()
-    -- Start just below the top of the standing hull so we don't
-    -- start inside brushes on sloped floors.
-    local traceStart = pos + Vector(0, 0, HITBOX_STAND_H - 4)
-    -- We need at least CEIL_CLEARANCE of clearance above the hull top.
-    local traceEnd   = traceStart + Vector(0, 0, CEIL_CLEARANCE)
+
+    -- Start just inside the hull top to avoid false hits on sloped floors.
+    local startZ = pos.z + HITBOX_STAND_H - 4
+    -- End far enough above to catch ceilings the NPC is approaching.
+    local endZ   = pos.z + HITBOX_STAND_H + CEIL_CLEARANCE + CEIL_TRACE_EXTRA
 
     local tr = util.TraceLine({
-        start  = traceStart,
-        endpos = traceEnd,
+        start  = Vector(pos.x, pos.y, startZ),
+        endpos = Vector(pos.x, pos.y, endZ),
         filter = ent,
         mask   = MASK_SOLID,
     })
 
-    local hit = tr.Hit
-    ent._gekkoCeilingHit = hit
+    local hit = false
+    if tr.Hit then
+        -- Only trigger if the ceiling is within CEIL_CLEARANCE of the hull top.
+        local ceilZ    = tr.HitPos.z
+        local hullTopZ = pos.z + HITBOX_STAND_H
+        local gap      = ceilZ - hullTopZ
+        hit = (gap <= CEIL_CLEARANCE)
 
-    if hit then
         print(string.format(
-            "[GeckoCrouch] Ceiling HIT — frac=%.2f  pos=%s",
-            tr.Fraction, tostring(tr.HitPos)
+            "[GeckoCrouch] CeilingTrace | hit=true  ceilZ=%.1f  hullTopZ=%.1f  gap=%.1f  TRIGGERING=%s",
+            ceilZ, hullTopZ, gap, tostring(hit)
         ))
     end
 
+    ent._gekkoCeilingHit = hit
     return hit
 end
 
@@ -159,26 +180,18 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  TickRandom
---
---  NOTE: This function only SETS the _gekkoRandomCrouch flag.
---  It does NOT clear it — clearing is done exclusively inside
---  GeckoCrouch_Update() once the hold timer has truly elapsed
---  and the NPC is confirmed standing.  This prevents the flag
---  from being cleared mid-jump or mid-crouch-animation.
 -- ─────────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
 
-    -- If already flagged, do nothing — let the state machine expire it.
     if ent._gekkoRandomCrouch then return end
-
     if now < ent._gekkoRandomCrouchNextT then return end
 
     if math.random() < RAND_CHANCE then
         local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
         ent._gekkoRandomCrouch     = true
-        ent._gekkoRandomCrouchEndT = now + dur   -- stored for reference only
-        ent._gekkoRandomDuration   = dur          -- passed to EnterCrouch
+        ent._gekkoRandomCrouchEndT = now + dur
+        ent._gekkoRandomDuration   = dur
         print(string.format("[GeckoCrouch] Random TRIGGERED — holding for %.1fs", dur))
     else
         ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -225,16 +238,10 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  EnterCrouch
---
---  randDuration: if the trigger is random, pass the requested
---  duration so the hold covers the full random window.
---  For obstacle/ceiling/VJ triggers, pass nil (uses CROUCH_HOLD_MIN).
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, randDuration)
     local now = CurTime()
     ent._gekkoCrouching    = true
-    -- Hold for at least CROUCH_HOLD_MIN, but also cover the
-    -- full random duration if this was a random-triggered crouch.
     local holdLen = CROUCH_HOLD_MIN
     if randDuration and randDuration > holdLen then
         holdLen = randDuration
@@ -244,8 +251,6 @@ local function EnterCrouch(ent, randDuration)
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
-    -- Do NOT reset _gekkoCeilingHit here — ceiling may still be present,
-    -- let TickCeiling keep reporting it so we stay crouched.
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
@@ -270,7 +275,7 @@ local function ExitCrouch(ent)
     ent._gekkoObsDebounced      = false
     ent._gekkoObsHullHit        = false
     ent._gekkoCeilingHit        = false
-    ent._gekkoCeilNextT         = 0   -- force a fresh ceiling check on next tick
+    ent._gekkoCeilNextT         = 0   -- force a fresh ceiling check next tick
     ent._gekkoRandomCrouch      = false
     ent._gekkoRandomCrouchEndT  = 0
     ent._gekkoRandomDuration    = 0
@@ -294,25 +299,23 @@ end
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
-    -- ── Jump interrupt ───────────────────────────────────────────
+    -- Jump interrupt
     local jumpState  = self:GetGekkoJumpState()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
                        jumpState == self.JUMP_LAND
 
-    if jumpActive then
-        return false
-    end
+    if jumpActive then return false end
 
     if self._gekkoSuppressActivity and now < self._gekkoSuppressActivity then
         return false
     end
 
-    -- ── Tick sub-systems ─────────────────────────────────────────
+    -- Sub-systems
     TickRandom(self)
 
-    -- Ceiling check runs always (not gated by crouching state),
-    -- because we need to STAY crouched while the ceiling is present.
+    -- Ceiling check runs regardless of crouch state so we STAY crouched
+    -- while overhead clearance is insufficient.
     local ceilHit = CeilingCheck(self)
 
     local obsHit = false
@@ -320,12 +323,12 @@ function ENT:GeckoCrouch_Update()
         obsHit = TickObstacle(self)
     end
 
-    -- ── Evaluate triggers ────────────────────────────────────────
+    -- Evaluate triggers
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local randActive = self._gekkoRandomCrouch
     local wantCrouch = vjCrouch or obsHit or ceilHit or randActive
 
-    -- ── Diagnostics ──────────────────────────────────────────────
+    -- Diagnostics (throttled)
     if not self._crouchDiagT or now > self._crouchDiagT then
         print(string.format(
             "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  holdLeft=%.2f  rearmLeft=%.2f",
@@ -337,7 +340,7 @@ function ENT:GeckoCrouch_Update()
         self._crouchDiagT = now + 2
     end
 
-    -- ── State machine ─────────────────────────────────────────────
+    -- State machine
     if not self._gekkoCrouching then
         if wantCrouch then
             local randDur = randActive and self._gekkoRandomDuration or nil
@@ -348,14 +351,13 @@ function ENT:GeckoCrouch_Update()
         end
     else
         -- CROUCHING.
-        -- If ceiling is still present, always extend the hold.
+        -- Ceiling still present → keep re-stamping the hold timer.
         if ceilHit then
-            -- Keep re-stamping so we never exit while the ceiling is there.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
 
         if now >= self._gekkoCrouchHoldUntil then
-            -- Hold has elapsed. Disarm random flag if it was the trigger.
+            -- Hold elapsed. Disarm random flag if it was the trigger.
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
@@ -370,13 +372,13 @@ function ENT:GeckoCrouch_Update()
                 ExitCrouch(self)
                 return false
             end
-            -- Another trigger still active — re-stamp hold to avoid flicker.
+            -- Another trigger still active — re-stamp to avoid flicker.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
         -- Still crouching: fall through to animation block.
     end
 
-    -- ── Crouch animation ──────────────────────────────────────────
+    -- Crouch animation
     if self.GekkoSeq_CrouchIdle == -1 then
         return true
     end
@@ -388,7 +390,6 @@ function ENT:GeckoCrouch_Update()
         and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
     -- Only call ResetSequence when the target sequence actually changes.
-    -- Never call SetSequence every tick — it resets the cycle to 0 each frame.
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
         self:ResetSequence(targetSeq)
@@ -406,7 +407,7 @@ function ENT:GeckoCrouch_Update()
         print(string.format("[GeckoCrouch] Seq → %s (%d) moving=%s",
             self.Gekko_LastSeqName, targetSeq, tostring(moving)))
     end
-    -- No else-branch that calls SetSequence — the engine advances the cycle.
+    -- No else-branch: the engine advances the cycle on its own.
 
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
