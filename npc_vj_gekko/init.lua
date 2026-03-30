@@ -5,7 +5,7 @@ include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("jump_system.lua")
-include("crouch_system.lua")   -- ★ load crouch module
+include("crouch_system.lua")
 
 -- ============================================================
 --  Constants
@@ -83,13 +83,19 @@ end
 -- ============================================================
 --  MaintainIdleAnimation override
 --  VJBase registers a global Think hook (funcAnimThink) during
---  Initialize() that calls MaintainIdleAnimation() every tick.
---  This hook bypasses VJ_AnimationThink and MaintainActivity.
---  While crouching, crouch_system owns the sequence entirely;
---  we must prevent VJBase from fighting it via this path.
+--  Initialize() that calls MaintainIdleAnimation() every tick,
+--  bypassing VJ_AnimationThink entirely.  While crouching OR
+--  during a jump phase we must block it so our own sequence
+--  control is not overwritten.
 -- ============================================================
 function ENT:MaintainIdleAnimation(force)
+    -- Block during crouch
     if self._gekkoCrouching then return end
+    -- Block during jump phases (jump_system owns the sequence then)
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then
+        return
+    end
     self.BaseClass.MaintainIdleAnimation(self, force)
 end
 
@@ -101,6 +107,10 @@ function ENT:MaintainActivity()
         return
     end
     if self._gekkoCrouching then return end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then
+        return
+    end
     self.BaseClass.MaintainActivity(self)
 end
 
@@ -112,6 +122,10 @@ function ENT:VJ_AnimationThink()
         return
     end
     if self._gekkoCrouching then return end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then
+        return
+    end
     self.BaseClass.VJ_AnimationThink(self)
 end
 
@@ -162,7 +176,7 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    -- ★ Run crouch logic first — returns true if crouch took control
+    -- Run crouch logic first — returns true if crouch owns this tick.
     if self:GeckoCrouch_Update() then return end
 
     local now    = CurTime()
@@ -254,6 +268,16 @@ function ENT:Init()
     self._gekkoLastTime      = CurTime() - 0.1
     self._gekkoSuppressActivity = 0
 
+    -- Pre-init sound tables that VJBase may look up before Activate()
+    -- to prevent the "temptable is nil" error from VJ_ApplyDamageInfo.
+    if not self.VJ_AddOnDamage    then self.VJ_AddOnDamage    = {} end
+    if not self.VJ_DamageInfos    then self.VJ_DamageInfos    = {} end
+    if not self.VJ_DeathSounds    then self.VJ_DeathSounds    = {} end
+    if not self.VJ_PainSounds     then self.VJ_PainSounds     = {} end
+    if not self.VJ_IdleSounds     then self.VJ_IdleSounds     = {} end
+    if not self.VJ_FootstepSounds then self.VJ_FootstepSounds = {} end
+    if not self.AnimationTranslations then self.AnimationTranslations = {} end
+
     self:GekkoJump_Init()
     self:GeckoCrouch_Init()
 
@@ -263,7 +287,6 @@ function ENT:Init()
 
         selfRef:GekkoJump_Activate()
 
-        -- Cache the NPC's base move speeds so ExitCrouch can restore them.
         selfRef.StartMoveSpeed = selfRef.MoveSpeed or 150
         selfRef.StartRunSpeed  = selfRef.RunSpeed  or 300
         selfRef.StartWalkSpeed = selfRef.WalkSpeed or 150
