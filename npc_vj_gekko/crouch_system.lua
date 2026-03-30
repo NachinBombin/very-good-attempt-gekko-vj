@@ -29,44 +29,25 @@
 --  Tuning constants
 -- ─────────────────────────────────────────────────────────────
 
-local CROUCH_HOLD_MIN   = 2.0
-local STAND_REARM_DELAY = 0.8
-local HULL_LOOKAHEAD    = 96
+local CROUCH_HOLD_MIN   = 10
+local STAND_REARM_DELAY = 1.0
+local HULL_LOOKAHEAD    = 196
 local OBS_ON_DEBOUNCE   = 0.25
 local HITBOX_STAND_H    = 200
 local HITBOX_CROUCH_H   = 130
 local HITBOX_HALF_W     = 64
 local OBS_MIN_VELOCITY  = 20
 
--- Ceiling check: fire a line straight up from the top of the standing hull.
---
--- CEIL_CLEARANCE: how many units of headroom we need above the hull top
---   before we consider the ceiling "not an issue".  If something is
---   within CEIL_CLEARANCE units above the hull top, wantCrouch becomes true.
---
--- CEIL_TRACE_EXTRA: extra units traced beyond CEIL_CLEARANCE so that
---   ceilings which are further away are still discovered and the NPC
---   has time to react before it actually clips.
---
---   The full trace travels:
---     from  pos.z + (HITBOX_STAND_H - 4)    ← just below hull top
---     to    pos.z + HITBOX_STAND_H + CEIL_CLEARANCE + CEIL_TRACE_EXTRA
---
---   Any hit whose HitPos is within CEIL_CLEARANCE above the hull top
---   triggers a crouch.  Hits further away are logged but ignored.
---
-local CEIL_CHECK_INTERVAL = 0.12   -- seconds between ceiling traces
-local CEIL_CLEARANCE      = 60     -- units: headroom needed to stay standing
-local CEIL_TRACE_EXTRA    = 80     -- extra lookahead so the NPC pre-crouches
+local CEIL_CHECK_INTERVAL = 0.12
+local CEIL_CLEARANCE      = 60
+local CEIL_TRACE_EXTRA    = 80
 
 local RAND_CHECK_MIN    = 6
 local RAND_CHECK_MAX    = 16
-local RAND_CHANCE       = 0.25
+local RAND_CHANCE       = 0.69
 local RAND_DUR_MIN      = 3
 local RAND_DUR_MAX      = 10
 
--- Playback rate for c_walk when the Gekko is standing still while crouched.
--- Low enough that the animation crawls and reads as "idle".
 local CWALK_STATIONARY_RATE = 0.05
 
 -- ─────────────────────────────────────────────────────────────
@@ -98,14 +79,6 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  CeilingCheck
---
---  Fires a line from just below the top of the standing hull
---  upward by (CEIL_CLEARANCE + CEIL_TRACE_EXTRA) units.
---
---  A hit whose HitPos.z is within CEIL_CLEARANCE of the hull
---  top means the ceiling is too close — return true (crouch).
---
---  Throttled by CEIL_CHECK_INTERVAL for performance.
 -- ─────────────────────────────────────────────────────────────
 local function CeilingCheck(ent)
     local now = CurTime()
@@ -116,9 +89,7 @@ local function CeilingCheck(ent)
 
     local pos = ent:GetPos()
 
-    -- Start just inside the hull top to avoid false hits on sloped floors.
     local startZ = pos.z + HITBOX_STAND_H - 4
-    -- End far enough above to catch ceilings the NPC is approaching.
     local endZ   = pos.z + HITBOX_STAND_H + CEIL_CLEARANCE + CEIL_TRACE_EXTRA
 
     local tr = util.TraceLine({
@@ -130,7 +101,6 @@ local function CeilingCheck(ent)
 
     local hit = false
     if tr.Hit then
-        -- Only trigger if the ceiling is within CEIL_CLEARANCE of the hull top.
         local ceilZ    = tr.HitPos.z
         local hullTopZ = pos.z + HITBOX_STAND_H
         local gap      = ceilZ - hullTopZ
@@ -227,6 +197,7 @@ function ENT:GeckoCrouch_Init()
     self._gekkoRandomCrouchEndT  = 0
     self._gekkoRandomDuration    = 0
     self._gekkoRandomCrouchNextT = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    self._gekkoBlockVJAnim       = false  -- VJ animation block flag
     print("[GeckoCrouch] Init() — state vars created")
 end
 
@@ -245,10 +216,13 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  EnterCrouch
+--  FIX: removed VJ_MovementSpeed = 0 (was fighting VJ movement)
+--  FIX: added _gekkoBlockVJAnim = true (stops VJBase anim override)
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, randDuration)
     local now = CurTime()
     ent._gekkoCrouching    = true
+    ent._gekkoBlockVJAnim  = true  -- block VJBase from overriding our animation
     local holdLen = CROUCH_HOLD_MIN
     if randDuration and randDuration > holdLen then
         holdLen = randDuration
@@ -263,6 +237,9 @@ local function EnterCrouch(ent, randDuration)
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
+    -- NOTE: VJ_MovementSpeed = 0 removed — it was zeroing speed permanently
+    -- and conflicting with VJBase's own movement system.
+    -- Speed is controlled via MoveSpeed/RunSpeed/WalkSpeed only:
     ent.MoveSpeed = 0
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
@@ -272,10 +249,12 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  ExitCrouch
+--  FIX: added _gekkoBlockVJAnim = false (releases VJBase anim control)
 -- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
     local now = CurTime()
     ent._gekkoCrouching         = false
+    ent._gekkoBlockVJAnim       = false  -- release VJBase animation control
     ent._gekkoCrouchSeqSet      = -1
     ent._gekkoObsRearmT         = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince        = nil
@@ -296,6 +275,52 @@ local function ExitCrouch(ent)
     ent.RunSpeed  = ent.StartRunSpeed  or 300
     ent.WalkSpeed = ent.StartWalkSpeed or 150
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  GeckoCrouch_AnimApply
+--  FIX: Rebuilds VJ_AnimationTable with {sequence, playbackrate}
+--  so VJBase's animation system never receives a nil table entry.
+--  Called from GeckoCrouch_Update when crouch is active.
+-- ─────────────────────────────────────────────────────────────
+local function GeckoCrouch_AnimApply(ent, cwalk)
+    -- Compute desired playback rate from XY velocity.
+    local vel    = ent:GetVelocity()
+    local speed2 = vel.x * vel.x + vel.y * vel.y
+    local rate
+
+    if speed2 > (16 * 16) then
+        local speed  = math.sqrt(speed2)
+        local maxSpd = (ent.StartMoveSpeed and ent.StartMoveSpeed > 0)
+            and ent.StartMoveSpeed or 150
+        rate = math.Clamp(speed / maxSpd, 0.3, 1.5)
+    else
+        rate = CWALK_STATIONARY_RATE
+    end
+
+    -- Push a fully-formed VJ_AnimationTable entry so VJBase internals
+    -- never see a nil sequence or nil playbackrate field.
+    ent.VJ_AnimationTable = {
+        {
+            sequence    = cwalk,
+            playbackrate = rate,
+        }
+    }
+
+    -- Also drive the sequence directly so it takes effect this tick
+    -- regardless of whether VJBase processes the table this frame.
+    if ent._gekkoCrouchSeqSet ~= cwalk then
+        ent._gekkoCrouchSeqSet = cwalk
+        ent:ResetSequence(cwalk)
+        ent:SetCycle(0)
+        ent.Gekko_LastSeqIdx  = cwalk
+        ent.Gekko_LastSeqName = "c_walk"
+        print(string.format("[GeckoCrouch] Seq → c_walk (%d)", cwalk))
+    end
+
+    ent:SetPlaybackRate(rate)
+    ent:SetPoseParameter("move_x", 0)
+    ent:SetPoseParameter("move_y", 0)
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -321,8 +346,6 @@ function ENT:GeckoCrouch_Update()
     -- Sub-systems
     TickRandom(self)
 
-    -- Ceiling check runs regardless of crouch state so we STAY crouched
-    -- while overhead clearance is insufficient.
     local ceilHit = CeilingCheck(self)
 
     local obsHit = false
@@ -358,13 +381,11 @@ function ENT:GeckoCrouch_Update()
         end
     else
         -- CROUCHING.
-        -- Ceiling still present → keep re-stamping the hold timer.
         if ceilHit then
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
 
         if now >= self._gekkoCrouchHoldUntil then
-            -- Hold elapsed. Disarm random flag if it was the trigger.
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
@@ -379,44 +400,18 @@ function ENT:GeckoCrouch_Update()
                 ExitCrouch(self)
                 return false
             end
-            -- Another trigger still active — re-stamp to avoid flicker.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
         -- Still crouching: fall through to animation block.
     end
 
     -- ─────────────────────────────────────────────────────────
-    --  Crouch animation — always c_walk, rate drives appearance.
-    --
-    --  Moving  → rate proportional to XY speed  (0.3 – 1.5)
-    --  Still   → CWALK_STATIONARY_RATE (very slow crawl = reads as idle)
+    --  Crouch animation — delegate to GeckoCrouch_AnimApply.
+    --  VJ_AnimationTable is always set to a valid table here.
     -- ─────────────────────────────────────────────────────────
     local cwalk = self.GekkoSeq_CrouchWalk
-    if cwalk == -1 then return true end  -- no sequence found, crouch is still active
+    if cwalk == -1 then return true end  -- sequence not found, still crouching
 
-    -- Set the sequence once and let the engine advance the cycle.
-    if self._gekkoCrouchSeqSet ~= cwalk then
-        self._gekkoCrouchSeqSet = cwalk
-        self:ResetSequence(cwalk)
-        self:SetCycle(0)
-        self.Gekko_LastSeqIdx  = cwalk
-        self.Gekko_LastSeqName = "c_walk"
-        print(string.format("[GeckoCrouch] Seq → c_walk (%d)", cwalk))
-    end
-
-    -- Update playback rate every tick so it tracks velocity smoothly.
-    local vel    = self:GetVelocity()
-    local speed2 = vel.x * vel.x + vel.y * vel.y
-    if speed2 > (16 * 16) then
-        local speed  = math.sqrt(speed2)
-        local maxSpd = (self.StartMoveSpeed and self.StartMoveSpeed > 0)
-            and self.StartMoveSpeed or 150
-        self:SetPlaybackRate(math.Clamp(speed / maxSpd, 0.3, 1.5))
-    else
-        self:SetPlaybackRate(CWALK_STATIONARY_RATE)
-    end
-
-    self:SetPoseParameter("move_x", 0)
-    self:SetPoseParameter("move_y", 0)
+    GeckoCrouch_AnimApply(self, cwalk)
     return true
 end
