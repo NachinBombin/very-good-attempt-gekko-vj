@@ -39,8 +39,9 @@ function ENT:GekkoJump_Init()
     self._seqFall = -1
     self._seqLand = -1
 
+    -- FIX: was self.JUMP_FALLING = JUMP_RISING (typo aliased RISING→FALLING)
     self.JUMP_NONE    = JUMP_NONE
-    self.JUMP_FALLING  = JUMP_RISING
+    self.JUMP_RISING  = JUMP_RISING
     self.JUMP_FALLING = JUMP_FALLING
     self.JUMP_LAND    = JUMP_LAND
 
@@ -95,10 +96,7 @@ function ENT:GekkoJump_ShouldJump()
     if not IsValid(enemy)                    then return false end
 
     local dist = self:GetPos():Distance2D(enemy:GetPos())
-
--- Now this only checks if they are horizontally close enough
-if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
-   
+    if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
 
     return true
 end
@@ -106,8 +104,6 @@ end
 -- ============================================================
 --  ForceSeq
 --  Single authoritative place to slam a jump-phase sequence.
---  Locks out GekkoUpdateAnimation, MaintainActivity, AND VJ Base's
---  own VJ_AnimationThink so nothing underneath can clobber the anim.
 -- ============================================================
 local function ForceSeq(ent, seq, rate)
     ent:ResetSequence(seq)
@@ -115,9 +111,7 @@ local function ForceSeq(ent, seq, rate)
     ent:SetPlaybackRate(rate)
     ent.Gekko_LastSeqIdx  = seq
     ent.Gekko_LastSeqName = "jump_phase"
-    -- Suppress VJ MaintainActivity and VJ_AnimationThink for this window
     ent._gekkoSuppressActivity = CurTime() + 0.5
-    -- Block VJ Base's movement-think flags so it stops pushing loco anims
     ent.VJ_IsMoving      = false
     ent.VJ_CanMoveThink  = false
 end
@@ -137,11 +131,16 @@ function ENT:GekkoJump_Execute()
     local launchYaw = fwd:Angle().y
     self:SetAngles(Angle(0, launchYaw, 0))
 
+    -- FIX: Switch to FLYGRAVITY BEFORE applying velocity.
+    -- MOVETYPE_STEP suppresses external velocity on NPCs — the impulse
+    -- was being silently discarded every tick by the NPC locomotion code.
+    self:SetMoveType(MOVETYPE_FLYGRAVITY)
+
+    -- Apply velocity AFTER movetype change so the physics object accepts it.
     local vel = self:GetVelocity()
     vel.z     = JUMP_FORCE
     vel       = vel + fwd * JUMP_FORWARD_FORCE
     self:SetVelocity(vel)
-    self:SetMoveType(MOVETYPE_FLYGRAVITY)
 
     -- Kill the AI navigation schedule so the NPC brain stops trying to steer
     self:SetSchedule(SCHED_NONE)
@@ -176,7 +175,6 @@ function ENT:GekkoJump_Think()
         self.VJ_IsMoving     = false
         self.VJ_CanMoveThink = false
 
-        -- Clamp pitch and roll — only allow yaw (horizontal facing)
         local a = self:GetAngles()
         if math.abs(a.p) > 0.5 or math.abs(a.r) > 0.5 then
             self:SetAngles(Angle(0, a.y, 0))
@@ -206,10 +204,6 @@ function ENT:GekkoJump_Think()
 
     -- --------------------------------------------------------
     --  FALLING: keep the fall anim alive.
-    --  The 'fall' sequence is NOT a loop — when it finishes the
-    --  engine would snap to the default pose (ragdoll/walk).
-    --  Re-enforce the sequence every tick and clamp the cycle
-    --  near the held mid-fall pose so it never actually ends.
     -- --------------------------------------------------------
     if state == JUMP_FALLING then
         if self._seqFall ~= -1 then
@@ -217,7 +211,6 @@ function ENT:GekkoJump_Think()
                 self:ResetSequence(self._seqFall)
                 self:SetPlaybackRate(0.8)
             end
-            -- Clamp cycle so the anim freezes in the held fall pose
             if self:GetCycle() > 0.90 then
                 self:SetCycle(0.5)
             end
@@ -232,13 +225,10 @@ function ENT:GekkoJump_Think()
         self:SetGekkoJumpTimer(CurTime() + JUMP_LAND_LOCKOUT)
         self:SetMoveType(MOVETYPE_STEP)
         self:SetVelocity(Vector(0, 0, 0))
-        -- Snap angles clean on touchdown
         local a = self:GetAngles()
         self:SetAngles(Angle(0, a.y, 0))
         print("[GekkoJump] → LAND  seqLand=" .. self._seqLand)
         if self._seqLand ~= -1 then
-            -- Play land anim at natural speed.
-            -- Lockout duration should match the anim length — tune JUMP_LAND_LOCKOUT if needed.
             ForceSeq(self, self._seqLand, 1.0)
         end
         self:GekkoJump_LandImpact()
@@ -247,26 +237,19 @@ function ENT:GekkoJump_Think()
 
     -- --------------------------------------------------------
     --  LAND → NONE
-    --  Add a short grace window after lockout expires so that
-    --  VJ Base and GekkoUpdateAnimation agree on the first idle
-    --  frame instead of racing to set different sequences.
     -- --------------------------------------------------------
     if state == JUMP_LAND and CurTime() > self:GetGekkoJumpTimer() then
         self:SetGekkoJumpState(JUMP_NONE)
         self:SetGekkoJumpTimer(0)
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
-        -- Grace period: keep VJ Base suppressed a tiny bit longer so
-        -- GekkoUpdateAnimation wins the first idle-frame race.
         self._gekkoSuppressActivity = CurTime() + 0.15
-        -- Pre-seed idle so VJ Base inherits the correct sequence
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
             self:ResetSequence(self.GekkoSeq_Idle)
             self:SetPlaybackRate(1.0)
             self.Gekko_LastSeqIdx  = self.GekkoSeq_Idle
             self.Gekko_LastSeqName = "idle"
         end
-        -- Re-allow VJ movement think
         self.VJ_CanMoveThink = true
         print("[GekkoJump] → NONE (lockout done)")
     end
@@ -304,13 +287,9 @@ end
 function ENT:GekkoJump_LandImpact()
     local shakePos = self:GetPos()
 
-    -- Camera shake — works serverside, broadcasts to nearby players
     util.ScreenShake(shakePos, 12, 8, 0.6, 700)
-
-    -- Land sound
     self:EmitSound("physics/metal/metal_box_impact_hard3.wav", 100, 80)
 
-    -- Dust: use a real built-in particle that definitely exists
     local eff = EffectData()
     eff:SetOrigin(shakePos)
     eff:SetNormal(Vector(0, 0, 1))
@@ -319,6 +298,5 @@ function ENT:GekkoJump_LandImpact()
     eff:SetRadius(128)
     util.Effect("dust", eff)
 
-    -- Supplemental dirt puff via particle system
     ParticleEffect("impact_dirt_cheap", shakePos, Angle(0, 0, 0))
 end
