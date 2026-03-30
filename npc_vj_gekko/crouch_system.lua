@@ -15,13 +15,12 @@
 --    → ResetSequence.  With an empty AnimationTranslations table it
 --    resolves to sequence 0 (ragdoll), locking the legs every ~1s.
 --
---    The only reliable fix is to call ResetSequence ourselves from
+--    The only reliable fix is to call SetSequence ourselves from
 --    OnThink (which runs AFTER the Think hook), overwriting whatever
---    MaintainIdleAnimation just set.  We do this unconditionally every
---    tick inside GeckoCrouch_Update while crouching is active.
---
---    Hull resize, speed zeroing, and all triggers (VJ native,
---    ceiling, obstacle, random) are unchanged.
+--    MaintainIdleAnimation just set.  We call ResetSequence ONCE on
+--    crouch entry (or sequence change), then SetSequence every
+--    subsequent tick so the animation continues playing without
+--    restarting from frame 0 each tick.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -217,7 +216,7 @@ local function EnterCrouch(ent, randDuration)
         holdLen = randDuration
     end
     ent._gekkoCrouchHoldUntil = now + holdLen
-    ent._gekkoCrouchSeqSet    = -1
+    ent._gekkoCrouchSeqSet    = -1  -- force ResetSequence on first tick
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
@@ -351,11 +350,12 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Sequence enforcement ──────────────────────────────────
-    -- VJBase's funcAnimThink fires BEFORE OnThink and calls the
-    -- native MaintainIdleAnimation, which resets the sequence to
-    -- whatever GetIdealActivity() resolves to (often seq 0 / ragdoll).
-    -- We overwrite it here unconditionally, every tick, because
-    -- OnThink always runs after the Think hook.
+    -- VJBase's funcAnimThink fires BEFORE OnThink and resets the
+    -- sequence every frame via MaintainIdleAnimation.
+    -- Fix: call ResetSequence ONCE when the target sequence changes
+    -- (entry or walk↔idle switch), then SetSequence every subsequent
+    -- tick.  SetSequence updates which clip plays without restarting
+    -- from frame 0, so the animation runs smoothly.
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
     local rate, targetSeq
@@ -371,8 +371,13 @@ function ENT:GeckoCrouch_Update()
     end
 
     if targetSeq and targetSeq ~= -1 then
-        if self:GetSequence() ~= targetSeq then
+        if self._gekkoCrouchSeqSet ~= targetSeq then
+            -- Sequence changed (entry or walk<->idle): hard-restart it once.
             self:ResetSequence(targetSeq)
+            self._gekkoCrouchSeqSet = targetSeq
+        else
+            -- Same sequence as last tick: just keep it active without restarting.
+            self:SetSequence(targetSeq)
         end
         self:SetPlaybackRate(rate)
     end
