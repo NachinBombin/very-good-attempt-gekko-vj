@@ -4,9 +4,11 @@
 --
 --  Triggers (any one is enough to crouch):
 --    1. VJ Base native crouch flag (VJ_IsBeingCrouched)        — immediate
---    2. Standing-hull lookahead (TraceHull forward, STAND hull) — debounced
---       Projects the full STANDING collision box ahead while the NPC
---       is upright.  When crouching, a vertical clearance check
+--    2. Standing-hull lookahead (TraceHull forward, CROUCH hull)— debounced
+--       Projects a hull sized to the CROUCH height forward while
+--       the NPC is upright.  If that hull hits geometry the NPC
+--       cannot walk through standing, it crouches.
+--       When already crouching, a vertical clearance check
 --       decides whether standing back up is safe.
 --    3. Random timed behaviour                                  — timer-based
 --
@@ -20,7 +22,7 @@
 -- ─────────────────────────────────────────────────────────────
 local CROUCH_EXIT_LOCKOUT = 0.35
 
--- How far ahead to project the standing hull (units)
+-- How far ahead to project the forward hull (units)
 local HULL_LOOKAHEAD      = 80
 
 -- Ceiling debounce
@@ -42,11 +44,16 @@ local RAND_DUR_MAX    = 10
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes (computed once)
 -- ─────────────────────────────────────────────────────────────
--- Forward lookahead uses the STANDING hull → detects low ceilings ahead
-local HULL_STAND_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
-local HULL_STAND_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+-- Forward lookahead uses the CROUCH hull height.
+-- This is the key fix: using HITBOX_STAND_H (200) caused the hull
+-- to reach up into open sky on maps like construct, producing a
+-- permanent false-positive.  Capping to HITBOX_CROUCH_H (130)
+-- means the hull only hits geometry low enough to actually block
+-- a crouching NPC — i.e. obstacles that genuinely require crouching.
+local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
+local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
 
--- Vertical clearance: the Z slice from crouched top → standing top
+-- Vertical clearance: the Z slice from crouched top → standing top.
 -- TraceHull requires start ~= endpos; sweep 1 unit upward so the
 -- engine actually runs the test.
 local HULL_VERT_MIN  = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, HITBOX_CROUCH_H)
@@ -55,8 +62,8 @@ local VERT_SWEEP_OFF = Vector(0, 0, 1)   -- tiny upward offset so sweep is non-z
 
 -- ─────────────────────────────────────────────────────────────
 --  RawObstacleCheck
---  Called while STANDING.  Projects the full standing hull forward.
---  Returns true  → something blocks the NPC at full height → crouch.
+--  Called while STANDING.  Projects the crouch-height hull forward.
+--  Returns true  → something at crouch height blocks the path → crouch.
 -- ─────────────────────────────────────────────────────────────
 local function RawObstacleCheck(ent)
     local pos = ent:GetPos()
@@ -67,8 +74,8 @@ local function RawObstacleCheck(ent)
     local tr = util.TraceHull({
         start  = pos,
         endpos = pos + fwd * HULL_LOOKAHEAD,
-        mins   = HULL_STAND_MIN,
-        maxs   = HULL_STAND_MAX,
+        mins   = HULL_FWD_MIN,
+        maxs   = HULL_FWD_MAX,
         filter = ent,
         mask   = MASK_SOLID,
     })
