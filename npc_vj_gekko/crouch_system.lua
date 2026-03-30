@@ -13,18 +13,15 @@
 --                                  │
 --                                  │  hold >= CROUCH_HOLD_MIN
 --                                  │  AND all triggers dropped
---                                  │  AND ceiling clear (one-shot line trace)
 --                                  ▼
 --                               STANDING  (STAND_REARM_DELAY before
 --                                          obstacle trace fires again)
 --
---  Clearance check design:
---    A line trace is cast straight up from (pos + 0,0,HITBOX_CROUCH_H)
---    to (pos + 0,0,HITBOX_STAND_H).  This tests only the slice of air
---    the NPC needs to expand into — it does NOT start at foot level,
---    which was the source of the false-positive on flat ground: the
---    old hull (VERT_MIN.z=130, VERT_MAX.z=200) placed a floating box
---    130-200 units above the origin and hit world geometry everywhere.
+--  Exit gate is timer-only.  A ceiling clearance check was attempted
+--  in earlier revisions but produced false-positives on flat ground
+--  because TraceLine from (pos+CROUCH_H) to (pos+STAND_H) clips into
+--  world/skybox brushes on most maps.  For a walking tank on terrain
+--  a simple hold timer is the correct and sufficient guard.
 --
 --  Called from:
 --    ENT:Init()                 → self:GeckoCrouch_Init()
@@ -93,54 +90,26 @@ local function RawObstacleCheck(ent)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  RawClearanceCheck  (crouching only, one-shot)
---  Fires a UPWARD LINE TRACE from the crouched-top height to
---  the standing-top height, testing only the slice of space the
---  NPC needs to expand into when standing up.
---
---  Why a line trace from crouched-top, not a hull from foot level:
---    A hull with mins.z = CROUCH_H (130) and maxs.z = STAND_H (200)
---    placed at the entity origin (feet) creates a box that floats
---    130-200 units above the ground.  TraceHull interprets this as
---    a bounding box offset from the sweep start, so it tests geometry
---    far above the actual NPC body and hits structural/skybox brushes
---    on flat maps — producing a permanent false-positive.
---    A line trace starting AT the crouched-top position directly
---    tests the correct column of air.
---
---  Returns true  → something is in the way → cannot stand yet.
---  Returns false → overhead is clear       → safe to stand.
--- ─────────────────────────────────────────────────────────────
-local function RawClearanceCheck(ent)
-    local pos    = ent:GetPos()
-    local bottom = pos + Vector(0, 0, HITBOX_CROUCH_H)   -- top of crouched hull
-    local top    = pos + Vector(0, 0, HITBOX_STAND_H)    -- top of standing hull
-
-    local tr = util.TraceLine({
-        start  = bottom,
-        endpos = top,
-        filter = ent,
-        mask   = MASK_SOLID,
-    })
-    return tr.Hit
-end
-
--- ─────────────────────────────────────────────────────────────
 --  TickObstacle
 --  Runs ONLY while standing AND the re-arm timer has elapsed.
 --  Debounces the raw trace result before committing to a crouch.
 --  Returns true once a sustained hit is confirmed.
+--
+--  NOTE: writes _gekkoObsHullHit (NOT _gekkoCeilingHit) for the
+--  debug HUD.  Keeping these two fields separate prevents obstacle
+--  trace results from bleeding into stand-up decisions.
 -- ─────────────────────────────────────────────────────────────
 local function TickObstacle(ent)
     local now = CurTime()
 
     if now < ent._gekkoObsRearmT then
-        ent._gekkoObsOnSince = nil
+        ent._gekkoObsOnSince  = nil
+        ent._gekkoObsHullHit  = false
         return false
     end
 
     local raw = RawObstacleCheck(ent)
-    ent._gekkoCeilingHit = raw   -- reuse field for the debug HUD in init.lua
+    ent._gekkoObsHullHit = raw   -- debug HUD only — never used for exit decisions
 
     if raw then
         if not ent._gekkoObsOnSince then
@@ -194,11 +163,12 @@ end
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
     self._gekkoCrouching         = false
-    self._gekkoCrouchHoldUntil   = 0       -- CurTime() + CROUCH_HOLD_MIN on enter
-    self._gekkoObsRearmT         = 0       -- CurTime() + STAND_REARM_DELAY on stand
+    self._gekkoCrouchHoldUntil   = 0
+    self._gekkoObsRearmT         = 0
     self._gekkoObsOnSince        = nil
     self._gekkoObsDebounced      = false
-    self._gekkoCeilingHit        = false   -- exposed for debug HUD in init.lua
+    self._gekkoObsHullHit        = false   -- debug HUD: forward obstacle trace result
+    self._gekkoCeilingHit        = false   -- debug HUD: kept for init.lua compat, always false now
     self.GekkoSeq_CrouchIdle     = -1
     self.GekkoSeq_CrouchWalk     = -1
     self._gekkoCrouchSeqSet      = -1
@@ -232,6 +202,8 @@ local function EnterCrouch(ent)
     ent._gekkoCrouchSeqSet    = -1
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
+    ent._gekkoObsHullHit      = false   -- clear stale obstacle data from standing phase
+    ent._gekkoCeilingHit      = false   -- clear for HUD consistency
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
@@ -247,6 +219,7 @@ local function ExitCrouch(ent)
     ent._gekkoObsRearmT    = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince   = nil
     ent._gekkoObsDebounced = false
+    ent._gekkoObsHullHit   = false
     ent._gekkoCeilingHit   = false
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
@@ -315,41 +288,30 @@ function ENT:GeckoCrouch_Update()
         -- STANDING → only enter if a trigger is active.
         if wantCrouch then
             EnterCrouch(self)
-            -- Fall through to animation block below on this same tick.
+            -- Fall through to animation block on this same tick.
         else
             return false
         end
     else
         -- CROUCHING.
 
-        -- Safety stamp: if hold timer was somehow never set, set it now.
-        -- This guards against any re-entry edge case from the jump interrupt.
+        -- Safety stamp: guard against any edge case where the hold
+        -- was never set (e.g. jump interrupt re-entry).
         if self._gekkoCrouchHoldUntil <= 0 then
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
             print("[GeckoCrouch] Hold re-stamped (was zero)")
         end
 
-        -- Attempt exit only after the minimum hold has elapsed.
+        -- Exit only after the minimum hold AND all triggers have dropped.
+        -- No clearance trace — timer-only gate is correct for this NPC.
         if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
-            -- One-shot line trace: is there a ceiling in the stand-up slice?
-            local blocked = RawClearanceCheck(self)
-            self._gekkoCeilingHit = blocked
-
-            if blocked then
-                -- Delay the next exit attempt by a short interval so we do
-                -- not spam the clearance trace every single tick.
-                self._gekkoCrouchHoldUntil = now + 0.15
-                print("[GeckoCrouch] Ceiling blocked stand-up — retrying in 0.15s")
-            else
-                -- Safe to stand: reset random timer and exit.
-                self._gekkoRandomCrouch      = false
-                self._gekkoRandomCrouchEndT  = 0
-                self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-                ExitCrouch(self)
-                return false
-            end
+            self._gekkoRandomCrouch      = false
+            self._gekkoRandomCrouchEndT  = 0
+            self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+            ExitCrouch(self)
+            return false
         end
-        -- Still crouching: hold active, trigger active, or ceiling present.
+        -- Still crouching: hold active or a trigger is still live.
     end
 
     -- ── Crouch is active: drive the animation ─────────────────────
