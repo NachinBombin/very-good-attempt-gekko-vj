@@ -48,6 +48,24 @@ local function SafeResetSequence(ent, seq)
 end
 
 -- ============================================================
+--  GekkoOwnsAnimation
+--  Central helper: returns true when Gekko's own systems
+--  (crouch or jump) currently own the animation state and
+--  VJBase must not touch it.
+-- ============================================================
+local function GekkoOwnsAnimation(ent)
+    if ent._gekkoCrouching then return true end
+    local js = ent:GetGekkoJumpState()
+    if js == ent.JUMP_RISING or js == ent.JUMP_FALLING or js == ent.JUMP_LAND then
+        return true
+    end
+    if ent._gekkoSuppressActivity and CurTime() < ent._gekkoSuppressActivity then
+        return true
+    end
+    return false
+end
+
+-- ============================================================
 --  Animation translations
 -- ============================================================
 function ENT:SetAnimationTranslations(wepHoldType)
@@ -89,13 +107,7 @@ end
 --  control is not overwritten.
 -- ============================================================
 function ENT:MaintainIdleAnimation(force)
-    -- Block during crouch
-    if self._gekkoCrouching then return end
-    -- Block during jump phases (jump_system owns the sequence then)
-    local js = self:GetGekkoJumpState()
-    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then
-        return
-    end
+    if GekkoOwnsAnimation(self) then return end
     self.BaseClass.MaintainIdleAnimation(self, force)
 end
 
@@ -103,14 +115,7 @@ end
 --  MaintainActivity override
 -- ============================================================
 function ENT:MaintainActivity()
-    if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
-        return
-    end
-    if self._gekkoCrouching then return end
-    local js = self:GetGekkoJumpState()
-    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then
-        return
-    end
+    if GekkoOwnsAnimation(self) then return end
     self.BaseClass.MaintainActivity(self)
 end
 
@@ -118,15 +123,45 @@ end
 --  VJ_AnimationThink override
 -- ============================================================
 function ENT:VJ_AnimationThink()
-    if self._gekkoSuppressActivity and CurTime() < self._gekkoSuppressActivity then
-        return
-    end
-    if self._gekkoCrouching then return end
-    local js = self:GetGekkoJumpState()
-    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then
-        return
-    end
+    if GekkoOwnsAnimation(self) then return end
     self.BaseClass.VJ_AnimationThink(self)
+end
+
+-- ============================================================
+--  OnSelectSchedule override
+--
+--  VJBase's AI scheduler (schedules.lua) calls SelectSchedule()
+--  every think cycle when the NPC has a live enemy.  Internally
+--  the selected schedule runs tasks via RunTask() which calls
+--  NPC:SetActivity() at the engine C++ level — this completely
+--  bypasses MaintainIdleAnimation, MaintainActivity, and
+--  VJ_AnimationThink, resetting our sequence every single tick.
+--
+--  Returning the current schedule unchanged tells VJBase "stay
+--  in whatever you were doing" — no SetActivity fires, and our
+--  crouch/jump animations remain intact.
+-- ============================================================
+function ENT:OnSelectSchedule()
+    if GekkoOwnsAnimation(self) then
+        -- Keep the NPC in its current schedule so the engine does
+        -- not call SetActivity or ResetSequence behind our back.
+        return self:GetCurrentSchedule()
+    end
+    return self.BaseClass.OnSelectSchedule(self)
+end
+
+-- ============================================================
+--  OnStartTask override
+--
+--  Some VJBase schedules (SCHED_VJ_IDLE, SCHED_VJ_ALERT_FACE)
+--  immediately call SetActivity(ACT_IDLE) in their first task.
+--  This fires before OnSelectSchedule can block it.  We intercept
+--  it here so that no task can mutate the animation while our
+--  systems own it.
+-- ============================================================
+function ENT:OnStartTask(taskID, taskData)
+    if GekkoOwnsAnimation(self) then return end
+    self.BaseClass.OnStartTask(self, taskID, taskData)
 end
 
 -- ============================================================
