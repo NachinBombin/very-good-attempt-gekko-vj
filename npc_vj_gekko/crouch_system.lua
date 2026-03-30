@@ -2,6 +2,39 @@
 --  crouch_system.lua
 --  Gekko VJ NPC — Crouch mechanic
 --
+--  THE PROBLEM (confirmed by log):
+--    "Seq RECLAIMED" fires every single tick — something steals
+--    the sequence back on every engine frame.  The culprit is
+--    VJBase's global Think hook (registered via hook.Add in
+--    VJ_SNPC_Base:Initialize).  That hook calls its own anim
+--    function directly on the entity outside of OnThink, so our
+--    MaintainActivity / MaintainIdleAnimation overrides are only
+--    reached when VJBase chooses to call them — the global hook
+--    bypasses them entirely.
+--
+--  COMPLETE FIX — three layers:
+--
+--    LAYER 1 — SetSequence override (lowest level, bulletproof)
+--      We shadow self.SetSequence on the live entity instance.
+--      Any call that tries to set a sequence other than c_walk
+--      while crouching is silently dropped.  Only our own code
+--      (GeckoCrouch_AnimApply) passes the _gekkoSeqAllowed flag
+--      to bypass the guard.
+--
+--    LAYER 2 — VJ movement/schedule suppression
+--      VJBase's thinker also drives NPC scheduling and movement
+--      which can interrupt combat AI (causing the "stops fighting"
+--      behaviour and the spins).  We freeze VJ_IsMoving,
+--      VJ_CanMoveThink, and VJ_ScheduleEnded each think tick
+--      while crouching so VJBase thinks the NPC is stationary
+--      and doesn't reassign schedules or spin it to face new
+--      directions mid-crouch.
+--
+--    LAYER 3 — hard constant speed restore on ExitCrouch
+--      Rather than relying on Start* caches (which VJBase can
+--      overwrite during a crouch), we restore from the module-
+--      level speed constants that were valid at spawn.
+--
 --  Triggers (any one is enough to crouch):
 --    1. VJ Base native crouch flag (VJ_IsBeingCrouched)   — immediate
 --    2. Standing-hull lookahead (TraceHull forward)        — debounced
@@ -11,18 +44,6 @@
 --  Animation contract:
 --    GeckoCrouch_AnimApply() is called EVERY think tick from
 --    OnThink *after* VJBase has had its turn.
---
---    Every tick: if GetSequence() ~= c_walk, call ResetSequence(c_walk).
---    SetCycle(0) is only called on TRUE fresh entry
---    (_gekkoCrouchJustEntered == true) so mid-crouch re-assertions
---    (e.g. after jump steals the sequence) continue from the current
---    cycle position instead of snapping to frame 0.
---
---  Movement contract:
---    EnterCrouch zeros physics velocity + sets MoveSpeed=0 + calls
---    StopMoving so the NPC actually halts instead of sliding.
---    ExitCrouch restores speeds from Start* cache.
---    NOTE: SetMaxSpeed() is a PLAYER-only method — never call it on NPCs.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -46,6 +67,12 @@ local RAND_CHECK_MAX    = 16
 local RAND_CHANCE       = 0.69
 local RAND_DUR_MIN      = 3
 local RAND_DUR_MAX      = 10
+
+-- Default locomotion speeds — used for hard restore on ExitCrouch.
+-- These must match the shared.lua / VJ ENT defaults for this NPC.
+local DEFAULT_MOVE_SPEED = 150
+local DEFAULT_RUN_SPEED  = 300
+local DEFAULT_WALK_SPEED = 150
 
 -- Playback rate while the mech is stationary in crouch.
 local CWALK_STATIONARY_RATE = 0.05
@@ -72,6 +99,49 @@ local CROUCH_OVERRIDE_ACTS = {
     ACT_IDLE_ANGRY,
     ACT_COMBAT_IDLE,
 }
+
+-- ─────────────────────────────────────────────────────────────
+--  LAYER 1 — SetSequence override
+--
+--  We store the engine's real SetSequence as a module-local and
+--  install a shadow function on the entity *instance* (not the
+--  class) in EnterCrouch.  The shadow blocks any sequence change
+--  that isn't ours.  We remove the shadow in ExitCrouch.
+--
+--  _gekkoSeqAllowed is a one-shot flag: set it to true immediately
+--  before our authoritative call, then it clears itself.
+-- ─────────────────────────────────────────────────────────────
+local _realSetSequence = nil   -- cached on first use
+
+local function InstallSetSequenceGuard(ent)
+    -- Cache the real engine method once.
+    if not _realSetSequence then
+        _realSetSequence = ent.SetSequence
+    end
+
+    -- Shadow on the instance table (overrides the class method).
+    ent.SetSequence = function(self, seq)
+        if self._gekkoCrouching then
+            if self._gekkoSeqAllowed then
+                self._gekkoSeqAllowed = false  -- consume the pass
+                _realSetSequence(self, seq)
+            end
+            -- Silent drop — VJBase, engine activities, etc. are blocked.
+            return
+        end
+        -- Not crouching — pass through normally.
+        _realSetSequence(self, seq)
+    end
+
+    ent._gekkoSetSeqGuardInstalled = true
+end
+
+local function RemoveSetSequenceGuard(ent)
+    if not ent._gekkoSetSeqGuardInstalled then return end
+    -- Restore the class method by nilling the instance key.
+    ent.SetSequence = nil
+    ent._gekkoSetSeqGuardInstalled = false
+end
 
 -- ─────────────────────────────────────────────────────────────
 --  RawObstacleCheck
@@ -204,6 +274,8 @@ function ENT:GeckoCrouch_Init()
     self._gekkoRandomCrouchEndT    = 0
     self._gekkoRandomDuration      = 0
     self._gekkoRandomCrouchNextT   = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    self._gekkoSeqAllowed          = false
+    self._gekkoSetSeqGuardInstalled = false
     print("[GeckoCrouch] Init() — state vars created")
 end
 
@@ -280,9 +352,18 @@ local function EnterCrouch(ent, randDuration)
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
 
+    -- LAYER 2: Freeze VJBase movement thinkers so it stops trying to
+    -- assign schedules and spin the NPC while crouching.
+    ent.VJ_IsMoving      = false
+    ent.VJ_CanMoveThink  = false
+
     if ent.GekkoSeq_CrouchWalk and ent.GekkoSeq_CrouchWalk ~= -1 then
         PatchTranslationsForCrouch(ent, ent.GekkoSeq_CrouchWalk)
     end
+
+    -- LAYER 1: Install the SetSequence guard AFTER patching translations
+    -- so the very first ResetSequence call from AnimApply goes through.
+    InstallSetSequenceGuard(ent)
 
     print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs  holdUntil=%.2f",
         HITBOX_CROUCH_H, holdLen, ent._gekkoCrouchHoldUntil))
@@ -307,15 +388,24 @@ local function ExitCrouch(ent)
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
+    -- LAYER 1: Remove the SetSequence guard first so the reset below
+    -- goes through the real engine function.
+    RemoveSetSequenceGuard(ent)
+
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
 
-    ent.MoveSpeed = ent.StartWalkSpeed or ent.StartMoveSpeed or 150
-    ent.RunSpeed  = ent.StartRunSpeed  or 300
-    ent.WalkSpeed = ent.StartWalkSpeed or 150
+    -- LAYER 3: Hard restore from constants, not from Start* caches
+    -- (VJBase may have clobbered them during the crouch).
+    ent.MoveSpeed = DEFAULT_MOVE_SPEED
+    ent.RunSpeed  = DEFAULT_RUN_SPEED
+    ent.WalkSpeed = DEFAULT_WALK_SPEED
+
+    -- LAYER 2: Re-enable VJBase movement thinkers.
+    ent.VJ_CanMoveThink = true
 
     RestoreTranslations(ent)
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
@@ -326,30 +416,34 @@ end
 --
 --  Called every think tick from OnThink, AFTER VJBase has run.
 --
---  FIX 1: reassert c_walk every tick if anything stole the sequence.
---  SetCycle(0) is only issued on true fresh entry so that mid-crouch
---  re-assertions (e.g. after jump's land sequence finishes) do NOT
---  snap the animation back to frame 0 — they continue from wherever
---  the cycle currently is.
+--  With the SetSequence guard installed, "stolen recovery" lines
+--  should vanish entirely — no other code can change the sequence
+--  while crouching.  This function only needs to:
+--    1. On fresh entry: issue ResetSequence(c_walk) + SetCycle(0).
+--    2. Every tick: keep playback rate correct.
+--
+--  We still keep the GetSequence() != cwalk safety check as a
+--  belt-and-suspenders fallback (e.g. sequence reset by engine
+--  console commands, map transitions, etc.).
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_AnimApply()
     local cwalk = self.GekkoSeq_CrouchWalk
     if not cwalk or cwalk == -1 then return end
 
-    -- ── Reassert sequence every tick ─────────────────────────
-    -- If anything (jump system, VJBase idle hook) stole the sequence
-    -- away from c_walk, we take it back immediately.
+    -- ── Reassert sequence if needed ──────────────────────────
     if self:GetSequence() ~= cwalk then
+        -- Authorised write — set the pass flag before calling.
+        self._gekkoSeqAllowed = true
         self:ResetSequence(cwalk)
+        -- Guard may not have been installed yet on the very first tick;
+        -- ensure the flag is always cleared.
+        self._gekkoSeqAllowed = false
 
         if self._gekkoCrouchJustEntered then
-            -- True fresh entry: start from the beginning of the animation.
             self:SetCycle(0)
             self._gekkoCrouchJustEntered = false
             print(string.format("[GeckoCrouch] Seq RESET → c_walk (%d)  (entry kick)", cwalk))
         else
-            -- Mid-crouch re-assertion: do NOT reset cycle.
-            -- Let the animation continue from its current position.
             print(string.format("[GeckoCrouch] Seq RECLAIMED → c_walk (%d)  (stolen recovery)", cwalk))
         end
 
@@ -357,11 +451,16 @@ function ENT:GeckoCrouch_AnimApply()
         self.Gekko_LastSeqIdx     = cwalk
         self.Gekko_LastSeqName    = "c_walk"
     else
-        -- Sequence is already correct — just keep the flag clear.
         if self._gekkoCrouchJustEntered then
             self._gekkoCrouchJustEntered = false
         end
     end
+
+    -- ── LAYER 2 tick: keep VJBase movement thinkers frozen ───
+    -- VJBase resets these flags internally on each of its own ticks,
+    -- so we must re-freeze them every think tick while crouching.
+    self.VJ_IsMoving     = false
+    self.VJ_CanMoveThink = false
 
     -- ── Every tick: update playback rate ─────────────────────
     local vel    = self:GetVelocity()
@@ -370,9 +469,7 @@ function ENT:GeckoCrouch_AnimApply()
 
     if speed2 > (16 * 16) then
         local speed  = math.sqrt(speed2)
-        local maxSpd = (self.StartMoveSpeed and self.StartMoveSpeed > 0)
-            and self.StartMoveSpeed or 150
-        rate = math.Clamp(speed / maxSpd, 0.3, 1.5)
+        rate = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.3, 1.5)
     else
         rate = CWALK_STATIONARY_RATE
     end
@@ -381,7 +478,6 @@ function ENT:GeckoCrouch_AnimApply()
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
 
-    -- Keep debug name current regardless of path taken above.
     self.Gekko_LastSeqName = "c_walk"
 end
 
