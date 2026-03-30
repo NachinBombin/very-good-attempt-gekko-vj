@@ -7,29 +7,24 @@
 --    2. Standing-hull lookahead (TraceHull forward)        — debounced
 --    3. Random timed behaviour                             — timer-based
 --
---  State machine (mirrors jump_system.lua pattern):
+--  State machine:
 --
 --    STANDING ──(wantCrouch)──► CROUCHING
 --                                  │
 --                                  │  hold >= CROUCH_HOLD_MIN
 --                                  │  AND all triggers dropped
---                                  │  AND ceiling clear (one-shot)
+--                                  │  AND ceiling clear (one-shot line trace)
 --                                  ▼
---                               STANDING  (re-arm delay before
+--                               STANDING  (STAND_REARM_DELAY before
 --                                          obstacle trace fires again)
 --
---  KEY FIX vs old version:
---    The old TickCeiling toggled between RawObstacleCheck (standing)
---    and RawClearanceCheck (crouching) via _gekkoCrouching.  The
---    instant the NPC crouched the selector flipped, the clearance
---    trace found nothing in open air, ceilHit → false, the 0.35 s
---    lockout expired and the NPC stood back up — immediately
---    re-triggering the forward obstacle and looping forever.
---
---    Fix: obstacle lookahead is ONLY evaluated while standing and
---    ONLY after STAND_REARM_DELAY has elapsed since the last
---    stand-up.  Clearance is a one-shot check called inside the
---    exit-evaluation block, not the continuous trigger signal.
+--  Clearance check design:
+--    A line trace is cast straight up from (pos + 0,0,HITBOX_CROUCH_H)
+--    to (pos + 0,0,HITBOX_STAND_H).  This tests only the slice of air
+--    the NPC needs to expand into — it does NOT start at foot level,
+--    which was the source of the false-positive on flat ground: the
+--    old hull (VERT_MIN.z=130, VERT_MAX.z=200) placed a floating box
+--    130-200 units above the origin and hit world geometry everywhere.
 --
 --  Called from:
 --    ENT:Init()                 → self:GeckoCrouch_Init()
@@ -41,53 +36,44 @@
 -- ─────────────────────────────────────────────────────────────
 
 -- Minimum time the NPC must stay crouched before exit is evaluated.
--- Set to roughly match the cidle blend-in so the animation has
--- time to play before we consider standing back up.
-local CROUCH_HOLD_MIN     = 0.8
+local CROUCH_HOLD_MIN   = 1.2
 
--- After standing back up, how long before the forward obstacle
--- trace is allowed to fire again.  Prevents immediate re-trigger
--- on the very frame the NPC returns to standing height.
-local STAND_REARM_DELAY   = 0.6
+-- After standing back up, delay before the forward obstacle trace
+-- is re-armed.  Prevents the trace from firing on the same frame
+-- the NPC returns to standing height.
+local STAND_REARM_DELAY = 0.6
 
--- How far ahead to project the forward hull (units).
-local HULL_LOOKAHEAD      = 80
+-- Forward lookahead distance (units).
+local HULL_LOOKAHEAD    = 80
 
 -- Obstacle debounce: trace must report a hit for this long before
--- we commit to crouching.
-local OBS_ON_DEBOUNCE     = 0.20
+-- committing to a crouch.
+local OBS_ON_DEBOUNCE   = 0.20
 
--- Hitbox heights
-local HITBOX_STAND_H      = 200
-local HITBOX_CROUCH_H     = 130
-local HITBOX_HALF_W       = 64
+-- Hitbox heights (units above entity origin / foot level).
+local HITBOX_STAND_H    = 200
+local HITBOX_CROUCH_H   = 130
+local HITBOX_HALF_W     = 64
 
 -- Random crouch behaviour
-local RAND_CHECK_MIN      = 4
-local RAND_CHECK_MAX      = 12
-local RAND_CHANCE         = 0.30
-local RAND_DUR_MIN        = 3
-local RAND_DUR_MAX        = 10
+local RAND_CHECK_MIN    = 4
+local RAND_CHECK_MAX    = 12
+local RAND_CHANCE       = 0.30
+local RAND_DUR_MIN      = 3
+local RAND_DUR_MAX      = 10
 
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes (computed once)
 -- ─────────────────────────────────────────────────────────────
--- Forward lookahead: crouch-height hull so it only catches
--- obstacles that actually require ducking.
+-- Forward obstacle trace: crouch-height hull so it only catches
+-- obstacles low enough to actually require ducking.
 local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
 local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
 
--- Vertical clearance: the Z slice from crouched top → standing top.
--- Used as a one-shot check when evaluating whether it is safe to
--- stand back up.  Requires a non-zero sweep — use 1 unit upward.
-local HULL_VERT_MIN  = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, HITBOX_CROUCH_H)
-local HULL_VERT_MAX  = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
-local VERT_SWEEP_OFF = Vector(0, 0, 1)
-
 -- ─────────────────────────────────────────────────────────────
---  RawObstacleCheck
---  Projects the crouch-height hull straight ahead while STANDING.
---  Returns true → something blocks the path at crouch height → crouch.
+--  RawObstacleCheck  (standing only)
+--  Projects the crouch-height hull straight ahead.
+--  Returns true → something blocks the path at crouch height.
 -- ─────────────────────────────────────────────────────────────
 local function RawObstacleCheck(ent)
     local pos = ent:GetPos()
@@ -107,18 +93,32 @@ local function RawObstacleCheck(ent)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  RawClearanceCheck  (one-shot, called only in exit evaluation)
---  Checks the Z slice from crouched top → standing top above NPC.
---  Returns true  → ceiling present → cannot stand yet.
---  Returns false → overhead is clear → safe to stand.
+--  RawClearanceCheck  (crouching only, one-shot)
+--  Fires a UPWARD LINE TRACE from the crouched-top height to
+--  the standing-top height, testing only the slice of space the
+--  NPC needs to expand into when standing up.
+--
+--  Why a line trace from crouched-top, not a hull from foot level:
+--    A hull with mins.z = CROUCH_H (130) and maxs.z = STAND_H (200)
+--    placed at the entity origin (feet) creates a box that floats
+--    130-200 units above the ground.  TraceHull interprets this as
+--    a bounding box offset from the sweep start, so it tests geometry
+--    far above the actual NPC body and hits structural/skybox brushes
+--    on flat maps — producing a permanent false-positive.
+--    A line trace starting AT the crouched-top position directly
+--    tests the correct column of air.
+--
+--  Returns true  → something is in the way → cannot stand yet.
+--  Returns false → overhead is clear       → safe to stand.
 -- ─────────────────────────────────────────────────────────────
 local function RawClearanceCheck(ent)
-    local pos = ent:GetPos()
-    local tr = util.TraceHull({
-        start  = pos,
-        endpos = pos + VERT_SWEEP_OFF,
-        mins   = HULL_VERT_MIN,
-        maxs   = HULL_VERT_MAX,
+    local pos    = ent:GetPos()
+    local bottom = pos + Vector(0, 0, HITBOX_CROUCH_H)   -- top of crouched hull
+    local top    = pos + Vector(0, 0, HITBOX_STAND_H)    -- top of standing hull
+
+    local tr = util.TraceLine({
+        start  = bottom,
+        endpos = top,
         filter = ent,
         mask   = MASK_SOLID,
     })
@@ -127,22 +127,20 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  TickObstacle
---  Runs ONLY while the NPC is standing AND the re-arm timer has
---  elapsed.  Applies a debounce so a fleeting brush does not
---  immediately trigger a crouch.
---  Returns true once the debounce confirms a sustained hit.
+--  Runs ONLY while standing AND the re-arm timer has elapsed.
+--  Debounces the raw trace result before committing to a crouch.
+--  Returns true once a sustained hit is confirmed.
 -- ─────────────────────────────────────────────────────────────
 local function TickObstacle(ent)
     local now = CurTime()
 
-    -- Not armed yet after last stand-up.
     if now < ent._gekkoObsRearmT then
         ent._gekkoObsOnSince = nil
         return false
     end
 
     local raw = RawObstacleCheck(ent)
-    ent._gekkoCeilingHit = raw   -- expose for debug HUD in init.lua
+    ent._gekkoCeilingHit = raw   -- reuse field for the debug HUD in init.lua
 
     if raw then
         if not ent._gekkoObsOnSince then
@@ -195,23 +193,18 @@ end
 --  GeckoCrouch_Init
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
-    self._gekkoCrouching          = false
-    -- Minimum hold timer: CurTime() at enter-crouch + CROUCH_HOLD_MIN
-    self._gekkoCrouchHoldUntil    = 0
-    -- Re-arm delay: set to CurTime() + STAND_REARM_DELAY each time
-    -- the NPC returns to standing, so the obstacle trace doesn't
-    -- fire on the same frame the NPC stands back up.
-    self._gekkoObsRearmT          = 0
-    self._gekkoObsOnSince         = nil
-    self._gekkoObsDebounced       = false
-    -- Exposed for the debug HUD in init.lua
-    self._gekkoCeilingHit         = false
-    self.GekkoSeq_CrouchIdle      = -1
-    self.GekkoSeq_CrouchWalk      = -1
-    self._gekkoCrouchSeqSet       = -1
-    self._gekkoRandomCrouch       = false
-    self._gekkoRandomCrouchEndT   = 0
-    self._gekkoRandomCrouchNextT  = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    self._gekkoCrouching         = false
+    self._gekkoCrouchHoldUntil   = 0       -- CurTime() + CROUCH_HOLD_MIN on enter
+    self._gekkoObsRearmT         = 0       -- CurTime() + STAND_REARM_DELAY on stand
+    self._gekkoObsOnSince        = nil
+    self._gekkoObsDebounced      = false
+    self._gekkoCeilingHit        = false   -- exposed for debug HUD in init.lua
+    self.GekkoSeq_CrouchIdle     = -1
+    self.GekkoSeq_CrouchWalk     = -1
+    self._gekkoCrouchSeqSet      = -1
+    self._gekkoRandomCrouch      = false
+    self._gekkoRandomCrouchEndT  = 0
+    self._gekkoRandomCrouchNextT = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
     print("[GeckoCrouch] Init() — state vars created")
 end
 
@@ -230,14 +223,13 @@ function ENT:GeckoCrouch_CacheSeqs()
 end
 
 -- ─────────────────────────────────────────────────────────────
---  Internal helpers
+--  EnterCrouch / ExitCrouch  — state transition helpers
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent)
+    local now = CurTime()
     ent._gekkoCrouching       = true
-    ent._gekkoCrouchHoldUntil = CurTime() + CROUCH_HOLD_MIN
+    ent._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
     ent._gekkoCrouchSeqSet    = -1
-    -- Obstacle trace is irrelevant while crouching; disarm it so it
-    -- does not accumulate a stale debounce during the crouch.
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent:SetCollisionBounds(
@@ -249,13 +241,13 @@ local function EnterCrouch(ent)
 end
 
 local function ExitCrouch(ent)
+    local now = CurTime()
     ent._gekkoCrouching    = false
     ent._gekkoCrouchSeqSet = -1
-    -- Start the re-arm delay so the obstacle trace doesn't fire
-    -- on the exact frame we return to standing height.
-    ent._gekkoObsRearmT    = CurTime() + STAND_REARM_DELAY
+    ent._gekkoObsRearmT    = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince   = nil
     ent._gekkoObsDebounced = false
+    ent._gekkoCeilingHit   = false
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
@@ -266,8 +258,8 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
---  Returns true  → crouch active, caller must return early
---  Returns false → crouch inactive, caller runs normally
+--  Returns true  → crouch is active, caller must return early
+--  Returns false → crouch is inactive, caller continues normally
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
@@ -279,7 +271,6 @@ function ENT:GeckoCrouch_Update()
        jumpState == self.JUMP_LAND    or
        (self._gekkoJustJumped and now < self._gekkoJustJumped) then
         if self._gekkoCrouching then
-            -- Jump hard-resets crouch; random timer restarts from scratch.
             self._gekkoRandomCrouch      = false
             self._gekkoRandomCrouchEndT  = 0
             self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -296,13 +287,13 @@ function ENT:GeckoCrouch_Update()
     -- ── Tick sub-systems ──────────────────────────────────────────
     TickRandom(self)
 
-    -- Obstacle lookahead only fires while standing.
+    -- Obstacle lookahead only runs while STANDING.
     local obsHit = false
     if not self._gekkoCrouching then
         obsHit = TickObstacle(self)
     end
 
-    -- ── Evaluate triggers ─────────────────────────────────────────
+    -- ── Evaluate entry triggers ───────────────────────────────────
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local randActive = self._gekkoRandomCrouch
     local wantCrouch = vjCrouch or obsHit or randActive
@@ -312,8 +303,7 @@ function ENT:GeckoCrouch_Update()
         print(string.format(
             "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  rand=%s  holdLeft=%.2f  rearmLeft=%.2f",
             tostring(self._gekkoCrouching), tostring(wantCrouch),
-            tostring(vjCrouch), tostring(obsHit),
-            tostring(randActive),
+            tostring(vjCrouch), tostring(obsHit), tostring(randActive),
             math.max(0, self._gekkoCrouchHoldUntil - now),
             math.max(0, self._gekkoObsRearmT - now)
         ))
@@ -322,26 +312,36 @@ function ENT:GeckoCrouch_Update()
 
     -- ── State machine ─────────────────────────────────────────────
     if not self._gekkoCrouching then
-        -- STANDING: enter crouch if any trigger fires.
+        -- STANDING → only enter if a trigger is active.
         if wantCrouch then
             EnterCrouch(self)
+            -- Fall through to animation block below on this same tick.
         else
             return false
         end
     else
-        -- CROUCHING: evaluate exit only after minimum hold has elapsed.
-        if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
-            -- One-shot clearance check: is there a ceiling preventing stand-up?
-            local ceilingBlocked = RawClearanceCheck(self)
-            self._gekkoCeilingHit = ceilingBlocked  -- update debug field
+        -- CROUCHING.
 
-            if ceilingBlocked then
-                -- Ceiling is present; stay crouched regardless of triggers.
-                -- Extend hold so we re-check next frame without spamming exits.
-                self._gekkoCrouchHoldUntil = now + 0.1
-                print("[GeckoCrouch] Ceiling blocked stand-up — holding")
+        -- Safety stamp: if hold timer was somehow never set, set it now.
+        -- This guards against any re-entry edge case from the jump interrupt.
+        if self._gekkoCrouchHoldUntil <= 0 then
+            self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+            print("[GeckoCrouch] Hold re-stamped (was zero)")
+        end
+
+        -- Attempt exit only after the minimum hold has elapsed.
+        if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
+            -- One-shot line trace: is there a ceiling in the stand-up slice?
+            local blocked = RawClearanceCheck(self)
+            self._gekkoCeilingHit = blocked
+
+            if blocked then
+                -- Delay the next exit attempt by a short interval so we do
+                -- not spam the clearance trace every single tick.
+                self._gekkoCrouchHoldUntil = now + 0.15
+                print("[GeckoCrouch] Ceiling blocked stand-up — retrying in 0.15s")
             else
-                -- All triggers gone, hold elapsed, no ceiling — stand up.
+                -- Safe to stand: reset random timer and exit.
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
                 self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -349,10 +349,10 @@ function ENT:GeckoCrouch_Update()
                 return false
             end
         end
-        -- Still crouching (hold active, or trigger still active, or ceiling).
+        -- Still crouching: hold active, trigger active, or ceiling present.
     end
 
-    -- ── Crouch is active: drive animation ─────────────────────────
+    -- ── Crouch is active: drive the animation ─────────────────────
     if self.GekkoSeq_CrouchIdle == -1 then return true end
 
     local vel    = self:GetVelocity()
