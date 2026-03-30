@@ -4,10 +4,10 @@
 --
 --  Triggers (any one is enough to crouch):
 --    1. VJ Base native crouch flag (VJ_IsBeingCrouched)        — immediate
---    2. Standing-hull lookahead (TraceHull forward)            — debounced
---       Projects the full standing collision box ahead of the NPC.
---       If the standing-height hull hits geometry, the NPC cannot
---       walk through upright → crouch. Immune to Z-offset issues.
+--    2. Standing-hull lookahead (TraceHull forward, STAND hull) — debounced
+--       Projects the full STANDING collision box ahead while the NPC
+--       is upright.  When crouching, a vertical clearance check
+--       decides whether standing back up is safe.
 --    3. Random timed behaviour                                  — timer-based
 --
 --  Called from:
@@ -40,26 +40,33 @@ local RAND_DUR_MIN    = 3
 local RAND_DUR_MAX    = 10
 
 -- ─────────────────────────────────────────────────────────────
---  Standing-hull lookahead trace
---  Projects the full standing collision box HULL_LOOKAHEAD units
---  forward. Returns true if the NPC cannot walk upright through
---  the geometry ahead (i.e., needs to crouch).
+--  Hull shapes (computed once)
 -- ─────────────────────────────────────────────────────────────
-local HULL_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
-local HULL_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+-- Forward lookahead uses the STANDING hull → detects low ceilings ahead
+local HULL_STAND_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0)
+local HULL_STAND_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
 
+-- Vertical clearance uses only the extra Z slice needed to go from
+-- crouched height to standing height (avoids re-testing the floor)
+local HULL_VERT_MIN  = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, HITBOX_CROUCH_H)
+local HULL_VERT_MAX  = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+
+-- ─────────────────────────────────────────────────────────────
+--  RawObstacleCheck
+--  Called while STANDING.  Projects the full standing hull forward.
+--  Returns true  → something blocks the NPC at full height → crouch.
+-- ─────────────────────────────────────────────────────────────
 local function RawObstacleCheck(ent)
     local pos = ent:GetPos()
     local fwd = ent:GetForward()
     fwd.z = 0
     fwd:Normalize()
 
-    local offset = fwd * HULL_LOOKAHEAD
     local tr = util.TraceHull({
         start  = pos,
-        endpos = pos + offset,
-        mins   = HULL_MIN,
-        maxs   = HULL_MAX,
+        endpos = pos + fwd * HULL_LOOKAHEAD,
+        mins   = HULL_STAND_MIN,
+        maxs   = HULL_STAND_MAX,
         filter = ent,
         mask   = MASK_SOLID,
     })
@@ -68,22 +75,53 @@ local function RawObstacleCheck(ent)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  Debounced obstacle check
+--  RawClearanceCheck
+--  Called while CROUCHING.  Checks if the Z slice from crouched
+--  top to standing top is clear directly above the NPC.
+--  Returns true  → ceiling is blocking → cannot stand yet.
+--  Returns false → overhead is clear   → safe to stand.
+-- ─────────────────────────────────────────────────────────────
+local function RawClearanceCheck(ent)
+    local pos = ent:GetPos()
+    local tr = util.TraceHull({
+        start  = pos,
+        endpos = pos,   -- zero-length sweep; just tests the volume
+        mins   = HULL_VERT_MIN,
+        maxs   = HULL_VERT_MAX,
+        filter = ent,
+        mask   = MASK_SOLID,
+    })
+
+    return tr.Hit   -- true = blocked = cannot stand
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  Debounced obstacle / clearance check
 -- ─────────────────────────────────────────────────────────────
 local function TickCeiling(ent)
     local now = CurTime()
-    local raw = RawObstacleCheck(ent)
+    local raw
+
+    if ent._gekkoCrouching then
+        -- While crouched: keep crouched if overhead isn't clear
+        raw = RawClearanceCheck(ent)
+    else
+        -- While standing: crouch if a forward obstacle is detected
+        raw = RawObstacleCheck(ent)
+    end
+
     ent._gekkoCeilingHit = raw
 
     if raw then
         ent._gekkoCeilOffSince = nil
         if not ent._gekkoCeilOnSince then
             ent._gekkoCeilOnSince = now
-            print("[GeckoCrouch] Hull obstacle HIT — debounce started")
+            print("[GeckoCrouch] Hull HIT — debounce started (" ..
+                (ent._gekkoCrouching and "clearance" or "lookahead") .. ")")
         elseif now - ent._gekkoCeilOnSince >= CEIL_ON_DEBOUNCE then
             if not ent._gekkoCeilDebounced then
                 ent._gekkoCeilDebounced = true
-                print(string.format("[GeckoCrouch] Hull obstacle CONFIRMED (held %.2fs)", now - ent._gekkoCeilOnSince))
+                print(string.format("[GeckoCrouch] Hull CONFIRMED (held %.2fs)", now - ent._gekkoCeilOnSince))
             end
         end
     else
@@ -91,11 +129,11 @@ local function TickCeiling(ent)
         if ent._gekkoCeilDebounced then
             if not ent._gekkoCeilOffSince then
                 ent._gekkoCeilOffSince = now
-                print("[GeckoCrouch] Hull obstacle CLEAR — off-debounce started")
+                print("[GeckoCrouch] Hull CLEAR — off-debounce started")
             elseif now - ent._gekkoCeilOffSince >= CEIL_OFF_DEBOUNCE then
                 ent._gekkoCeilDebounced = false
                 ent._gekkoCeilOffSince  = nil
-                print("[GeckoCrouch] Hull obstacle trigger RELEASED")
+                print("[GeckoCrouch] Hull trigger RELEASED")
             end
         else
             ent._gekkoCeilOffSince = nil
