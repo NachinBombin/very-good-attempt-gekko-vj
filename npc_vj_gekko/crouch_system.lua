@@ -18,6 +18,11 @@
 --                               STANDING  (STAND_REARM_DELAY before
 --                                          obstacle trace fires again)
 --
+--  Animation:
+--    Always uses c_walk.  Playback rate is driven by XY speed so the
+--    animation appears stationary when the Gekko is not moving.
+--    cidle is never used from this system.
+--
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -59,6 +64,10 @@ local RAND_CHECK_MAX    = 16
 local RAND_CHANCE       = 0.25
 local RAND_DUR_MIN      = 3
 local RAND_DUR_MAX      = 10
+
+-- Playback rate for c_walk when the Gekko is standing still while crouched.
+-- Low enough that the animation crawls and reads as "idle".
+local CWALK_STATIONARY_RATE = 0.05
 
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes
@@ -212,7 +221,6 @@ function ENT:GeckoCrouch_Init()
     self._gekkoObsHullHit        = false
     self._gekkoCeilingHit        = false
     self._gekkoCeilNextT         = 0
-    self.GekkoSeq_CrouchIdle     = -1
     self.GekkoSeq_CrouchWalk     = -1
     self._gekkoCrouchSeqSet      = -1
     self._gekkoRandomCrouch      = false
@@ -224,15 +232,14 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  GeckoCrouch_CacheSeqs
+--  Only c_walk is needed. cidle is intentionally not cached.
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_CacheSeqs()
-    local cidle = self:LookupSequence("cidle")
     local cwalk = self:LookupSequence("c_walk")
-    self.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
     self.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
     print(string.format(
-        "[GeckoCrouch] CacheSeqs | cidle=%d  c_walk=%d",
-        self.GekkoSeq_CrouchIdle, self.GekkoSeq_CrouchWalk
+        "[GeckoCrouch] CacheSeqs | c_walk=%d  (cidle not used)",
+        self.GekkoSeq_CrouchWalk
     ))
 end
 
@@ -378,36 +385,36 @@ function ENT:GeckoCrouch_Update()
         -- Still crouching: fall through to animation block.
     end
 
-    -- Crouch animation
-    if self.GekkoSeq_CrouchIdle == -1 then
-        return true
+    -- ─────────────────────────────────────────────────────────
+    --  Crouch animation — always c_walk, rate drives appearance.
+    --
+    --  Moving  → rate proportional to XY speed  (0.3 – 1.5)
+    --  Still   → CWALK_STATIONARY_RATE (very slow crawl = reads as idle)
+    -- ─────────────────────────────────────────────────────────
+    local cwalk = self.GekkoSeq_CrouchWalk
+    if cwalk == -1 then return true end  -- no sequence found, crouch is still active
+
+    -- Set the sequence once and let the engine advance the cycle.
+    if self._gekkoCrouchSeqSet ~= cwalk then
+        self._gekkoCrouchSeqSet = cwalk
+        self:ResetSequence(cwalk)
+        self:SetCycle(0)
+        self.Gekko_LastSeqIdx  = cwalk
+        self.Gekko_LastSeqName = "c_walk"
+        print(string.format("[GeckoCrouch] Seq → c_walk (%d)", cwalk))
     end
 
+    -- Update playback rate every tick so it tracks velocity smoothly.
     local vel    = self:GetVelocity()
     local speed2 = vel.x * vel.x + vel.y * vel.y
-    local moving = speed2 > (16 * 16)
-    local targetSeq = (moving and self.GekkoSeq_CrouchWalk ~= -1)
-        and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
-
-    -- Only call ResetSequence when the target sequence actually changes.
-    if self._gekkoCrouchSeqSet ~= targetSeq then
-        self._gekkoCrouchSeqSet = targetSeq
-        self:ResetSequence(targetSeq)
-        self:SetCycle(0)
-        if moving then
-            local speed  = math.sqrt(speed2)
-            local maxSpd = (self.StartMoveSpeed and self.StartMoveSpeed > 0)
-                and self.StartMoveSpeed or 150
-            self:SetPlaybackRate(math.Clamp(speed / maxSpd, 0.3, 1.5))
-        else
-            self:SetPlaybackRate(1.0)
-        end
-        self.Gekko_LastSeqIdx  = targetSeq
-        self.Gekko_LastSeqName = moving and "c_walk" or "cidle"
-        print(string.format("[GeckoCrouch] Seq → %s (%d) moving=%s",
-            self.Gekko_LastSeqName, targetSeq, tostring(moving)))
+    if speed2 > (16 * 16) then
+        local speed  = math.sqrt(speed2)
+        local maxSpd = (self.StartMoveSpeed and self.StartMoveSpeed > 0)
+            and self.StartMoveSpeed or 150
+        self:SetPlaybackRate(math.Clamp(speed / maxSpd, 0.3, 1.5))
+    else
+        self:SetPlaybackRate(CWALK_STATIONARY_RATE)
     end
-    -- No else-branch: the engine advances the cycle on its own.
 
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
