@@ -20,24 +20,25 @@
 --  Key design rules
 --  ─────────────────
 --  • Jump CANNOT interrupt a crouch while the hold timer is active.
---    Previously the jump system fired on the same tick as EnterCrouch,
---    hit the early-exit block at the top of GeckoCrouch_Update, called
---    ExitCrouch, and left the NPC standing one tick later.  Now we only
---    allow a jump to break out of a crouch after the hold has expired
---    AND wantCrouch is already false — i.e. the NPC was already about
---    to stand up on its own.
 --
---  • The obstacle trace fires ONLY while moving (vel > 5).  A stationary
---    NPC never needs to duck under an obstacle it is not approaching.
---    This is the main source of the "flat field false-positive" bug: the
---    NPC stops moving, the trace still fires because the wall is still
---    in front of it, the crouch is entered, EnterCrouch sets MoveSpeed=0,
---    the trace now returns false next tick (no longer approaching), the
---    hold timer expires, the NPC stands — loop repeats.
+--  • The obstacle trace fires ONLY while moving (vel > OBS_MIN_VELOCITY).
+--    A stationary NPC never needs to duck under an obstacle it is not
+--    approaching.  This prevents the flat-field false-positive loop.
 --
 --  • wantCrouch is evaluated AFTER TickObstacle so the hold timer is the
 --    sole exit guard once the NPC has committed to a crouch.
 --
+--  • We do NOT call FrameAdvance() ourselves.  VJBase's own Think chain
+--    owns the animation clock.  We only call ResetSequence() once when
+--    the target sequence changes, then let VJBase tick the cycle forward.
+--    Calling FrameAdvance() here AND letting VJBase call it too is what
+--    produced the double-speed / invisible animation.
+--
+--  • We do NOT touch VJ_CanMoveThink.  Setting it false here then having
+--    VJBase restore it on the same tick caused movement to flicker and
+--    prevented the NPC from actually staying still while crouching.
+--    Movement is suppressed the correct way: MoveSpeed/RunSpeed/WalkSpeed
+--    are zeroed in EnterCrouch and restored in ExitCrouch.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -62,7 +63,6 @@ local HITBOX_CROUCH_H   = 130
 local HITBOX_HALF_W     = 64
 
 -- Velocity threshold below which the obstacle trace is skipped.
--- A stopped NPC does not need to duck under obstacles it is not moving toward.
 local OBS_MIN_VELOCITY  = 20
 
 -- Random crouch behaviour
@@ -113,8 +113,7 @@ local function TickObstacle(ent)
         return false
     end
 
-    -- Skip if the NPC is essentially stationary — a stopped NPC will
-    -- never clear the obstacle by crouching and just loop in place.
+    -- Skip if the NPC is essentially stationary.
     local vel = ent:GetVelocity()
     local spd = vel.x * vel.x + vel.y * vel.y
     if spd < OBS_MIN_VELOCITY * OBS_MIN_VELOCITY then
@@ -214,7 +213,7 @@ local function EnterCrouch(ent)
     local now = CurTime()
     ent._gekkoCrouching       = true
     ent._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
-    ent._gekkoCrouchSeqSet    = -1
+    ent._gekkoCrouchSeqSet    = -1   -- force a ResetSequence on first animation tick
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
@@ -224,11 +223,11 @@ local function EnterCrouch(ent)
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
-    -- Freeze movement so the NPC waits under the obstacle.
-    ent.MoveSpeed    = 0
-    ent.RunSpeed     = 0
-    ent.WalkSpeed    = 0
-    ent.VJ_CanMoveThink = false
+    -- Zero movement so the NPC holds still while crouched.
+    -- Do NOT touch VJ_CanMoveThink — VJBase will fight it and win every tick.
+    ent.MoveSpeed = 0
+    ent.RunSpeed  = 0
+    ent.WalkSpeed = 0
     print("[GeckoCrouch] → Crouching h=" .. HITBOX_CROUCH_H)
 end
 
@@ -249,10 +248,9 @@ local function ExitCrouch(ent)
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
-    ent.MoveSpeed    = ent.StartMoveSpeed    or 150
-    ent.RunSpeed     = ent.StartRunSpeed     or 300
-    ent.WalkSpeed    = ent.StartWalkSpeed    or 150
-    ent.VJ_CanMoveThink = true
+    ent.MoveSpeed = ent.StartMoveSpeed or 150
+    ent.RunSpeed  = ent.StartRunSpeed  or 300
+    ent.WalkSpeed = ent.StartWalkSpeed or 150
     print("[GeckoCrouch] → Standing h=" .. HITBOX_STAND_H)
 end
 
@@ -265,12 +263,6 @@ function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
     -- ── Jump interrupt — only allowed when hold has already expired ───
-    -- CRITICAL FIX: Do NOT let a fresh jump exit a newly-entered crouch.
-    -- Previously the jump fired on the same tick as EnterCrouch, hit this
-    -- block, called ExitCrouch, and the NPC was standing again one tick
-    -- later — appearing to never crouch at all.
-    -- We now only exit for a jump when the hold timer has run out AND
-    -- wantCrouch is already false (i.e. the NPC was about to stand anyway).
     local jumpState = self:GetGekkoJumpState()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
@@ -283,10 +275,8 @@ function ENT:GeckoCrouch_Update()
             ExitCrouch(self)
             print("[GeckoCrouch] Jump interrupted crouch (hold expired)")
             return false
-        else
-            -- Hold still active: suppress jump, stay crouched.
-            -- Fall through to animation block.
         end
+        -- Hold still active: fall through and keep crouched.
     elseif jumpActive then
         return false
     end
@@ -342,12 +332,20 @@ function ENT:GeckoCrouch_Update()
             ExitCrouch(self)
             return false
         end
-        -- Still crouching.
+        -- Still crouching: fall through to animation block.
     end
 
-    -- ── Crouch is active: drive animation ────────────────────────
+    -- ── Crouch is active: set the correct sequence ────────────────
+    --
+    --  IMPORTANT: We call ResetSequence() ONLY when the target sequence
+    --  changes (guarded by _gekkoCrouchSeqSet).  We do NOT call
+    --  FrameAdvance() — VJBase's own Think hook owns the animation clock.
+    --  Calling both FrameAdvance here AND letting VJBase tick the cycle
+    --  causes the animation to advance twice per game tick, which makes it
+    --  run at double speed and appear broken/invisible.
+    --
     if self.GekkoSeq_CrouchIdle == -1 then
-        -- Sequences not cached yet — still block VJBase.
+        -- Sequences not cached yet — still block VJBase from overriding.
         return true
     end
 
@@ -358,6 +356,8 @@ function ENT:GeckoCrouch_Update()
         and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
     -- Only call ResetSequence when the sequence actually changes.
+    -- Never call it every tick — that resets the cycle to 0 each frame,
+    -- which is what caused the rapid up-down flicker in the old code.
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
         self:ResetSequence(targetSeq)
@@ -376,12 +376,19 @@ function ENT:GeckoCrouch_Update()
             self.Gekko_LastSeqName, targetSeq, tostring(moving)))
     end
 
-    -- Advance animation cycle manually every tick.
-    self:FrameAdvance(FrameTime())
+    -- Do NOT call self:FrameAdvance(FrameTime()) here.
+    -- VJBase's funcAnimThink hook (registered in ENTITY:Initialize via
+    -- hook.Add("Think", self, funcAnimThink)) already calls FrameAdvance
+    -- every tick.  Calling it a second time here doubles the playback
+    -- speed and prevents the animation from being visible.
 
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)
-    self.VJ_IsMoving     = false
-    self.VJ_CanMoveThink = false
+    -- Do NOT set VJ_CanMoveThink = false here.
+    -- VJBase restores this flag every tick in its own Think chain.
+    -- The race condition between our false-set and VJBase's true-restore
+    -- caused movement to flicker and never actually stop.
+    -- Movement is already suppressed via MoveSpeed/RunSpeed/WalkSpeed = 0
+    -- in EnterCrouch, which VJBase respects.
     return true
 end
