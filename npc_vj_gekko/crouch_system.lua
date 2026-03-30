@@ -5,7 +5,8 @@
 --  Triggers (any one is enough to crouch):
 --    1. VJ Base native crouch flag (VJ_IsBeingCrouched)   — immediate
 --    2. Standing-hull lookahead (TraceHull forward)        — debounced
---    3. Random timed behaviour                             — timer-based
+--    3. Ceiling trace (TraceLine upward from head)         — immediate
+--    4. Random timed behaviour                             — timer-based
 --
 --  State machine:
 --
@@ -32,6 +33,15 @@ local HITBOX_CROUCH_H   = 130
 local HITBOX_HALF_W     = 64
 local OBS_MIN_VELOCITY  = 20
 
+-- Ceiling check: trace upward from eye height.
+-- CEIL_CLEARANCE is the minimum overhead space needed before
+-- we consider the ceiling "close enough to crouch".
+-- The Gekko standing hull is 200 units tall; we fire a line
+-- from the top of the hull.  If something is within
+-- CEIL_CLEARANCE units above that point, wantCrouch becomes true.
+local CEIL_CHECK_INTERVAL = 0.15   -- seconds between ceiling traces (perf)
+local CEIL_CLEARANCE      = 40     -- units of headroom needed above the hull top
+
 local RAND_CHECK_MIN    = 6
 local RAND_CHECK_MAX    = 16
 local RAND_CHANCE       = 0.25
@@ -46,7 +56,7 @@ local HULL_FWD_MIN = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 12)
 local HULL_FWD_MAX = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
 
 -- ─────────────────────────────────────────────────────────────
---  RawObstacleCheck
+--  RawObstacleCheck  (forward hull)
 -- ─────────────────────────────────────────────────────────────
 local function RawObstacleCheck(ent)
     local pos = ent:GetPos()
@@ -63,6 +73,47 @@ local function RawObstacleCheck(ent)
         mask   = MASK_SOLID,
     })
     return tr.Hit
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  CeilingCheck
+--  Fires a line straight up from the top of the standing hull.
+--  Returns true when the ceiling is too close to stand under.
+--  Throttled by CEIL_CHECK_INTERVAL so it doesn't fire every tick.
+-- ─────────────────────────────────────────────────────────────
+local function CeilingCheck(ent)
+    local now = CurTime()
+    if now < (ent._gekkoCeilNextT or 0) then
+        -- Return the cached result between checks.
+        return ent._gekkoCeilingHit
+    end
+    ent._gekkoCeilNextT = now + CEIL_CHECK_INTERVAL
+
+    local pos = ent:GetPos()
+    -- Start just below the top of the standing hull so we don't
+    -- start inside brushes on sloped floors.
+    local traceStart = pos + Vector(0, 0, HITBOX_STAND_H - 4)
+    -- We need at least CEIL_CLEARANCE of clearance above the hull top.
+    local traceEnd   = traceStart + Vector(0, 0, CEIL_CLEARANCE)
+
+    local tr = util.TraceLine({
+        start  = traceStart,
+        endpos = traceEnd,
+        filter = ent,
+        mask   = MASK_SOLID,
+    })
+
+    local hit = tr.Hit
+    ent._gekkoCeilingHit = hit
+
+    if hit then
+        print(string.format(
+            "[GeckoCrouch] Ceiling HIT — frac=%.2f  pos=%s",
+            tr.Fraction, tostring(tr.HitPos)
+        ))
+    end
+
+    return hit
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -147,6 +198,7 @@ function ENT:GeckoCrouch_Init()
     self._gekkoObsDebounced      = false
     self._gekkoObsHullHit        = false
     self._gekkoCeilingHit        = false
+    self._gekkoCeilNextT         = 0
     self.GekkoSeq_CrouchIdle     = -1
     self.GekkoSeq_CrouchWalk     = -1
     self._gekkoCrouchSeqSet      = -1
@@ -176,7 +228,7 @@ end
 --
 --  randDuration: if the trigger is random, pass the requested
 --  duration so the hold covers the full random window.
---  For obstacle/VJ triggers, pass nil (uses CROUCH_HOLD_MIN).
+--  For obstacle/ceiling/VJ triggers, pass nil (uses CROUCH_HOLD_MIN).
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, randDuration)
     local now = CurTime()
@@ -192,7 +244,8 @@ local function EnterCrouch(ent, randDuration)
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
-    ent._gekkoCeilingHit      = false
+    -- Do NOT reset _gekkoCeilingHit here — ceiling may still be present,
+    -- let TickCeiling keep reporting it so we stay crouched.
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
@@ -217,6 +270,7 @@ local function ExitCrouch(ent)
     ent._gekkoObsDebounced      = false
     ent._gekkoObsHullHit        = false
     ent._gekkoCeilingHit        = false
+    ent._gekkoCeilNextT         = 0   -- force a fresh ceiling check on next tick
     ent._gekkoRandomCrouch      = false
     ent._gekkoRandomCrouchEndT  = 0
     ent._gekkoRandomDuration    = 0
@@ -241,19 +295,12 @@ function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
     -- ── Jump interrupt ───────────────────────────────────────────
-    -- While airborne or in the landing phase, let the jump system
-    -- own the NPC entirely.  We preserve the crouching state so
-    -- that when the lockout ends we resume correctly.
-    -- We do NOT call ExitCrouch here — only the hold-expiry path
-    -- below should do that, once the NPC is back on the ground.
     local jumpState  = self:GetGekkoJumpState()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
                        jumpState == self.JUMP_LAND
 
     if jumpActive then
-        -- Return false so GekkoUpdateAnimation hands control to the
-        -- jump system, but do not modify any crouch state variables.
         return false
     end
 
@@ -262,8 +309,11 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Tick sub-systems ─────────────────────────────────────────
-    -- TickRandom only arms the flag; it never disarms it here.
     TickRandom(self)
+
+    -- Ceiling check runs always (not gated by crouching state),
+    -- because we need to STAY crouched while the ceiling is present.
+    local ceilHit = CeilingCheck(self)
 
     local obsHit = false
     if not self._gekkoCrouching then
@@ -273,14 +323,14 @@ function ENT:GeckoCrouch_Update()
     -- ── Evaluate triggers ────────────────────────────────────────
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local randActive = self._gekkoRandomCrouch
-    local wantCrouch = vjCrouch or obsHit or randActive
+    local wantCrouch = vjCrouch or obsHit or ceilHit or randActive
 
     -- ── Diagnostics ──────────────────────────────────────────────
     if not self._crouchDiagT or now > self._crouchDiagT then
         print(string.format(
-            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  rand=%s  holdLeft=%.2f  rearmLeft=%.2f",
+            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  holdLeft=%.2f  rearmLeft=%.2f",
             tostring(self._gekkoCrouching), tostring(wantCrouch),
-            tostring(vjCrouch), tostring(obsHit), tostring(randActive),
+            tostring(vjCrouch), tostring(obsHit), tostring(ceilHit), tostring(randActive),
             math.max(0, self._gekkoCrouchHoldUntil - now),
             math.max(0, self._gekkoObsRearmT - now)
         ))
@@ -290,7 +340,6 @@ function ENT:GeckoCrouch_Update()
     -- ── State machine ─────────────────────────────────────────────
     if not self._gekkoCrouching then
         if wantCrouch then
-            -- Pass the random duration so EnterCrouch stamps the correct hold.
             local randDur = randActive and self._gekkoRandomDuration or nil
             EnterCrouch(self, randDur)
             -- Fall through to animation block on this same tick.
@@ -299,12 +348,14 @@ function ENT:GeckoCrouch_Update()
         end
     else
         -- CROUCHING.
-        -- Exit only when the mandatory hold has elapsed AND all triggers
-        -- have dropped.  When random-triggered, _gekkoRandomCrouch stays
-        -- true until holdUntil passes, so wantCrouch stays true for the
-        -- full intended duration without TickRandom needing to disarm it.
+        -- If ceiling is still present, always extend the hold.
+        if ceilHit then
+            -- Keep re-stamping so we never exit while the ceiling is there.
+            self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+        end
+
         if now >= self._gekkoCrouchHoldUntil then
-            -- Hold has elapsed.  Disarm the random flag if it was the trigger.
+            -- Hold has elapsed. Disarm random flag if it was the trigger.
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
@@ -312,16 +363,14 @@ function ENT:GeckoCrouch_Update()
                 self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
                 print(string.format("[GeckoCrouch] Random EXPIRED — next roll in %.1fs",
                     self._gekkoRandomCrouchNextT - now))
-                -- Re-evaluate wantCrouch without the random flag.
-                wantCrouch = vjCrouch or obsHit
+                wantCrouch = vjCrouch or obsHit or ceilHit
             end
 
             if not wantCrouch then
                 ExitCrouch(self)
                 return false
             end
-            -- Another trigger still active — re-stamp hold for CROUCH_HOLD_MIN
-            -- to avoid flicker.
+            -- Another trigger still active — re-stamp hold to avoid flicker.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
         -- Still crouching: fall through to animation block.
@@ -338,6 +387,8 @@ function ENT:GeckoCrouch_Update()
     local targetSeq = (moving and self.GekkoSeq_CrouchWalk ~= -1)
         and self.GekkoSeq_CrouchWalk or self.GekkoSeq_CrouchIdle
 
+    -- Only call ResetSequence when the target sequence actually changes.
+    -- Never call SetSequence every tick — it resets the cycle to 0 each frame.
     if self._gekkoCrouchSeqSet ~= targetSeq then
         self._gekkoCrouchSeqSet = targetSeq
         self:ResetSequence(targetSeq)
@@ -355,6 +406,7 @@ function ENT:GeckoCrouch_Update()
         print(string.format("[GeckoCrouch] Seq → %s (%d) moving=%s",
             self.Gekko_LastSeqName, targetSeq, tostring(moving)))
     end
+    -- No else-branch that calls SetSequence — the engine advances the cycle.
 
     self:SetPoseParameter("move_x", 0)
     self:SetPoseParameter("move_y", 0)

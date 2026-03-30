@@ -49,9 +49,8 @@ end
 
 -- ============================================================
 --  GekkoOwnsAnimation
---  Central helper: returns true when Gekko's own systems
---  (crouch or jump) currently own the animation state and
---  VJBase must not touch it.
+--  Returns true when Gekko's own systems (crouch or jump)
+--  currently own the animation state and VJBase must not touch it.
 -- ============================================================
 local function GekkoOwnsAnimation(ent)
     if ent._gekkoCrouching then return true end
@@ -129,22 +128,9 @@ end
 
 -- ============================================================
 --  OnSelectSchedule override
---
---  VJBase's AI scheduler (schedules.lua) calls SelectSchedule()
---  every think cycle when the NPC has a live enemy.  Internally
---  the selected schedule runs tasks via RunTask() which calls
---  NPC:SetActivity() at the engine C++ level — this completely
---  bypasses MaintainIdleAnimation, MaintainActivity, and
---  VJ_AnimationThink, resetting our sequence every single tick.
---
---  Returning the current schedule unchanged tells VJBase "stay
---  in whatever you were doing" — no SetActivity fires, and our
---  crouch/jump animations remain intact.
 -- ============================================================
 function ENT:OnSelectSchedule()
     if GekkoOwnsAnimation(self) then
-        -- Keep the NPC in its current schedule so the engine does
-        -- not call SetActivity or ResetSequence behind our back.
         return self:GetCurrentSchedule()
     end
     return self.BaseClass.OnSelectSchedule(self)
@@ -152,12 +138,6 @@ end
 
 -- ============================================================
 --  OnStartTask override
---
---  Some VJBase schedules (SCHED_VJ_IDLE, SCHED_VJ_ALERT_FACE)
---  immediately call SetActivity(ACT_IDLE) in their first task.
---  This fires before OnSelectSchedule can block it.  We intercept
---  it here so that no task can mutate the animation while our
---  systems own it.
 -- ============================================================
 function ENT:OnStartTask(taskID, taskData)
     if GekkoOwnsAnimation(self) then return end
@@ -282,10 +262,6 @@ end
 
 -- ============================================================
 --  SafeInitVJTables
---  Ensures all VJBase sound/damage tables exist so that
---  VJ_ApplyDamageInfo never errors with "temptable is nil".
---  Called from both Init() and Activate() because VJBase's
---  BaseClass.Activate() may wipe or re-create these tables.
 -- ============================================================
 local function SafeInitVJTables(ent)
     if not ent.VJ_AddOnDamage    then ent.VJ_AddOnDamage    = {} end
@@ -374,7 +350,6 @@ function ENT:Activate()
     if base and base.Activate and base.Activate ~= ENT.Activate then
         base.Activate(self)
     end
-    -- Re-guard tables after BaseClass.Activate may have altered them.
     SafeInitVJTables(self)
     print("[GekkoNPC] Activate() called by engine (future VJ path)")
 end
