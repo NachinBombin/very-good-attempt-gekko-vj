@@ -108,25 +108,16 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  TickRandom
---
---  FIX: The expire check must only use _gekkoCrouchHoldUntil
---  when the entity is actually crouching.  On the first tick
---  that random fires, _gekkoCrouchHoldUntil is still 0 (from
---  Init) because EnterCrouch hasn't run yet.  Without the
---  _gekkoCrouching guard, "now >= 0" is always true and the
---  random flag is immediately cleared before EnterCrouch can
---  stamp the hold — causing a sub-frame crouch.
 -- ─────────────────────────────────────────────────────────────
 local function TickRandom(ent)
     local now = CurTime()
 
     if ent._gekkoRandomCrouch then
-        -- Expire only when:
-        --   (a) our own random duration has elapsed, AND
-        --   (b) either we are not yet crouching (pre-Enter tick),
-        --       OR the mandatory hold has also elapsed.
-        local holdDone = (not ent._gekkoCrouching) or (now >= ent._gekkoCrouchHoldUntil)
-        if now >= ent._gekkoRandomCrouchEndT and holdDone then
+        -- Expire only when the random duration has elapsed AND the
+        -- mandatory hold has also elapsed.  Both are tracked in
+        -- _gekkoCrouchHoldUntil (stamped to max(CROUCH_HOLD_MIN,
+        -- randomDuration) in EnterCrouch), so a single check suffices.
+        if (not ent._gekkoCrouching) or (now >= ent._gekkoCrouchHoldUntil) then
             ent._gekkoRandomCrouch      = false
             ent._gekkoRandomCrouchEndT  = 0
             ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -141,8 +132,8 @@ local function TickRandom(ent)
     if math.random() < RAND_CHANCE then
         local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
         ent._gekkoRandomCrouch     = true
-        -- Honour at least CROUCH_HOLD_MIN even if dur < CROUCH_HOLD_MIN
-        ent._gekkoRandomCrouchEndT = now + math.max(dur, CROUCH_HOLD_MIN)
+        ent._gekkoRandomCrouchEndT = now + dur   -- stored for reference only
+        ent._gekkoRandomDuration   = dur          -- passed to EnterCrouch
         print(string.format("[GeckoCrouch] Random TRIGGERED — holding for %.1fs", dur))
     else
         ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
@@ -156,9 +147,7 @@ end
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Init()
     self._gekkoCrouching         = false
-    self._gekkoCrouchHoldUntil   = -1    -- Use -1 (not 0) so "now >= -1" is always
-                                          -- true when not crouching, and the safety
-                                          -- re-stamp guard never fires spuriously.
+    self._gekkoCrouchHoldUntil   = -1
     self._gekkoObsRearmT         = 0
     self._gekkoObsOnSince        = nil
     self._gekkoObsDebounced      = false
@@ -169,6 +158,7 @@ function ENT:GeckoCrouch_Init()
     self._gekkoCrouchSeqSet      = -1
     self._gekkoRandomCrouch      = false
     self._gekkoRandomCrouchEndT  = 0
+    self._gekkoRandomDuration    = 0
     self._gekkoRandomCrouchNextT = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
     print("[GeckoCrouch] Init() — state vars created")
 end
@@ -189,12 +179,21 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  EnterCrouch
+--
+--  randDuration: if the trigger is random, pass the requested
+--  duration so the hold covers the full random window.
+--  For obstacle/VJ triggers, pass nil (uses CROUCH_HOLD_MIN).
 -- ─────────────────────────────────────────────────────────────
-local function EnterCrouch(ent)
+local function EnterCrouch(ent, randDuration)
     local now = CurTime()
-    ent._gekkoCrouching       = true
-    -- Stamp hold NOW — this is the single authoritative write.
-    ent._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+    ent._gekkoCrouching    = true
+    -- Hold for at least CROUCH_HOLD_MIN, but also cover the
+    -- full random duration if this was a random-triggered crouch.
+    local holdLen = CROUCH_HOLD_MIN
+    if randDuration and randDuration > holdLen then
+        holdLen = randDuration
+    end
+    ent._gekkoCrouchHoldUntil = now + holdLen
     ent._gekkoCrouchSeqSet    = -1
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
@@ -208,7 +207,8 @@ local function EnterCrouch(ent)
     ent.MoveSpeed = 0
     ent.RunSpeed  = 0
     ent.WalkSpeed = 0
-    print("[GeckoCrouch] → Crouching h=" .. HITBOX_CROUCH_H)
+    print(string.format("[GeckoCrouch] → Crouching h=%d  holdLen=%.1fs",
+        HITBOX_CROUCH_H, holdLen))
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -217,18 +217,15 @@ end
 local function ExitCrouch(ent)
     local now = CurTime()
     ent._gekkoCrouching         = false
-    -- Do NOT zero _gekkoCrouchHoldUntil here.  Leave it at its last
-    -- stamped value (a time in the past) so the safety re-stamp guard
-    -- inside GeckoCrouch_Update never fires on the re-entry tick.
     ent._gekkoCrouchSeqSet      = -1
     ent._gekkoObsRearmT         = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince        = nil
     ent._gekkoObsDebounced      = false
     ent._gekkoObsHullHit        = false
     ent._gekkoCeilingHit        = false
-    -- Clear random state so it cannot immediately re-trigger.
     ent._gekkoRandomCrouch      = false
     ent._gekkoRandomCrouchEndT  = 0
+    ent._gekkoRandomDuration    = 0
     ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
@@ -257,13 +254,10 @@ function ENT:GeckoCrouch_Update()
 
     if jumpActive then
         if self._gekkoCrouching then
-            -- Jump may break the crouch only after the mandatory hold.
             if now >= self._gekkoCrouchHoldUntil then
                 ExitCrouch(self)
                 return false
             end
-            -- Hold still active: stay crouched but let jump animation run.
-            -- Return false so GekkoUpdateAnimation handles jump seq.
             return false
         end
         return false
@@ -274,8 +268,6 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Tick sub-systems ─────────────────────────────────────────
-    -- TickRandom first so _gekkoRandomCrouch is up to date before
-    -- we evaluate wantCrouch below.
     TickRandom(self)
 
     local obsHit = false
@@ -303,17 +295,18 @@ function ENT:GeckoCrouch_Update()
     -- ── State machine ─────────────────────────────────────────────
     if not self._gekkoCrouching then
         if wantCrouch then
-            EnterCrouch(self)
+            -- Pass the random duration so EnterCrouch stamps the correct hold.
+            local randDur = randActive and self._gekkoRandomDuration or nil
+            EnterCrouch(self, randDur)
             -- Fall through to animation block on this same tick.
         else
             return false
         end
     else
         -- CROUCHING.
-
-        -- Exit only when:
-        --   (a) the mandatory hold has fully elapsed, AND
-        --   (b) ALL triggers have dropped.
+        -- Exit only when the mandatory hold (which covers the full
+        -- random duration when random-triggered) has elapsed AND
+        -- all triggers have dropped.
         if not wantCrouch and now >= self._gekkoCrouchHoldUntil then
             ExitCrouch(self)
             return false
@@ -322,8 +315,6 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Crouch animation ──────────────────────────────────────────
-    -- ResetSequence is called ONLY when the target sequence changes.
-    -- Never called every tick — that resets the cycle to 0 each frame.
     if self.GekkoSeq_CrouchIdle == -1 then
         return true
     end
