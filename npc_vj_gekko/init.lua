@@ -33,9 +33,13 @@ local WMODE_MISSILE = 2
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
--- Head zone: fraction of collision height above which damage is reduced to 1/3
--- 0.65 * 200 = 130 units above origin  →  sits above torso, below neck geometry
 local HEAD_Z_FRACTION = 0.65
+
+-- ============================================================
+--  Blood splatter config
+-- ============================================================
+local BLOOD_RANDOM_CHANCE  = 40   -- 1 in N chance per hit
+local BLOOD_DAMAGE_THRESH  = 900  -- single-hit damage that also triggers
 
 -- ============================================================
 --  Helpers
@@ -233,10 +237,13 @@ function ENT:Init()
     self._gekkoSkipAnimTick  = false
     self._crushHitTimes      = {}
 
-    -- NW vars for clientside FX (initialised to safe defaults)
+    -- NW vars for clientside FX
     self:SetNWBool("GekkoMGFiring",  false)
     self:SetNWInt("GekkoJumpDust",   0)
     self:SetNWInt("GekkoLandDust",   0)
+    -- Blood splatter: packed as (pulse << 8) | variant  so client gets
+    -- both a change-detect counter AND which variant to play.
+    self:SetNWInt("GekkoBloodSplat", 0)
 
     SafeInitVJTables(self)
     self:GekkoJump_Init()
@@ -297,22 +304,49 @@ function ENT:Activate()
 end
 
 -- ============================================================
+--  GekkoTriggerBloodSplat
+--  Picks a random variant (1-5) and packs it into the NW int
+--  alongside a rolling pulse so the client always sees a change.
+-- ============================================================
+function ENT:GekkoTriggerBloodSplat()
+    -- variant: 1-5  (5 distinct exaggerated presentations)
+    local variant    = math.random(1, 5)
+    local oldPacked  = self:GetNWInt("GekkoBloodSplat", 0)
+    local oldPulse   = math.floor(oldPacked / 8) % 255
+    local newPulse   = (oldPulse + 1) % 255
+    -- Avoid landing on 0 (reserved for "never fired")
+    if newPulse == 0 then newPulse = 1 end
+    -- Pack: high bits = pulse, low 3 bits = variant-1  (0-4)
+    self:SetNWInt("GekkoBloodSplat", newPulse * 8 + (variant - 1))
+end
+
+-- ============================================================
 --  Damage override
---  Head zone = top 35% of collision bbox (z * 0.65 threshold)
---  Legs absorb full damage; head/turret takes only 1/3
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
 
-    -- Fast-path: engine already resolved a head hitgroup
-    local hitgroup = dmginfo:GetDamageType() -- note: we check hitgroup separately below
+    -- ---- Blood splatter triggers --------------------------------
+    local rawDmg = dmginfo:GetDamage()
+
+    -- Threshold: single hit >= 900
+    local thresholdHit = (rawDmg >= BLOOD_DAMAGE_THRESH)
+
+    -- Random: 1 in BLOOD_RANDOM_CHANCE
+    local randomHit = (math.random(1, BLOOD_RANDOM_CHANCE) == 1)
+
+    if thresholdHit or randomHit then
+        self:GekkoTriggerBloodSplat()
+    end
+    -- -------------------------------------------------------------
+
+    -- Head zone
     if dmginfo:GetHitGroup() == HITGROUP_HEAD then
         dmginfo:ScaleDamage(1 / 3)
         self.BaseClass.OnTakeDamage(self, dmginfo)
         return
     end
 
-    -- Positional check for all other damage types
     local hitPos = dmginfo:GetDamagePosition()
 
     if hitPos == vector_origin then
@@ -320,15 +354,14 @@ function ENT:OnTakeDamage(dmginfo)
         if IsValid(inflictor) then
             hitPos = inflictor:GetPos()
         else
-            -- No position data — pass through unmodified
             dmginfo:SetDamagePosition(self:GetPos())
             self.BaseClass.OnTakeDamage(self, dmginfo)
             return
         end
     end
 
-    local _, maxs   = self:GetCollisionBounds()
-    local headZ     = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
+    local _, maxs = self:GetCollisionBounds()
+    local headZ   = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
 
     if hitPos.z > headZ then
         dmginfo:ScaleDamage(1 / 3)

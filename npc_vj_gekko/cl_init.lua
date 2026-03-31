@@ -241,12 +241,236 @@ local function GekkoDoMGFX(ent)
 end
 
 -- ============================================================
+--  EXAGGERATED BLOOD SPLATTER
+--
+--  NW int "GekkoBloodSplat" packs:
+--    high bits (>> 3) = rolling pulse   (changes every trigger)
+--    low 3 bits       = variant index   (0-4)
+--
+--  5 variants — all massive, all different:
+--    1  Geyser      — tall vertical column of blood blobs
+--    2  Radial ring — blood sprays outward in a flat ring
+--    3  Burst cloud — dense omnidirectional burst
+--    4  Arc shower  — forward-biased high arc spray
+--    5  Ground pool — low splat spread wide on the floor
+-- ============================================================
+local BLOOD_DECAL   = "Blood"
+local BLOOD_DECAL2  = "YellowBlood"
+
+-- Returns a random unit vector biased toward a given direction.
+-- bias: 0 = fully random sphere, 1 = perfectly aligned with dir
+local function RandBiasedDir(dir, bias)
+    local r = Vector(
+        (math.random() - 0.5) * 2,
+        (math.random() - 0.5) * 2,
+        (math.random() - 0.5) * 2
+    )
+    r:Normalize()
+    return (r + dir * bias):GetNormalized()
+end
+
+-- Spawn a blob of blood at pos going in dir at speed.
+-- This uses EffectData with BloodImpact, Blixibon blood, and
+-- util.Decal for persistent pools.
+local function SpawnBloodBlob(pos, dir, speed, scale)
+    -- Blood impact spray
+    local e = EffectData()
+    e:SetOrigin(pos)
+    e:SetNormal(dir)
+    e:SetScale(scale)
+    e:SetMagnitude(speed * 0.05)
+    e:SetRadius(math.random(12, 36))
+    util.Effect("BloodImpact", e, false)
+
+    -- Also fire a BloodSpray for extra volume
+    local e2 = EffectData()
+    e2:SetOrigin(pos)
+    e2:SetNormal(dir)
+    e2:SetScale(scale * math.Rand(0.6, 1.4))
+    e2:SetMagnitude(math.Rand(8, 22))
+    util.Effect("BloodSpray", e2, false)
+
+    -- Trace ahead and stamp a decal where it would land
+    local tr = util.TraceLine({
+        start  = pos,
+        endpos = pos + dir * speed,
+        mask   = MASK_SOLID_BRUSHONLY,
+    })
+    if tr.Hit then
+        local decalName = (math.random(1, 6) == 1) and BLOOD_DECAL2 or BLOOD_DECAL
+        util.Decal(decalName, tr.HitPos + tr.HitNormal, tr.HitPos - tr.HitNormal)
+    end
+end
+
+-- ---- VARIANT 1: Geyser -----------------------------------------
+-- A violent upward column, blobs lofted high with slight outward drift.
+local function BloodVariant_Geyser(origin)
+    local count = math.random(18, 32)
+    for _ = 1, count do
+        local spread  = math.Rand(0.0, 0.35)
+        local dir     = Vector(
+            (math.random() - 0.5) * 2 * spread,
+            (math.random() - 0.5) * 2 * spread,
+            math.Rand(0.7, 1.0)
+        )
+        dir:Normalize()
+        local spawnH  = math.Rand(20, 120)
+        local speed   = math.Rand(800, 2200)
+        local scale   = math.Rand(8, 22)
+        SpawnBloodBlob(origin + Vector(0, 0, spawnH), dir, speed, scale)
+    end
+    -- Wide base splat at origin
+    for _ = 1, math.random(4, 8) do
+        local e = EffectData()
+        e:SetOrigin(origin + Vector((math.random()-0.5)*80, (math.random()-0.5)*80, 4))
+        e:SetNormal(Vector(0,0,1))
+        e:SetScale(math.Rand(12, 28))
+        e:SetMagnitude(math.Rand(10, 30))
+        util.Effect("BloodImpact", e, false)
+    end
+end
+
+-- ---- VARIANT 2: Radial Ring ------------------------------------
+-- Sprays outward in a flat ring like a land mine went off in a body.
+local function BloodVariant_RadialRing(origin)
+    local spokes  = math.random(20, 36)
+    local ringH   = math.Rand(40, 100)   -- height of the ring
+    for i = 1, spokes do
+        local angle = (i / spokes) * math.pi * 2
+        local dir   = Vector(
+            math.cos(angle),
+            math.sin(angle),
+            math.Rand(-0.15, 0.35)
+        )
+        dir:Normalize()
+        local speed = math.Rand(700, 2400)
+        local scale = math.Rand(10, 28)
+        SpawnBloodBlob(origin + Vector(0,0,ringH), dir, speed, scale)
+    end
+    -- Dense center burst
+    for _ = 1, math.random(6, 12) do
+        local e = EffectData()
+        e:SetOrigin(origin + Vector(0,0,ringH))
+        e:SetNormal(RandBiasedDir(Vector(0,0,1), 0.3))
+        e:SetScale(math.Rand(15, 35))
+        e:SetMagnitude(math.Rand(15, 40))
+        util.Effect("BloodImpact", e, false)
+    end
+end
+
+-- ---- VARIANT 3: Burst Cloud ------------------------------------
+-- Omnidirectional dense explosion — the whole sphere bleeds.
+local function BloodVariant_BurstCloud(origin)
+    local count = math.random(28, 50)
+    for _ = 1, count do
+        local dir   = RandBiasedDir(Vector(0,0,0.4), 0)
+        local h     = math.Rand(30, 160)
+        local speed = math.Rand(600, 2800)
+        local scale = math.Rand(10, 30)
+        SpawnBloodBlob(origin + Vector(0, 0, h), dir, speed, scale)
+    end
+    -- Extra BloodImpact bursts at varied heights
+    for _ = 1, math.random(8, 16) do
+        local e = EffectData()
+        e:SetOrigin(origin + Vector(
+            (math.random()-0.5)*120,
+            (math.random()-0.5)*120,
+            math.Rand(10, 180)
+        ))
+        e:SetNormal(RandBiasedDir(Vector(0,0,1), 0.2))
+        e:SetScale(math.Rand(18, 40))
+        e:SetMagnitude(math.Rand(20, 50))
+        util.Effect("BloodImpact", e, false)
+    end
+end
+
+-- ---- VARIANT 4: Arc Shower -------------------------------------
+-- Strong forward-biased arc — blood flung ahead and up like a
+-- pressure hose pointed forward.
+local function BloodVariant_ArcShower(origin, forwardDir)
+    local count = math.random(22, 40)
+    for _ = 1, count do
+        local dir   = RandBiasedDir(forwardDir + Vector(0,0,0.5), 0.55)
+        local h     = math.Rand(60, 180)
+        local speed = math.Rand(1000, 3000)
+        local scale = math.Rand(8, 24)
+        SpawnBloodBlob(origin + Vector(0, 0, h), dir, speed, scale)
+    end
+    -- Side splashes
+    for _ = 1, math.random(4, 10) do
+        local side  = RandBiasedDir(Vector(
+            (math.random()-0.5)*2, (math.random()-0.5)*2, 0.1), 0.1)
+        local e = EffectData()
+        e:SetOrigin(origin + Vector(0, 0, math.Rand(30, 100)))
+        e:SetNormal(side)
+        e:SetScale(math.Rand(12, 32))
+        e:SetMagnitude(math.Rand(12, 35))
+        util.Effect("BloodImpact", e, false)
+    end
+end
+
+-- ---- VARIANT 5: Ground Pool Splat ------------------------------
+-- Low, wide — blood splatters outward along the floor hard.
+local function BloodVariant_GroundPool(origin)
+    local count = math.random(20, 38)
+    for _ = 1, count do
+        -- Near-horizontal dirs, slight random upward wobble
+        local angle = math.Rand(0, math.pi * 2)
+        local dir   = Vector(
+            math.cos(angle),
+            math.sin(angle),
+            math.Rand(-0.05, 0.25)
+        )
+        dir:Normalize()
+        local speed = math.Rand(600, 2000)
+        local scale = math.Rand(14, 36)
+        SpawnBloodBlob(origin + Vector(0, 0, math.Rand(5, 40)), dir, speed, scale)
+    end
+    -- Big central impact stamp
+    for _ = 1, math.random(5, 10) do
+        local e = EffectData()
+        e:SetOrigin(origin + Vector(
+            (math.random()-0.5)*100,
+            (math.random()-0.5)*100,
+            2
+        ))
+        e:SetNormal(Vector(0, 0, 1))
+        e:SetScale(math.Rand(20, 50))
+        e:SetMagnitude(math.Rand(20, 55))
+        util.Effect("BloodImpact", e, false)
+    end
+end
+
+-- Master dispatcher — reads NW int, unpacks pulse + variant, fires once.
+local function GekkoDoBloodSplat(ent)
+    local packed = ent:GetNWInt("GekkoBloodSplat", 0)
+    if packed == 0 then return end
+
+    local pulse   = math.floor(packed / 8)
+    if pulse == (ent._lastBloodPulse or 0) then return end
+    ent._lastBloodPulse = pulse
+
+    local variant = (packed % 8) + 1   -- 1-5
+    local origin  = ent:GetPos() + Vector(0, 0, 80)
+    local fwd     = ent:GetForward()
+
+    if     variant == 1 then BloodVariant_Geyser(origin)
+    elseif variant == 2 then BloodVariant_RadialRing(origin)
+    elseif variant == 3 then BloodVariant_BurstCloud(origin)
+    elseif variant == 4 then BloodVariant_ArcShower(origin, fwd)
+    elseif variant == 5 then BloodVariant_GroundPool(ent:GetPos())
+    end
+end
+
+-- ============================================================
 --  THINK  — all effect dispatches here
+--  (ENT:Think IS called clientside in VJBase cl entities)
 -- ============================================================
 function ENT:Think()
     GekkoDoJumpDust(self)
     GekkoDoLandDust(self)
     GekkoDoMGFX(self)
+    GekkoDoBloodSplat(self)
 end
 
 -- ============================================================
