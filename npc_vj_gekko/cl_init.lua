@@ -158,14 +158,15 @@ end
 
 -- ============================================================
 --  THUMPER DUST HELPER
---  Wiki-confirmed fields: Origin, Scale, Entity  (nothing else)
+--  Wiki fields: Origin, Scale, Entity  (exactly these three)
+--  util.Effect args: name, data  (no extra args from clientside)
 -- ============================================================
 local function SpawnThumperDust(pos, ent, scale)
     local e = EffectData()
     e:SetOrigin(pos)
     e:SetScale(scale or 1)
     e:SetEntity(ent)
-    util.Effect("ThumperDust", e, false, true)
+    util.Effect("ThumperDust", e)
 end
 
 -- ============================================================
@@ -205,8 +206,8 @@ end
 
 -- ============================================================
 --  MG FIRING FX
---  RifleShellEject: wiki fields are Entity + Origin + Angles
---  ManhackSparks:   intermittent, 0.4-0.9s random interval
+--  RifleShellEject fields: Entity, Origin, Angles
+--  ManhackSparks fields:   Origin, Normal, Angles
 -- ============================================================
 local SHELL_INTERVAL = 0.09
 
@@ -225,7 +226,7 @@ local function GekkoDoMGFX(ent)
     local fwd = ang:Forward()
     local now = CurTime()
 
-    -- Rifle shell eject: rate-limited, Entity+Origin+Angles only
+    -- Shell eject: rate-limited to ~11/sec
     if not ent._nextShellT or now >= ent._nextShellT then
         ent._nextShellT = now + SHELL_INTERVAL
 
@@ -233,7 +234,7 @@ local function GekkoDoMGFX(ent)
         shellEff:SetEntity(ent)
         shellEff:SetOrigin(pos)
         shellEff:SetAngles(ang)
-        util.Effect("RifleShellEject", shellEff, false, true)
+        util.Effect("RifleShellEject", shellEff)
     end
 
     -- Manhack sparks intermittently
@@ -243,11 +244,12 @@ local function GekkoDoMGFX(ent)
         local sparkEff = EffectData()
         sparkEff:SetOrigin(pos + fwd * 8)
         sparkEff:SetNormal(fwd)
+        sparkEff:SetAngles(ang)
         sparkEff:SetEntity(ent)
         sparkEff:SetMagnitude(3)
         sparkEff:SetScale(1)
         sparkEff:SetRadius(12)
-        util.Effect("ManhackSparks", sparkEff, false, true)
+        util.Effect("ManhackSparks", sparkEff)
     end
 end
 
