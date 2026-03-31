@@ -33,13 +33,8 @@ local WMODE_MISSILE = 2
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
+-- Head zone: top 35% of collision bbox
 local HEAD_Z_FRACTION = 0.65
-
--- ============================================================
---  Blood splatter config
--- ============================================================
-local BLOOD_RANDOM_CHANCE  = 40   -- 1 in N chance per hit
-local BLOOD_DAMAGE_THRESH  = 900  -- single-hit damage that also triggers
 
 -- ============================================================
 --  Helpers
@@ -237,13 +232,9 @@ function ENT:Init()
     self._gekkoSkipAnimTick  = false
     self._crushHitTimes      = {}
 
-    -- NW vars for clientside FX
     self:SetNWBool("GekkoMGFiring",  false)
     self:SetNWInt("GekkoJumpDust",   0)
     self:SetNWInt("GekkoLandDust",   0)
-    -- Blood splatter: packed as (pulse << 8) | variant  so client gets
-    -- both a change-detect counter AND which variant to play.
-    self:SetNWInt("GekkoBloodSplat", 0)
 
     SafeInitVJTables(self)
     self:GekkoJump_Init()
@@ -304,48 +295,12 @@ function ENT:Activate()
 end
 
 -- ============================================================
---  GekkoTriggerBloodSplat
---  Picks a random variant (1-5) and packs it into the NW int
---  alongside a rolling pulse so the client always sees a change.
--- ============================================================
-function ENT:GekkoTriggerBloodSplat()
-    -- variant: 1-5  (5 distinct exaggerated presentations)
-    local variant    = math.random(1, 5)
-    local oldPacked  = self:GetNWInt("GekkoBloodSplat", 0)
-    local oldPulse   = math.floor(oldPacked / 8) % 255
-    local newPulse   = (oldPulse + 1) % 255
-    -- Avoid landing on 0 (reserved for "never fired")
-    if newPulse == 0 then newPulse = 1 end
-    -- Pack: high bits = pulse, low 3 bits = variant-1  (0-4)
-    self:SetNWInt("GekkoBloodSplat", newPulse * 8 + (variant - 1))
-end
-
--- ============================================================
 --  Damage override
+--  Positional head zone: top 35% of bbox = 1/3 damage
+--  Fallback: zero hitPos -> inflictor:GetPos() (covers interactive_debris)
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
-
-    -- ---- Blood splatter triggers --------------------------------
-    local rawDmg = dmginfo:GetDamage()
-
-    -- Threshold: single hit >= 900
-    local thresholdHit = (rawDmg >= BLOOD_DAMAGE_THRESH)
-
-    -- Random: 1 in BLOOD_RANDOM_CHANCE
-    local randomHit = (math.random(1, BLOOD_RANDOM_CHANCE) == 1)
-
-    if thresholdHit or randomHit then
-        self:GekkoTriggerBloodSplat()
-    end
-    -- -------------------------------------------------------------
-
-    -- Head zone
-    if dmginfo:GetHitGroup() == HITGROUP_HEAD then
-        dmginfo:ScaleDamage(1 / 3)
-        self.BaseClass.OnTakeDamage(self, dmginfo)
-        return
-    end
 
     local hitPos = dmginfo:GetDamagePosition()
 
