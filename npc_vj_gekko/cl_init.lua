@@ -157,6 +157,19 @@ local function GekkoUpdateHead(ent, dt)
 end
 
 -- ============================================================
+--  THUMPER DUST HELPER
+--  ThumperDust is a C++ engine effect (util.Effect), NOT a PCF
+--  particle system. Must use EffectData with Origin, Scale, Entity.
+-- ============================================================
+local function SpawnThumperDust(pos, ent, scale)
+    local e = EffectData()
+    e:SetOrigin(pos)
+    e:SetEntity(ent)
+    e:SetScale(scale or 1)
+    util.Effect("ThumperDust", e, false, true)
+end
+
+-- ============================================================
 --  JUMP DUST  —  ThumperDust pulse when Gekko launches
 --  Triggered by an incrementing NW int (GekkoJumpDust).
 --  One-shot per unique value so it fires exactly once per jump.
@@ -170,9 +183,9 @@ local function GekkoDoJumpDust(ent)
     ent._lastJumpDustPulse = pulse
 
     local pos = ent:GetPos()
-    -- Two blasts: one at feet level, one slightly elevated for a bigger cloud
-    ParticleEffect("ThumperDust", pos,                       Angle(0, 0, 0))
-    ParticleEffect("ThumperDust", pos + Vector(0, 0, 24),    Angle(0, math.random(0,360), 0))
+    -- Two blasts at launch feet, slightly varied scale
+    SpawnThumperDust(pos,                    ent, 1.2)
+    SpawnThumperDust(pos + Vector(0, 0, 20), ent, 0.8)
 end
 
 -- ============================================================
@@ -184,14 +197,15 @@ local function GekkoDoLandDust(ent)
     if pulse == ent._lastLandDustPulse then return end
     ent._lastLandDustPulse = pulse
 
-    local pos = ent:GetPos()
-    -- Three blasts spread outward for a heavier landing cloud
+    local pos   = ent:GetPos()
     local fwd   = ent:GetForward()
     local right = ent:GetRight()
-    ParticleEffect("ThumperDust", pos,                            Angle(0, 0, 0))
-    ParticleEffect("ThumperDust", pos + fwd   * 48,               Angle(0, ent:GetAngles().y,       0))
-    ParticleEffect("ThumperDust", pos - right * 48,               Angle(0, ent:GetAngles().y + 90,  0))
-    ParticleEffect("ThumperDust", pos + right * 48,               Angle(0, ent:GetAngles().y - 90,  0))
+
+    -- Four blasts: center + spread for a wide landing cloud
+    SpawnThumperDust(pos,               ent, 1.5)
+    SpawnThumperDust(pos + fwd   * 48,  ent, 1.0)
+    SpawnThumperDust(pos - right * 48,  ent, 1.0)
+    SpawnThumperDust(pos + right * 48,  ent, 1.0)
 end
 
 -- ============================================================
