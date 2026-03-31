@@ -83,14 +83,34 @@ end
 -- ============================================================
 --  Core animation update  (called from OnThink each tick)
 --
---  KEY DESIGN: we call ResetSequence every tick unconditionally
---  (not only on change) because VJBase's funcAnimThink fires
---  BEFORE OnThink and resets the sequence via MaintainIdleAnimation
---  on every single frame.  Only always-wins-last logic survives.
+--  GekkoSpeed is computed from position-delta FIRST, before any
+--  early-return, so GeckoCrouch_Update always reads a fresh value
+--  regardless of which branch executes.
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
+    -- ── Always compute position-delta speed first ────────────
+    -- GeckoCrouch_Update reads GekkoSpeed via GetNWFloat to decide
+    -- which crouch seq to play.  If we write it only at the end of
+    -- the standing-locomotion path it stays stale (0) whenever
+    -- crouch or jump causes an early return — causing cidle to lock
+    -- in right after landing.
+    local now    = CurTime()
+    local curPos = self:GetPos()
+    local vel    = 0
+
+    if self._gekkoLastPos and self._gekkoLastTime then
+        local dt = now - self._gekkoLastTime
+        if dt > 0 then
+            vel = (curPos - self._gekkoLastPos):Length() / dt
+        end
+    end
+    self._gekkoLastPos  = curPos
+    self._gekkoLastTime = now
+    self:SetNWFloat("GekkoSpeed", vel)   -- written before ANY early-return
+
+    -- ── Jump animation ───────────────────────────────────────
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
@@ -105,19 +125,6 @@ function ENT:GekkoUpdateAnimation()
     if self:GeckoCrouch_Update() then return end
 
     -- ── Standing locomotion ──────────────────────────────────
-    local now    = CurTime()
-    local curPos = self:GetPos()
-    local vel    = 0
-
-    if self._gekkoLastPos and self._gekkoLastTime then
-        local dt = now - self._gekkoLastTime
-        if dt > 0 then
-            vel = (curPos - self._gekkoLastPos):Length() / dt
-        end
-    end
-    self._gekkoLastPos  = curPos
-    self._gekkoLastTime = now
-
     local enemy = GetActiveEnemy(self)
     local dist  = 0
     if IsValid(enemy) then
@@ -168,7 +175,6 @@ function ENT:GekkoUpdateAnimation()
     self.Gekko_LastSeqIdx = targetSeq
 
     self:SetPlaybackRate(arate)
-    self:SetNWFloat("GekkoSpeed", vel)
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
