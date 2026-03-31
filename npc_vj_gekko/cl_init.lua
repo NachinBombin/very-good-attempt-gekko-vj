@@ -12,9 +12,9 @@ end
 --  JUMP STATE CONSTANTS  (mirror shared.lua)
 -- ============================================================
 local JUMP_NONE    = 0
-local JUMP_RISING  = 1
-local JUMP_FALLING = 2
-local JUMP_LAND    = 3
+local JUMP_RISING  = 1  -- luacheck: ignore
+local JUMP_FALLING = 2  -- luacheck: ignore
+local JUMP_LAND    = 3  -- luacheck: ignore
 
 -- ============================================================
 --  STOMP LEG DRIVER
@@ -129,55 +129,6 @@ local function GekkoFootShake(ent)
 end
 
 -- ============================================================
---  ARM AIM DRIVER
--- ============================================================
-local ARM_YAW_LIMIT   = 75
-local ARM_PITCH_LIMIT = 50
-local ARM_TURN_SPEED  = 120
-
-local function GekkoAimArms(ent, enemyPos, dt)
-    local myPos   = ent:GetPos() + Vector(0, 0, 120)
-    local aimDir  = (enemyPos - myPos):GetNormalized()
-    local bodyYaw = ent:GetAngles().y
-    local aimAng  = aimDir:Angle()
-
-    local clampedYaw   = math.Clamp(math.NormalizeAngle(aimAng.y - bodyYaw), -ARM_YAW_LIMIT,   ARM_YAW_LIMIT)
-    local clampedPitch = math.Clamp(-aimAng.p,                                -ARM_PITCH_LIMIT, ARM_PITCH_LIMIT)
-
-    ent._armYaw   = ent._armYaw   or 0
-    ent._armPitch = ent._armPitch or 0
-
-    local maxStep = ARM_TURN_SPEED * dt
-    ent._armYaw   = ent._armYaw   + math.Clamp(clampedYaw   - ent._armYaw,   -maxStep, maxStep)
-    ent._armPitch = ent._armPitch + math.Clamp(clampedPitch - ent._armPitch, -maxStep, maxStep)
-
-    local ay = ent._armYaw
-    local ap = ent._armPitch
-
-    SetBone(ent, "b_r_shoulder", Angle(0,        ay * 0.5,  0))
-    SetBone(ent, "b_r_upperarm", Angle(ap * 0.6, ay * 0.3,  0))
-    SetBone(ent, "b_r_forearm",  Angle(ap * 0.4, 0,         0))
-    SetBone(ent, "b_l_shoulder", Angle(0,        -ay * 0.5, 0))
-    SetBone(ent, "b_l_upperarm", Angle(ap * 0.6, -ay * 0.3, 0))
-    SetBone(ent, "b_l_forearm",  Angle(ap * 0.4, 0,         0))
-end
-
-local function GekkoResetArms(ent, dt)
-    ent._armYaw   = ent._armYaw   or 0
-    ent._armPitch = ent._armPitch or 0
-    local maxStep = ARM_TURN_SPEED * dt
-    ent._armYaw   = ent._armYaw   + math.Clamp(-ent._armYaw,   -maxStep, maxStep)
-    ent._armPitch = ent._armPitch + math.Clamp(-ent._armPitch, -maxStep, maxStep)
-
-    SetBone(ent, "b_r_shoulder", Angle(0,                   ent._armYaw * 0.5,  0))
-    SetBone(ent, "b_r_upperarm", Angle(ent._armPitch * 0.6, ent._armYaw * 0.3,  0))
-    SetBone(ent, "b_r_forearm",  Angle(ent._armPitch * 0.4, 0,                  0))
-    SetBone(ent, "b_l_shoulder", Angle(0,                   -ent._armYaw * 0.5, 0))
-    SetBone(ent, "b_l_upperarm", Angle(ent._armPitch * 0.6, -ent._armYaw * 0.3, 0))
-    SetBone(ent, "b_l_forearm",  Angle(ent._armPitch * 0.4, 0,                  0))
-end
-
--- ============================================================
 --  HEAD DRIVER  (b_spine4)  —  YAW + PITCH
 -- ============================================================
 local HEAD_LIMIT       =  50
@@ -229,34 +180,11 @@ function ENT:Draw()
     local dt = math.Clamp(t - (self._cl_lastT or t), 0, 0.05)
     self._cl_lastT = t
 
-    local enemy     = self:GetNWEntity("GekkoEnemy", NULL)
     local jumpState = self:GetGekkoJumpState()
+    local grounded  = (jumpState == JUMP_NONE)
 
-    -- grounded  = fully on the ground, no transition
-    -- frozen    = any non-NONE jump phase (RISING, FALLING, or LAND)
-    --
-    -- ALL bone manipulation is suppressed while frozen so the
-    -- jump/fall/land animation plays completely unobstructed.
-    -- Only GekkoUpdateHead continues (b_spine4 is not driven by
-    -- the jump animations and head-tracking during landing looks fine).
-    local grounded = (jumpState == JUMP_NONE)
-    local frozen   = not grounded
-
+    -- Head tracking runs always (b_spine4 is safe, jump anims don't drive it)
     GekkoUpdateHead(self, dt)
-
-    if not frozen then
-        -- Arms: aim at enemy or smoothly reset to neutral
-        if IsValid(enemy) then
-            GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
-        else
-            GekkoResetArms(self, dt)
-        end
-    else
-        -- Clear arm interpolation state so arms re-engage cleanly
-        -- on the first grounded frame after landing.
-        self._armYaw   = 0
-        self._armPitch = 0
-    end
 
     -- Footstep sounds and camera shake: grounded only
     if grounded then
