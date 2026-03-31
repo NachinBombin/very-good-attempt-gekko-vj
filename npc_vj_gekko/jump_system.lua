@@ -19,10 +19,6 @@ local JUMP_MAX_ENEMY_DIST = 19400
 
 local JUMP_RISING_TIMEOUT = 1.5
 
--- Duration the c_idle recoil anim plays after the land lockout ends.
--- c_idle/c_walk are one-shot here: played once, then normal idle resumes.
-local LAND_RECOIL_DURATION = 0.7
-
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
     local tr = util.TraceHull({
@@ -46,10 +42,8 @@ function ENT:GekkoJump_Init()
     self._seqJump             = -1
     self._seqFall             = -1
     self._seqLand             = -1
-    self._seqCIdle            = -1
     self._jumpRisingStartTime = 0
     self._jumpDidLiftoff      = false
-    self._landRecoilEnd       = 0
 
     self.JUMP_NONE    = JUMP_NONE
     self.JUMP_RISING  = JUMP_RISING
@@ -61,23 +55,18 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_Activate()
-    self._seqJump  = self:LookupSequence("jump")
-    self._seqFall  = self:LookupSequence("fall")
-    self._seqLand  = self:LookupSequence("land")
-    self._seqCIdle = self:LookupSequence("c_idle")
-    if self._seqCIdle == -1 then
-        self._seqCIdle = self:LookupSequence("c_walk")
-    end
+    self._seqJump = self:LookupSequence("jump")
+    self._seqFall = self:LookupSequence("fall")
+    self._seqLand = self:LookupSequence("land")
 
     print(string.format(
-        "[GekkoJump] Activate | jump=%d  fall=%d  land=%d  c_idle=%d",
-        self._seqJump, self._seqFall, self._seqLand, self._seqCIdle
+        "[GekkoJump] Activate | jump=%d  fall=%d  land=%d",
+        self._seqJump, self._seqFall, self._seqLand
     ))
 
-    if self._seqJump  == -1 then print("[GekkoJump] WARNING: 'jump' not found")   end
-    if self._seqFall  == -1 then print("[GekkoJump] WARNING: 'fall' not found")   end
-    if self._seqLand  == -1 then print("[GekkoJump] WARNING: 'land' not found")   end
-    if self._seqCIdle == -1 then print("[GekkoJump] WARNING: 'c_idle/c_walk' not found") end
+    if self._seqJump == -1 then print("[GekkoJump] WARNING: 'jump' not found") end
+    if self._seqFall == -1 then print("[GekkoJump] WARNING: 'fall' not found") end
+    if self._seqLand == -1 then print("[GekkoJump] WARNING: 'land' not found") end
 end
 
 -- ============================================================
@@ -133,6 +122,7 @@ end
 function ENT:GekkoJump_Execute()
     if self:GetGekkoJumpState() ~= JUMP_NONE then return end
 
+    -- Randomize force and cooldown for this jump
     local jumpForce    = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
     local jumpCooldown = math.Rand(JUMP_COOLDOWN_MIN, JUMP_COOLDOWN_MAX)
 
@@ -160,16 +150,14 @@ function ENT:GekkoJump_Execute()
     self._gekkoJustJumped     = CurTime() + 0.3
     self._jumpRisingStartTime = CurTime()
     self._jumpDidLiftoff      = false
-    self._landRecoilEnd       = 0
 
     print(string.format(
-        "[GekkoJump] EXECUTE → RISING  force=%.0f  cooldown=%.1fs",
-        jumpForce, jumpCooldown
+        "[GekkoJump] EXECUTE → RISING  seqJump=%d  force=%.0f  cooldown=%.1fs",
+        self._seqJump, jumpForce, jumpCooldown
     ))
 
-    -- RISING uses the fall animation visually (same pose for both air phases)
-    if self._seqFall ~= -1 then
-        ForceSeq(self, self._seqFall, 1.0)
+    if self._seqJump ~= -1 then
+        ForceSeq(self, self._seqJump, 1.0)
     end
 
     self:GekkoJump_StartJetFX()
@@ -221,7 +209,6 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqIdx  = -1
             self.Gekko_LastSeqName = ""
             self._gekkoSuppressActivity = now + 0.15
-            self._gekkoJustJumped       = 0
             self.VJ_CanMoveThink = true
             self._jumpCooldown = now + JUMP_COOLDOWN_MAX * 2
             self:GekkoJump_StopJetFX()
@@ -235,7 +222,6 @@ function ENT:GekkoJump_Think()
             self:SetGekkoJumpState(JUMP_FALLING)
             self:GekkoJump_StopJetFX()
             print("[GekkoJump] → FALLING  seqFall=" .. self._seqFall)
-            -- FALLING: keep/reset to fall anim (same as rising)
             if self._seqFall ~= -1 then
                 ForceSeq(self, self._seqFall, 1.0)
             end
@@ -270,51 +256,24 @@ function ENT:GekkoJump_Think()
         return
     end
 
-    if state == JUMP_LAND then
-        -- Once the land anim lockout expires, play c_idle once as a recoil,
-        -- then after LAND_RECOIL_DURATION release to normal idle.
-        if now > self:GetGekkoJumpTimer() then
+    if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
+        self:SetGekkoJumpState(JUMP_NONE)
+        self:SetGekkoJumpTimer(0)
+        self.Gekko_LastSeqIdx  = -1
+        self.Gekko_LastSeqName = ""
+        self._gekkoSuppressActivity = now + 0.15
+        if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
+            self:ResetSequence(self.GekkoSeq_Idle)
+            self:SetPlaybackRate(1.0)
+            self.Gekko_LastSeqIdx  = self.GekkoSeq_Idle
+            self.Gekko_LastSeqName = "idle"
+        end
+        self.VJ_CanMoveThink = true
+        print("[GekkoJump] → NONE (lockout done)")
 
-            -- First entry into post-lockout: fire the c_idle recoil anim
-            if self._landRecoilEnd == 0 then
-                self._landRecoilEnd = now + LAND_RECOIL_DURATION
-                if self._seqCIdle ~= -1 then
-                    self:ResetSequence(self._seqCIdle)
-                    self:SetCycle(0)
-                    self:SetPlaybackRate(1.0)
-                    self.Gekko_LastSeqIdx  = self._seqCIdle
-                    self.Gekko_LastSeqName = "land_recoil"
-                    self._gekkoSuppressActivity = now + LAND_RECOIL_DURATION
-                    print("[GekkoJump] → LAND RECOIL (c_idle one-shot)")
-                else
-                    -- No c_idle found, skip straight to idle
-                    self._landRecoilEnd = now
-                end
-            end
-
-            -- Once the recoil anim duration has elapsed, release fully
-            if now >= self._landRecoilEnd then
-                self:SetGekkoJumpState(JUMP_NONE)
-                self:SetGekkoJumpTimer(0)
-                self._landRecoilEnd    = 0
-                self.Gekko_LastSeqIdx  = -1
-                self.Gekko_LastSeqName = ""
-                self._gekkoSuppressActivity = now + 0.15
-                self._gekkoJustJumped       = 0
-                if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
-                    self:ResetSequence(self.GekkoSeq_Idle)
-                    self:SetPlaybackRate(1.0)
-                    self.Gekko_LastSeqIdx  = self.GekkoSeq_Idle
-                    self.Gekko_LastSeqName = "idle"
-                end
-                self.VJ_CanMoveThink = true
-                print("[GekkoJump] → NONE (recoil done)")
-
-                if self._gekkoCrouching then
-                    self._gekkoCrouchJustEntered = true
-                    print("[GekkoJump] → crouch active after landing — signalling AnimApply")
-                end
-            end
+        if self._gekkoCrouching then
+            self._gekkoCrouchJustEntered = true
+            print("[GekkoJump] → crouch active after landing — signalling AnimApply")
         end
     end
 end
