@@ -158,9 +158,9 @@ end
 
 -- ============================================================
 --  THUMPER DUST  —  Origin, Scale, Entity
+--  NOTE: util.Effect must be called from Draw(), not Think().
+--        VJBase clientside entities never call ENT:Think().
 -- ============================================================
-local ATT_MACHINEGUN = 3
-
 local function GekkoDoJumpDust(ent)
     local pulse = ent:GetNWInt("GekkoJumpDust", 0)
     if pulse == 0 then return end
@@ -214,7 +214,8 @@ end
 --  RifleShellEject — Entity, Origin, Angles
 --  ManhackSparks   — Origin, Normal, Angles (intermittent)
 -- ============================================================
-local SHELL_INTERVAL = 0.09
+local ATT_MACHINEGUN  = 3
+local SHELL_INTERVAL  = 0.09
 
 local function GekkoDoMGFX(ent)
     if not ent:GetNWBool("GekkoMGFiring", false) then
@@ -257,16 +258,10 @@ local function GekkoDoMGFX(ent)
 end
 
 -- ============================================================
---  THINK  — effect dispatches run here, not in Draw
--- ============================================================
-function ENT:Think()
-    GekkoDoJumpDust(self)
-    GekkoDoLandDust(self)
-    GekkoDoMGFX(self)
-end
-
--- ============================================================
 --  DRAW
+--  All clientside effect dispatches live here.
+--  ENT:Think() is NOT called on clientside VJBase entities —
+--  Draw() is the only per-frame hook available to us.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -281,6 +276,11 @@ function ENT:Draw()
 
     local jumpState = self:GetGekkoJumpState()
     local landing   = (jumpState == JUMP_LAND)
+
+    -- Effect dispatches (must run every frame to catch NW changes)
+    GekkoDoJumpDust(self)
+    GekkoDoLandDust(self)
+    GekkoDoMGFX(self)
 
     if not landing then
         GekkoUpdateHead(self, dt)
