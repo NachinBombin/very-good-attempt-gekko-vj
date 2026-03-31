@@ -19,6 +19,10 @@ local JUMP_MAX_ENEMY_DIST = 19400
 
 local JUMP_RISING_TIMEOUT = 1.5
 
+-- Extra headroom on top of JUMP_LAND_LOCKOUT so VJ cannot
+-- sneak a sequence reset in on the very last frame of the window.
+local JUMP_LAND_SUPPRESS_PAD = 0.3
+
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
     local tr = util.TraceHull({
@@ -107,22 +111,29 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
-local function ForceSeq(ent, seq, rate)
+-- suppressDur: how long (seconds) to block VJ from touching the sequence.
+--   jump / fall  →  0.5  (rolling, renewed every Think tick anyway)
+--   land         →  JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD
+--                   so suppression outlives the lockout timer
+local function ForceSeq(ent, seq, rate, suppressDur, seqLabel)
     ent:ResetSequence(seq)
     ent:SetCycle(0)
     ent:SetPlaybackRate(rate)
-    ent.Gekko_LastSeqIdx  = seq
-    ent.Gekko_LastSeqName = "jump_phase"
-    ent._gekkoSuppressActivity = CurTime() + 0.5
-    ent.VJ_IsMoving      = false
-    ent.VJ_CanMoveThink  = false
+    ent.Gekko_LastSeqIdx   = seq
+    ent.Gekko_LastSeqName  = seqLabel or "jump_phase"
+    ent._gekkoSuppressActivity = CurTime() + suppressDur
+    ent.VJ_IsMoving        = false
+    ent.VJ_CanMoveThink    = false
+    print(string.format(
+        "[GekkoJump] ForceSeq seq=%d  label=%s  suppress=%.2fs",
+        seq, seqLabel or "jump_phase", suppressDur
+    ))
 end
 
 -- ============================================================
 function ENT:GekkoJump_Execute()
     if self:GetGekkoJumpState() ~= JUMP_NONE then return end
 
-    -- Randomize force and cooldown for this jump
     local jumpForce    = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
     local jumpCooldown = math.Rand(JUMP_COOLDOWN_MIN, JUMP_COOLDOWN_MAX)
 
@@ -157,7 +168,7 @@ function ENT:GekkoJump_Execute()
     ))
 
     if self._seqJump ~= -1 then
-        ForceSeq(self, self._seqJump, 1.0)
+        ForceSeq(self, self._seqJump, 1.0, 0.5, "jump")
     end
 
     self:GekkoJump_StartJetFX()
@@ -172,8 +183,10 @@ function ENT:GekkoJump_Think()
     local grounded = GekkoIsGrounded(self)
     local now      = CurTime()
 
+    -- While airborne, keep rolling the suppression window so it never
+    -- lapses mid-flight. Use a generous 1.0s rolling window.
     if state == JUMP_RISING or state == JUMP_FALLING then
-        self._gekkoSuppressActivity = now + 0.5
+        self._gekkoSuppressActivity = now + 1.0
         self.VJ_IsMoving     = false
         self.VJ_CanMoveThink = false
 
@@ -223,7 +236,7 @@ function ENT:GekkoJump_Think()
             self:GekkoJump_StopJetFX()
             print("[GekkoJump] → FALLING  seqFall=" .. self._seqFall)
             if self._seqFall ~= -1 then
-                ForceSeq(self, self._seqFall, 1.0)
+                ForceSeq(self, self._seqFall, 1.0, 0.5, "fall")
             end
             return
         end
@@ -250,7 +263,10 @@ function ENT:GekkoJump_Think()
         self:SetAngles(Angle(0, a.y, 0))
         print("[GekkoJump] → LAND  seqLand=" .. self._seqLand)
         if self._seqLand ~= -1 then
-            ForceSeq(self, self._seqLand, 1.0)
+            -- Suppress for the full lockout window + padding so nothing
+            -- overwrites the land animation before it finishes.
+            ForceSeq(self, self._seqLand, 1.0,
+                JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD, "land")
         end
         self:GekkoJump_LandImpact()
         return
