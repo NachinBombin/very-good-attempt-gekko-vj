@@ -6,6 +6,7 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("jump_system.lua")
 include("crouch_system.lua")
+include("crush_system.lua")
 
 -- ============================================================
 --  Constants
@@ -50,22 +51,13 @@ local function SafeResetSequence(ent, seq)
 end
 
 -- ============================================================
---  AnimApply — THE real VJ Base intercept.
---
---  VJ Base calls ENT:AnimApply() every think tick right before
---  it would touch the sequence.  Returning true tells it
---  "I handled animation, leave it alone."
---
---  Previous VJ_OnShouldResetSequence / VJ_OnAnimationUpdate
---  were not real VJ hooks and did nothing.
+--  AnimApply
 -- ============================================================
 function ENT:AnimApply()
-    -- Block VJ while our suppress timer is active
     if CurTime() < (self._gekkoSuppressActivity or 0) then
         return true
     end
 
-    -- Block VJ during any airborne or landing phase
     local js = self:GetGekkoJumpState()
     if js == self.JUMP_RISING  or
        js == self.JUMP_FALLING or
@@ -73,7 +65,7 @@ function ENT:AnimApply()
         return true
     end
 
-    return false  -- let VJ handle it normally when we are not jumping
+    return false
 end
 
 -- ============================================================
@@ -129,9 +121,6 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
 
-    -- Block our own update while suppressed or airborne/landing.
-    -- Also skip the tick if we *just* cleared JUMP_NONE this frame
-    -- (_gekkoSkipAnimTick is set by GekkoJump_Think on the transition).
     if now < (self._gekkoSuppressActivity or 0) then return end
     if self._gekkoSkipAnimTick then
         self._gekkoSkipAnimTick = false
@@ -238,6 +227,7 @@ function ENT:Init()
     self._gekkoLastTime      = CurTime() - 0.1
     self._gekkoSuppressActivity = 0
     self._gekkoSkipAnimTick  = false
+    self._crushHitTimes      = {}   -- walk crush per-entity cooldown table
 
     SafeInitVJTables(self)
     self:GekkoJump_Init()
@@ -320,6 +310,7 @@ function ENT:OnThink()
     end
 
     self:GekkoUpdateAnimation()
+    self:GeckoCrush_Think()
 
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)

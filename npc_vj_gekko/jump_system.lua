@@ -170,6 +170,9 @@ function ENT:GekkoJump_Execute()
         ForceSeq(self, self._seqJump, 1.0, 0.5, "jump")
     end
 
+    -- Crush blast at launch origin
+    self:GeckoCrush_LaunchBlast()
+
     self:GekkoJump_StartJetFX()
 end
 
@@ -368,4 +371,7 @@ function ENT:GekkoJump_LandImpact()
     util.Effect("dust", eff)
 
     ParticleEffect("impact_dirt_cheap", shakePos, Angle(0, 0, 0))
+
+    -- Crush blast at landing site
+    self:GeckoCrush_LandBlast()
 end
