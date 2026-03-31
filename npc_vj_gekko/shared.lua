@@ -17,7 +17,7 @@ ENT.Model = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
 
 ENT.VJ_NPC_Class = {"CLASS_COMBINE"}
 ENT.HullType     = HULL_LARGE
-ENT.StartHealth  = 3000
+ENT.StartHealth  = 3900
 
 ENT.StopMovingWhileAttacking = false
 
@@ -38,7 +38,7 @@ ENT.RunSpeed  = 184
 ENT.VJ_RunToEnemy         = false
 ENT.VJ_RunToEnemyDistance = 0
 
-ENT.TurningSpeed  = 100
+ENT.TurningSpeed  = 5
 ENT.SightDistance = 48000
 ENT.EnemyTimeout  = 160
 
@@ -76,7 +76,7 @@ ENT.HasMeleeAttack = false
 ENT.HasRangeAttack                        = true
 ENT.RangeAttackProjectiles                = false
 ENT.RangeAttackMinDistance                = 0
-ENT.RangeAttackMaxDistance                = 16000
+ENT.RangeAttackMaxDistance                = 25000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
 ENT.NextRangeAttackTime                   = 4
 ENT.NextAnyAttackTime_Range               = 2

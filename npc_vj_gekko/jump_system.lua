@@ -19,13 +19,6 @@ local JUMP_MAX_ENEMY_DIST = 19400
 
 local JUMP_RISING_TIMEOUT = 1.5
 
--- Hull sizes (must match crouch_system.lua constants)
-local HULL_HALF_W    = 64
-local HULL_STAND_H   = 200
-local HULL_CROUCH_H  = 130
-
-local STOMP_DURATION = 1.5  -- seconds the stomp leg FX plays after landing
-
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
     local tr = util.TraceHull({
@@ -129,15 +122,7 @@ end
 function ENT:GekkoJump_Execute()
     if self:GetGekkoJumpState() ~= JUMP_NONE then return end
 
-    -- If we were crouching, restore the standing hull before launch
-    -- so the NPC doesn't fly through the world with a 130-unit hull.
-    if self._gekkoCrouching then
-        self:SetCollisionBounds(
-            Vector(-HULL_HALF_W, -HULL_HALF_W, 0),
-            Vector( HULL_HALF_W,  HULL_HALF_W, HULL_STAND_H)
-        )
-    end
-
+    -- Randomize force and cooldown for this jump
     local jumpForce    = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
     local jumpCooldown = math.Rand(JUMP_COOLDOWN_MIN, JUMP_COOLDOWN_MAX)
 
@@ -224,7 +209,6 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqIdx  = -1
             self.Gekko_LastSeqName = ""
             self._gekkoSuppressActivity = now + 0.15
-            self._gekkoJustJumped       = 0
             self.VJ_CanMoveThink = true
             self._jumpCooldown = now + JUMP_COOLDOWN_MAX * 2
             self:GekkoJump_StopJetFX()
@@ -278,7 +262,6 @@ function ENT:GekkoJump_Think()
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
         self._gekkoSuppressActivity = now + 0.15
-        self._gekkoJustJumped       = 0
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
             self:ResetSequence(self.GekkoSeq_Idle)
             self:SetPlaybackRate(1.0)
@@ -326,9 +309,6 @@ end
 -- ============================================================
 function ENT:GekkoJump_LandImpact()
     local shakePos = self:GetPos()
-
-    -- Trigger stomp leg animation on the client for STOMP_DURATION seconds
-    self:SetNWFloat("GekkoStompEnd", CurTime() + STOMP_DURATION)
 
     util.ScreenShake(shakePos, 12, 8, 0.6, 700)
     self:EmitSound("physics/metal/metal_box_impact_hard3.wav", 100, 80)
