@@ -195,6 +195,20 @@ function ENT:GekkoJump_Think()
         end
     end
 
+    -- During the landing animation continuously kill XY (forward) velocity
+    -- every tick. The one-shot SetVelocity on transition is not enough because
+    -- MOVETYPE_STEP lets the NPC scheduler re-apply movement on the next tick.
+    -- Z is left alone so engine gravity / ground settle works normally.
+    if state == JUMP_LAND then
+        local cv = self:GetVelocity()
+        if math.abs(cv.x) > 0.5 or math.abs(cv.y) > 0.5 then
+            self:SetVelocity(Vector(0, 0, cv.z))
+        end
+        self.VJ_IsMoving     = false
+        self.VJ_CanMoveThink = false
+        self._gekkoSuppressActivity = now + 0.2
+    end
+
     if not self._jumpThinkPrint or now > self._jumpThinkPrint then
         print(string.format(
             "[GekkoJump] Think | state=%d  velZ=%.1f  grounded=%s",
