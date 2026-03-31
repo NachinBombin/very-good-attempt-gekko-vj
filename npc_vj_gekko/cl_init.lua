@@ -9,44 +9,13 @@ local function SetBone(ent, name, ang)
 end
 
 -- ============================================================
---  STOMP LEG DRIVER
---  Only runs when the NW jump state says the gekko is on the
---  ground (JUMP_NONE or JUMP_LAND).  During RISING / FALLING
---  the model's own jump animation drives the legs.
+--  FOOTSTEP SYNC
 -- ============================================================
 local JUMP_NONE    = 0
 local JUMP_RISING  = 1
 local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
-local function GekkoStompLegs(ent)
-    local t      = CurTime()
-    local freq   = 14
-    local amp    = 55
-    local phaseR = t * freq
-    local phaseL = t * freq + math.pi
-
-    SetBone(ent, "b_r_thigh",      Angle(math.sin(phaseR)         * amp,        0, 0))
-    SetBone(ent, "b_r_upperleg",   Angle(math.sin(phaseR + 0.4)   * amp * 0.7,  0, 0))
-    SetBone(ent, "b_r_calf",       Angle(math.sin(phaseR + 0.9)   * amp * 0.5,  0, 0))
-    SetBone(ent, "b_r_foot",       Angle(math.sin(phaseR + 1.2)   * -amp * 0.4, 0, 0))
-    SetBone(ent, "b_r_toe",        Angle(math.sin(phaseR + 1.5)   * -amp * 0.3, 0, 0))
-
-    SetBone(ent, "b_l_thigh",      Angle(math.sin(phaseL)         * amp,        0, 0))
-    SetBone(ent, "b_l_upperleg",   Angle(math.sin(phaseL + 0.4)   * amp * 0.7,  0, 0))
-    SetBone(ent, "b_l_calf",       Angle(math.sin(phaseL + 0.9)   * amp * 0.5,  0, 0))
-    SetBone(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
-    SetBone(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
-
-    local slam = math.abs(math.sin(t * freq * 0.5)) * 12
-    SetBone(ent, "b_pelvis",       Angle(slam, 0, 0))
-    SetBone(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
-    SetBone(ent, "b_l_hippiston1", Angle(math.sin(phaseL) * amp * 0.4, 0, 0))
-end
-
--- ============================================================
---  FOOTSTEP SYNC
--- ============================================================
 local STEP_SOUNDS = {
     "physics/metal/metal_box_impact_hard1.wav",
     "physics/metal/metal_box_impact_hard2.wav",
@@ -173,36 +142,14 @@ end
 
 -- ============================================================
 --  CAMERA SHAKE
---
---  Triggers a proximity-based screen shake while the Gekko is
---  moving nearby.  Two tiers:
---
---    NEAR  (< SHAKE_NEAR_DIST  units) — strong stomping pulse,
---          locked to the footstep cycle so it feels physical.
---
---    FAR   (< SHAKE_FAR_DIST units)  — lighter continuous
---          low-frequency rumble, fades linearly with distance.
---
---  Conditions that must both be true before ANY shake fires:
---    1. GekkoSpeed NWFloat > SHAKE_MIN_SPEED
---    2. Player is not airborne (stays grounded — feels heavier)
---
---  util.ScreenShake signature:
---    util.ScreenShake( pos, amplitude, frequency, duration, radius )
---  We call it from the entity's position with a radius of 0 so
---  only the local player's client is affected per-entity.
 -- ============================================================
-local SHAKE_NEAR_DIST  = 300   -- units: strong stomp pulse zone
-local SHAKE_FAR_DIST   = 700   -- units: outer rumble zone
-local SHAKE_MIN_SPEED  = 30    -- units/s: below this → no shake
-
--- Near-zone stomp pulse settings
-local SHAKE_NEAR_AMP   = 3.5   -- amplitude at ground zero
-local SHAKE_NEAR_FREQ  = 18    -- frequency (twitchy / metallic)
-local SHAKE_NEAR_DUR   = 0.12  -- duration per pulse
-
--- Far-zone rumble settings
-local SHAKE_FAR_AMP    = 1.0   -- max amplitude at FAR inner edge
+local SHAKE_NEAR_DIST  = 300
+local SHAKE_FAR_DIST   = 700
+local SHAKE_MIN_SPEED  = 30
+local SHAKE_NEAR_AMP   = 3.5
+local SHAKE_NEAR_FREQ  = 18
+local SHAKE_NEAR_DUR   = 0.12
+local SHAKE_FAR_AMP    = 1.0
 local SHAKE_FAR_FREQ   = 8
 local SHAKE_FAR_DUR    = 0.08
 
@@ -210,7 +157,6 @@ local function GekkoDoShake(ent)
     local ply = LocalPlayer()
     if not IsValid(ply) then return end
 
-    -- Only shake when the Gekko is actually moving
     local speed = ent:GetNWFloat("GekkoSpeed", 0)
     if speed < SHAKE_MIN_SPEED then return end
 
@@ -221,9 +167,7 @@ local function GekkoDoShake(ent)
     local jumpState = ent:GetGekkoJumpState()
     local airborne  = (jumpState == JUMP_RISING or jumpState == JUMP_FALLING)
 
-    -- ---- NEAR ZONE: stomp-synced pulses ----
     if dist < SHAKE_NEAR_DIST and not airborne then
-        -- Replicate the footstep cycle timing from GekkoSyncFootsteps
         local cycleHz = (speed > 160) and 1.1 or 0.71
         local cycleT  = t * cycleHz * 2 * math.pi
         local sinR    = math.sin(cycleT)
@@ -234,27 +178,19 @@ local function GekkoDoShake(ent)
         ent._shakePhaseR = sinR
         ent._shakePhaseL = sinL
 
-        -- Fire a pulse on each foot-plant (zero-crossing, positive→negative)
         if (prevR > 0 and sinR <= 0) or (prevL > 0 and sinL <= 0) then
-            -- Scale amplitude: full at distance 0, half at SHAKE_NEAR_DIST
             local alpha = 1 - (dist / SHAKE_NEAR_DIST)
-            local amp   = SHAKE_NEAR_AMP * alpha
-
-            util.ScreenShake(ent:GetPos(), amp, SHAKE_NEAR_FREQ, SHAKE_NEAR_DUR, 0)
+            util.ScreenShake(ent:GetPos(), SHAKE_NEAR_AMP * alpha, SHAKE_NEAR_FREQ, SHAKE_NEAR_DUR, 0)
         end
-        return  -- near zone handled; skip the far rumble this frame
+        return
     end
 
-    -- ---- FAR ZONE: continuous low rumble ----
-    -- Rate-limit to one shake per SHAKE_FAR_DUR seconds
     local nextFarShake = ent._nextFarShake or 0
     if t < nextFarShake then return end
     ent._nextFarShake = t + SHAKE_FAR_DUR
 
-    -- Linear fade from FAR_AMP at SHAKE_NEAR_DIST to 0 at SHAKE_FAR_DIST
     local alpha = 1 - ((dist - SHAKE_NEAR_DIST) / (SHAKE_FAR_DIST - SHAKE_NEAR_DIST))
     alpha = math.Clamp(alpha, 0, 1)
-
     util.ScreenShake(ent:GetPos(), SHAKE_FAR_AMP * alpha, SHAKE_FAR_FREQ, SHAKE_FAR_DUR, 0)
 end
 
@@ -276,9 +212,6 @@ function ENT:Draw()
 
     GekkoUpdateHead(self, dt)
 
-    -- GetGekkoJumpState() is the getter generated by:
-    --   self:NetworkVar("Int", 5, "GekkoJumpState") in shared.lua
-    -- Do NOT use GetNWInt — that is a completely separate system.
     local jumpState = self:GetGekkoJumpState()
     local airborne  = (jumpState == JUMP_RISING or jumpState == JUMP_FALLING)
 
@@ -292,13 +225,10 @@ function ENT:Draw()
 
     GekkoSyncFootsteps(self)
 
-    -- Stomp legs only when grounded and moving
-    local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
-    if t < stompEnd and not airborne then
-        GekkoStompLegs(self)
-    end
+    -- GekkoStompLegs removed: ManipulateBoneAngles on leg bones conflicts
+    -- with the model's own walk/run/land animation skeleton. The model
+    -- handles leg movement correctly on its own.
 
-    -- Camera shake (proximity + movement check inside)
     GekkoDoShake(self)
 
     self:DrawModel()
