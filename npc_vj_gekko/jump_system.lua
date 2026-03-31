@@ -18,10 +18,7 @@ local JUMP_MIN_ENEMY_DIST = 600
 local JUMP_MAX_ENEMY_DIST = 19400
 
 local JUMP_RISING_TIMEOUT = 1.5
-
--- Land suppress: long enough to cover the full lockout + a generous pad
--- so VJ Base / GekkoUpdateAnimation cannot sneak a reset in.
-local JUMP_LAND_SUPPRESS_PAD = 1.1   -- was 0.3 — now total = 1.4 + 1.1 = 2.5s
+local JUMP_LAND_SUPPRESS_PAD = 1.1
 
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
@@ -67,10 +64,6 @@ function ENT:GekkoJump_Activate()
         "[GekkoJump] Activate | jump=%d  fall=%d  land=%d",
         self._seqJump, self._seqFall, self._seqLand
     ))
-
-    if self._seqJump == -1 then print("[GekkoJump] WARNING: 'jump' not found") end
-    if self._seqFall == -1 then print("[GekkoJump] WARNING: 'fall' not found") end
-    if self._seqLand == -1 then print("[GekkoJump] WARNING: 'land' not found") end
 end
 
 -- ============================================================
@@ -78,20 +71,14 @@ function ENT:GekkoJump_ScanAttachments()
     self._jetAttachments = {}
 
     local numAtt = self:GetNumAttachments()
-    if not numAtt then
-        print("[GekkoJump] ScanAttachments: GetNumAttachments returned nil, skipping")
-        return
-    end
+    if not numAtt then return end
 
     for i = 1, numAtt do
         local name = self:GetAttachmentName(i)
         if name and string.find(name, "MainJet") then
             self._jetAttachments[#self._jetAttachments + 1] = i
-            print("[GekkoJump] Found jet attachment: " .. i .. " = " .. name)
         end
     end
-
-    print("[GekkoJump] Attachment scan complete — " .. #self._jetAttachments .. " jet(s) found")
 end
 
 -- ============================================================
@@ -111,9 +98,6 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
--- Force a sequence and lock out VJ + GekkoUpdateAnimation.
---   suppressDur: seconds to hold the lock.
---   seqLabel:    debug name.
 local function ForceSeq(ent, seq, rate, suppressDur, seqLabel)
     ent:ResetSequence(seq)
     ent:SetCycle(0)
@@ -123,10 +107,6 @@ local function ForceSeq(ent, seq, rate, suppressDur, seqLabel)
     ent._gekkoSuppressActivity = CurTime() + suppressDur
     ent.VJ_IsMoving        = false
     ent.VJ_CanMoveThink    = false
-    print(string.format(
-        "[GekkoJump] ForceSeq seq=%d  label=%s  suppress=%.2fs",
-        seq, seqLabel or "jump_phase", suppressDur
-    ))
 end
 
 -- ============================================================
@@ -161,17 +141,15 @@ function ENT:GekkoJump_Execute()
     self._jumpRisingStartTime = CurTime()
     self._jumpDidLiftoff      = false
 
-    print(string.format(
-        "[GekkoJump] EXECUTE → RISING  seqJump=%d  force=%.0f  cooldown=%.1fs",
-        self._seqJump, jumpForce, jumpCooldown
-    ))
-
     if self._seqJump ~= -1 then
         ForceSeq(self, self._seqJump, 1.0, 0.5, "jump")
     end
 
     -- Crush blast at launch origin
     self:GeckoCrush_LaunchBlast()
+
+    -- Signal clientside jump dust
+    self:SetNWInt("GekkoJumpDust", (self:GetNWInt("GekkoJumpDust", 0) + 1) % 255)
 
     self:GekkoJump_StartJetFX()
 end
@@ -185,8 +163,6 @@ function ENT:GekkoJump_Think()
     local grounded = GekkoIsGrounded(self)
     local now      = CurTime()
 
-    -- While airborne, keep rolling the suppression window so it never
-    -- lapses mid-flight.
     if state == JUMP_RISING or state == JUMP_FALLING then
         self._gekkoSuppressActivity = now + 1.0
         self.VJ_IsMoving     = false
@@ -198,10 +174,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- During the landing animation continuously kill XY (forward) velocity
-    -- every tick. The one-shot SetVelocity on transition is not enough because
-    -- MOVETYPE_STEP lets the NPC scheduler re-apply movement on the next tick.
-    -- Z is left alone so engine gravity / ground settle works normally.
     if state == JUMP_LAND then
         local cv = self:GetVelocity()
         if math.abs(cv.x) > 0.5 or math.abs(cv.y) > 0.5 then
@@ -227,10 +199,6 @@ function ENT:GekkoJump_Think()
 
         if not self._jumpDidLiftoff and
            (now - self._jumpRisingStartTime) > JUMP_RISING_TIMEOUT then
-            print(string.format(
-                "[GekkoJump] RISING TIMEOUT (%.1fs, velZ=%.1f) — aborting jump",
-                now - self._jumpRisingStartTime, vel.z
-            ))
             self:SetGekkoJumpState(JUMP_NONE)
             self:SetGekkoJumpTimer(0)
             self:SetMoveType(MOVETYPE_STEP)
@@ -247,10 +215,6 @@ function ENT:GekkoJump_Think()
             return
         end
 
-        -- Mirror the falling hold logic exactly:
-        -- re-assert the sequence every tick if VJ stole it,
-        -- and freeze at the peak frame (cycle > 0.90 → rewind to 0.5)
-        -- so the airborne pose holds for the full duration of RISING.
         if self._seqJump ~= -1 then
             if self:GetSequence() ~= self._seqJump then
                 self:ResetSequence(self._seqJump)
@@ -264,7 +228,6 @@ function ENT:GekkoJump_Think()
         if vel.z < 0 then
             self:SetGekkoJumpState(JUMP_FALLING)
             self:GekkoJump_StopJetFX()
-            print("[GekkoJump] → FALLING  seqFall=" .. self._seqFall)
             if self._seqFall ~= -1 then
                 ForceSeq(self, self._seqFall, 1.0, 0.5, "fall")
             end
@@ -291,10 +254,7 @@ function ENT:GekkoJump_Think()
         self:SetVelocity(Vector(0, 0, 0))
         local a = self:GetAngles()
         self:SetAngles(Angle(0, a.y, 0))
-        print("[GekkoJump] → LAND  seqLand=" .. self._seqLand)
         if self._seqLand ~= -1 then
-            -- Full lockout + generous pad — animation must finish before
-            -- AnimApply or GekkoUpdateAnimation can touch the sequence.
             ForceSeq(self, self._seqLand, 1.0,
                 JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD, "land")
         end
@@ -307,8 +267,6 @@ function ENT:GekkoJump_Think()
         self:SetGekkoJumpTimer(0)
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
-        -- Short suppress so AnimApply stays blocked one extra tick,
-        -- and flag GekkoUpdateAnimation to also skip this exact tick.
         self._gekkoSuppressActivity = now + 0.08
         self._gekkoSkipAnimTick     = true
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
@@ -318,11 +276,9 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqName = "idle"
         end
         self.VJ_CanMoveThink = true
-        print("[GekkoJump] → NONE (lockout done)")
 
         if self._gekkoCrouching then
             self._gekkoCrouchJustEntered = true
-            print("[GekkoJump] → crouch active after landing — signalling AnimApply")
         end
     end
 end
@@ -371,6 +327,9 @@ function ENT:GekkoJump_LandImpact()
     util.Effect("dust", eff)
 
     ParticleEffect("impact_dirt_cheap", shakePos, Angle(0, 0, 0))
+
+    -- Signal clientside land dust
+    self:SetNWInt("GekkoLandDust", (self:GetNWInt("GekkoLandDust", 0) + 1) % 255)
 
     -- Crush blast at landing site
     self:GeckoCrush_LandBlast()

@@ -18,7 +18,6 @@ local JUMP_LAND    = 3
 
 -- ============================================================
 --  STOMP LEG DRIVER
---  Only runs when fully grounded (JUMP_NONE) AND stompEnd active.
 -- ============================================================
 local function GekkoStompLegs(ent)
     local t      = CurTime()
@@ -117,21 +116,12 @@ local function GekkoFootShake(ent)
     if not footplant then return end
 
     local alpha = 1 - (dist / SHAKE_FAR_DIST)
-
-    local amp
-    if dist < SHAKE_NEAR_DIST then
-        amp = 12 * alpha
-    else
-        amp = 5  * alpha
-    end
-
+    local amp   = (dist < SHAKE_NEAR_DIST) and (12 * alpha) or (5 * alpha)
     util.ScreenShake(ent:GetPos(), amp, 14, 0.18, SHAKE_FAR_DIST)
 end
 
 -- ============================================================
 --  HEAD DRIVER  (b_spine4)  —  YAW + PITCH
---  Runs during RISING, FALLING, and NONE.
---  Suppressed only during JUMP_LAND so the landing anim is clean.
 -- ============================================================
 local HEAD_LIMIT       =  50
 local HEAD_PITCH_UP    = -60
@@ -145,27 +135,106 @@ local function GekkoUpdateHead(ent, dt)
     ent._headYaw   = ent._headYaw   or 0
     ent._headPitch = ent._headPitch or 0
 
-    local enemy     = ent:GetNWEntity("GekkoEnemy", NULL)
-    local targetYaw = 0
+    local enemy       = ent:GetNWEntity("GekkoEnemy", NULL)
+    local targetYaw   = 0
     local targetPitch = 0
 
     if IsValid(enemy) then
         local boneMatrix = ent:GetBoneMatrix(bone)
         local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
         local toEnemy    = (enemy:GetPos() + Vector(0, 0, 40) - pos):Angle()
-        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,      HEAD_LIMIT)
-        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP,    HEAD_PITCH_DOWN)
+        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,     HEAD_LIMIT)
+        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP,   HEAD_PITCH_DOWN)
     end
 
-    local maxStep    = HEAD_SPEED * dt
-
-    local yawDiff    = math.NormalizeAngle(targetYaw - ent._headYaw)
-    ent._headYaw     = math.Clamp(ent._headYaw   + math.Clamp(yawDiff,                  -maxStep, maxStep), -HEAD_LIMIT,     HEAD_LIMIT)
-
-    local pitchDiff  = targetPitch - ent._headPitch
-    ent._headPitch   = math.Clamp(ent._headPitch + math.Clamp(pitchDiff,                -maxStep, maxStep),  HEAD_PITCH_UP,   HEAD_PITCH_DOWN)
+    local maxStep   = HEAD_SPEED * dt
+    local yawDiff   = math.NormalizeAngle(targetYaw - ent._headYaw)
+    ent._headYaw    = math.Clamp(ent._headYaw   + math.Clamp(yawDiff,               -maxStep, maxStep), -HEAD_LIMIT,    HEAD_LIMIT)
+    local pitchDiff = targetPitch - ent._headPitch
+    ent._headPitch  = math.Clamp(ent._headPitch + math.Clamp(pitchDiff,             -maxStep, maxStep),  HEAD_PITCH_UP,  HEAD_PITCH_DOWN)
 
     ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, ent._headPitch), false)
+end
+
+-- ============================================================
+--  JUMP DUST  —  ThumperDust pulse when Gekko launches
+--  Triggered by an incrementing NW int (GekkoJumpDust).
+--  One-shot per unique value so it fires exactly once per jump.
+-- ============================================================
+local ATT_MACHINEGUN = 3   -- mirror init.lua constant (client-safe)
+
+local function GekkoDoJumpDust(ent)
+    local pulse = ent:GetNWInt("GekkoJumpDust", 0)
+    if pulse == 0 then return end
+    if pulse == ent._lastJumpDustPulse then return end
+    ent._lastJumpDustPulse = pulse
+
+    local pos = ent:GetPos()
+    -- Two blasts: one at feet level, one slightly elevated for a bigger cloud
+    ParticleEffect("ThumperDust", pos,                       Angle(0, 0, 0))
+    ParticleEffect("ThumperDust", pos + Vector(0, 0, 24),    Angle(0, math.random(0,360), 0))
+end
+
+-- ============================================================
+--  LAND DUST  —  ThumperDust pulse on landing impact
+-- ============================================================
+local function GekkoDoLandDust(ent)
+    local pulse = ent:GetNWInt("GekkoLandDust", 0)
+    if pulse == 0 then return end
+    if pulse == ent._lastLandDustPulse then return end
+    ent._lastLandDustPulse = pulse
+
+    local pos = ent:GetPos()
+    -- Three blasts spread outward for a heavier landing cloud
+    local fwd   = ent:GetForward()
+    local right = ent:GetRight()
+    ParticleEffect("ThumperDust", pos,                            Angle(0, 0, 0))
+    ParticleEffect("ThumperDust", pos + fwd   * 48,               Angle(0, ent:GetAngles().y,       0))
+    ParticleEffect("ThumperDust", pos - right * 48,               Angle(0, ent:GetAngles().y + 90,  0))
+    ParticleEffect("ThumperDust", pos + right * 48,               Angle(0, ent:GetAngles().y - 90,  0))
+end
+
+-- ============================================================
+--  MG FIRING FX
+--  While GekkoMGFiring NW bool is true:
+--    * ShellEject fired every Draw() tick at the MG attachment
+--    * ManhackSparks fired intermittently (random 0.4-0.9s interval)
+-- ============================================================
+local function GekkoDoMGFX(ent)
+    if not ent:GetNWBool("GekkoMGFiring", false) then
+        ent._nextSparkT = nil
+        return
+    end
+
+    local attData = ent:GetAttachment(ATT_MACHINEGUN)
+    if not attData then return end
+
+    local pos = attData.Pos
+    local ang = attData.Ang
+    local fwd = ang:Forward()
+
+    -- Shell eject every frame
+    local shellEff = EffectData()
+    shellEff:SetOrigin(pos)
+    shellEff:SetAngles(ang)
+    shellEff:SetEntity(ent)
+    shellEff:SetScale(1)
+    util.Effect("ShellEject", shellEff, false, true)
+
+    -- Manhack sparks intermittently
+    local now = CurTime()
+    if not ent._nextSparkT or now >= ent._nextSparkT then
+        ent._nextSparkT = now + math.Rand(0.4, 0.9)
+
+        local sparkEff = EffectData()
+        sparkEff:SetOrigin(pos + fwd * 8)
+        sparkEff:SetNormal(fwd)
+        sparkEff:SetEntity(ent)
+        sparkEff:SetMagnitude(3)
+        sparkEff:SetScale(1)
+        sparkEff:SetRadius(12)
+        util.Effect("ManhackSparks", sparkEff, false, true)
+    end
 end
 
 -- ============================================================
@@ -183,30 +252,32 @@ function ENT:Draw()
     self._cl_lastT = t
 
     local jumpState = self:GetGekkoJumpState()
+    local landing   = (jumpState == JUMP_LAND)
 
-    -- landing = ONLY the JUMP_LAND phase.
-    -- RISING and FALLING are free — head tracks, steps/shake are
-    -- harmless (GekkoSpeed=0 while airborne so they never fire).
-    local landing = (jumpState == JUMP_LAND)
-
-    -- Head tracking: free during RISING/FALLING, suppressed during LAND
-    -- so b_spine4 doesn’t fight the landing animation.
+    -- Head tracking
     if not landing then
         GekkoUpdateHead(self, dt)
     end
 
-    -- Footstep sounds and camera shake: skip during landing only
+    -- Footstep sounds and camera shake
     if not landing then
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
     end
 
-    -- Stomp leg bones: only when fully grounded (JUMP_NONE) AND stompEnd active
+    -- Stomp leg bones
     local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then
         GekkoStompLegs(self)
     end
+
+    -- Jump / land dust clouds
+    GekkoDoJumpDust(self)
+    GekkoDoLandDust(self)
+
+    -- MG sparks + shell eject
+    GekkoDoMGFX(self)
 
     self:DrawModel()
 end

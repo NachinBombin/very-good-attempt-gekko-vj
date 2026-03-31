@@ -227,7 +227,12 @@ function ENT:Init()
     self._gekkoLastTime      = CurTime() - 0.1
     self._gekkoSuppressActivity = 0
     self._gekkoSkipAnimTick  = false
-    self._crushHitTimes      = {}   -- walk crush per-entity cooldown table
+    self._crushHitTimes      = {}
+
+    -- NW vars for clientside FX (initialised to safe defaults)
+    self:SetNWBool("GekkoMGFiring",  false)
+    self:SetNWInt("GekkoJumpDust",   0)
+    self:SetNWInt("GekkoLandDust",   0)
 
     SafeInitVJTables(self)
     self:GekkoJump_Init()
@@ -302,6 +307,7 @@ end
 function ENT:OnThink()
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
+        self:SetNWBool("GekkoMGFiring", false)
     end
 
     self:GekkoJump_Think()
@@ -360,6 +366,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
         self._mgBurstActive = true
         self._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
+        self:SetNWBool("GekkoMGFiring", true)   -- enable clientside FX
         local entRef = self
 
         print(string.format(
@@ -414,6 +421,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
                 if i == mgRounds - 1 then
                     entRef._mgBurstActive = false
+                    entRef:SetNWBool("GekkoMGFiring", false)   -- disable clientside FX
                 end
             end)
         end
@@ -455,6 +463,7 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
 
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
+    self:SetNWBool("GekkoMGFiring", false)
 
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
