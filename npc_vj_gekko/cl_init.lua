@@ -9,17 +9,17 @@ local function SetBone(ent, name, ang)
 end
 
 -- ============================================================
---  STOMP LEG DRIVER
---  Only runs when the NW jump state says the gekko is fully
---  grounded (JUMP_NONE).  During RISING, FALLING and JUMP_LAND
---  the model's own animation drives the bones — we must not
---  override them with ManipulateBoneAngles.
+--  JUMP STATE CONSTANTS  (mirror shared.lua)
 -- ============================================================
 local JUMP_NONE    = 0
 local JUMP_RISING  = 1
 local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
+-- ============================================================
+--  STOMP LEG DRIVER
+--  Only runs when jumpState == JUMP_NONE (fully grounded).
+-- ============================================================
 local function GekkoStompLegs(ent)
     local t      = CurTime()
     local freq   = 14
@@ -87,15 +87,6 @@ end
 
 -- ============================================================
 --  FOOTSTEP CAMERA SHAKE
---
---  util.ScreenShake( origin, amplitude, frequency, duration, radius )
---    radius must be > 0 and cover the player or the shake is
---    never delivered.  We use SHAKE_FAR_DIST as the radius so
---    any player within range receives it.
---
---  Amplitude scale (GMod reference: explosion = ~10-15):
---    NEAR  (< 350 units) : 12  — heavy stomp, very noticeable
---    FAR   (350-750 units): 5  — lighter rumble, fades to ~1.5
 -- ============================================================
 local SHAKE_NEAR_DIST = 350
 local SHAKE_FAR_DIST  = 750
@@ -111,9 +102,6 @@ local function GekkoFootShake(ent)
     local dist = ply:GetPos():Distance(ent:GetPos())
     if dist >= SHAKE_FAR_DIST then return end
 
-    local jumpState = ent:GetGekkoJumpState()
-    if jumpState ~= JUMP_NONE then return end  -- no shakes during any jump phase
-
     local cycleHz = (vel > 160) and 1.1 or 0.71
     local cycleT  = CurTime() * cycleHz * 2 * math.pi
 
@@ -128,17 +116,15 @@ local function GekkoFootShake(ent)
     local footplant = (prevR > 0 and sinR <= 0) or (prevL > 0 and sinL <= 0)
     if not footplant then return end
 
-    -- Linear falloff: 1.0 at dist=0, 0.0 at dist=SHAKE_FAR_DIST
     local alpha = 1 - (dist / SHAKE_FAR_DIST)
 
     local amp
     if dist < SHAKE_NEAR_DIST then
-        amp = 12 * alpha   -- up to 12 up close
+        amp = 12 * alpha
     else
-        amp = 5  * alpha   -- up to ~2.5 at mid range
+        amp = 5  * alpha
     end
 
-    -- radius = SHAKE_FAR_DIST ensures the shake envelope covers the player
     util.ScreenShake(ent:GetPos(), amp, 14, 0.18, SHAKE_FAR_DIST)
 end
 
@@ -246,32 +232,39 @@ function ENT:Draw()
     local enemy     = self:GetNWEntity("GekkoEnemy", NULL)
     local jumpState = self:GetGekkoJumpState()
 
-    -- grounded means FULLY on the ground, not landing/transitioning.
-    -- JUMP_LAND is excluded so the landing animation plays unobstructed.
+    -- grounded  = fully on the ground, no transition
+    -- frozen    = any non-NONE jump phase (RISING, FALLING, or LAND)
+    --
+    -- ALL bone manipulation is suppressed while frozen so the
+    -- jump/fall/land animation plays completely unobstructed.
+    -- Only GekkoUpdateHead continues (b_spine4 is not driven by
+    -- the jump animations and head-tracking during landing looks fine).
     local grounded = (jumpState == JUMP_NONE)
-    local airborne = (jumpState == JUMP_RISING or jumpState == JUMP_FALLING)
+    local frozen   = not grounded
 
     GekkoUpdateHead(self, dt)
 
-    if not airborne then
+    if not frozen then
+        -- Arms: aim at enemy or smoothly reset to neutral
         if IsValid(enemy) then
             GekkoAimArms(self, enemy:GetPos() + Vector(0, 0, 40), dt)
         else
             GekkoResetArms(self, dt)
         end
+    else
+        -- Clear arm interpolation state so arms re-engage cleanly
+        -- on the first grounded frame after landing.
+        self._armYaw   = 0
+        self._armPitch = 0
     end
 
-    -- Footstep sounds and camera shake only fire when fully grounded.
-    -- During JUMP_LAND the landing animation is playing and we want
-    -- silence from the step system.
+    -- Footstep sounds and camera shake: grounded only
     if grounded then
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
     end
 
-    -- Stomp leg bones only when fully grounded and moving.
-    -- Must NOT run during JUMP_LAND — ManipulateBoneAngles would
-    -- override the landing animation's own bone poses.
+    -- Stomp leg bones: grounded only
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then
         GekkoStompLegs(self)
