@@ -50,6 +50,43 @@ local function SafeResetSequence(ent, seq)
 end
 
 -- ============================================================
+--  VJ Base animation intercepts
+--  These are the two hooks VJ Base calls every think before
+--  it touches the sequence.  Returning true from either one
+--  tells VJ to leave the current sequence alone.
+-- ============================================================
+
+-- Called by VJ Base before it selects a new activity/sequence.
+-- Returning true suppresses the selection entirely.
+function ENT:VJ_OnShouldResetSequence()
+    if CurTime() < (self._gekkoSuppressActivity or 0) then
+        return true
+    end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING  or
+       js == self.JUMP_FALLING or
+       js == self.JUMP_LAND    then
+        return true
+    end
+    return false
+end
+
+-- Called by VJ Base inside its animation update loop.
+-- Returning true skips the update for this tick.
+function ENT:VJ_OnAnimationUpdate()
+    if CurTime() < (self._gekkoSuppressActivity or 0) then
+        return true
+    end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING  or
+       js == self.JUMP_FALLING or
+       js == self.JUMP_LAND    then
+        return true
+    end
+    return false
+end
+
+-- ============================================================
 --  Animation translations
 -- ============================================================
 function ENT:SetAnimationTranslations()
@@ -102,11 +139,14 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
 
+    -- Block our own update while suppressed or airborne/landing
+    if now < (self._gekkoSuppressActivity or 0) then return end
+
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
        jumpState == self.JUMP_LAND    or
-       (self._gekkoJustJumped and CurTime() < self._gekkoJustJumped) then
+       (self._gekkoJustJumped and now < self._gekkoJustJumped) then
         self:SetPoseParameter("move_x", 0)
         self:SetPoseParameter("move_y", 0)
         return
