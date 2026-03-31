@@ -19,9 +19,9 @@ local JUMP_MAX_ENEMY_DIST = 19400
 
 local JUMP_RISING_TIMEOUT = 1.5
 
--- Extra headroom on top of JUMP_LAND_LOCKOUT so VJ cannot
--- sneak a sequence reset in on the very last frame of the window.
-local JUMP_LAND_SUPPRESS_PAD = 0.3
+-- Land suppress: long enough to cover the full lockout + a generous pad
+-- so VJ Base / GekkoUpdateAnimation cannot sneak a reset in.
+local JUMP_LAND_SUPPRESS_PAD = 1.1   -- was 0.3 — now total = 1.4 + 1.1 = 2.5s
 
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
@@ -111,10 +111,9 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
--- suppressDur: how long (seconds) to block VJ from touching the sequence.
---   jump / fall  →  0.5  (rolling, renewed every Think tick anyway)
---   land         →  JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD
---                   so suppression outlives the lockout timer
+-- Force a sequence and lock out VJ + GekkoUpdateAnimation.
+--   suppressDur: seconds to hold the lock.
+--   seqLabel:    debug name.
 local function ForceSeq(ent, seq, rate, suppressDur, seqLabel)
     ent:ResetSequence(seq)
     ent:SetCycle(0)
@@ -184,7 +183,7 @@ function ENT:GekkoJump_Think()
     local now      = CurTime()
 
     -- While airborne, keep rolling the suppression window so it never
-    -- lapses mid-flight. Use a generous 1.0s rolling window.
+    -- lapses mid-flight.
     if state == JUMP_RISING or state == JUMP_FALLING then
         self._gekkoSuppressActivity = now + 1.0
         self.VJ_IsMoving     = false
@@ -263,8 +262,8 @@ function ENT:GekkoJump_Think()
         self:SetAngles(Angle(0, a.y, 0))
         print("[GekkoJump] → LAND  seqLand=" .. self._seqLand)
         if self._seqLand ~= -1 then
-            -- Suppress for the full lockout window + padding so nothing
-            -- overwrites the land animation before it finishes.
+            -- Full lockout + generous pad — animation must finish before
+            -- AnimApply or GekkoUpdateAnimation can touch the sequence.
             ForceSeq(self, self._seqLand, 1.0,
                 JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD, "land")
         end
@@ -277,7 +276,10 @@ function ENT:GekkoJump_Think()
         self:SetGekkoJumpTimer(0)
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
-        self._gekkoSuppressActivity = now + 0.15
+        -- Short suppress so AnimApply stays blocked one extra tick,
+        -- and flag GekkoUpdateAnimation to also skip this exact tick.
+        self._gekkoSuppressActivity = now + 0.08
+        self._gekkoSkipAnimTick     = true
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
             self:ResetSequence(self.GekkoSeq_Idle)
             self:SetPlaybackRate(1.0)
