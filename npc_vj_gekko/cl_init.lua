@@ -172,6 +172,93 @@ local function GekkoUpdateHead(ent, dt)
 end
 
 -- ============================================================
+--  CAMERA SHAKE
+--
+--  Triggers a proximity-based screen shake while the Gekko is
+--  moving nearby.  Two tiers:
+--
+--    NEAR  (< SHAKE_NEAR_DIST  units) — strong stomping pulse,
+--          locked to the footstep cycle so it feels physical.
+--
+--    FAR   (< SHAKE_FAR_DIST units)  — lighter continuous
+--          low-frequency rumble, fades linearly with distance.
+--
+--  Conditions that must both be true before ANY shake fires:
+--    1. GekkoSpeed NWFloat > SHAKE_MIN_SPEED
+--    2. Player is not airborne (stays grounded — feels heavier)
+--
+--  util.ScreenShake signature:
+--    util.ScreenShake( pos, amplitude, frequency, duration, radius )
+--  We call it from the entity's position with a radius of 0 so
+--  only the local player's client is affected per-entity.
+-- ============================================================
+local SHAKE_NEAR_DIST  = 300   -- units: strong stomp pulse zone
+local SHAKE_FAR_DIST   = 700   -- units: outer rumble zone
+local SHAKE_MIN_SPEED  = 30    -- units/s: below this → no shake
+
+-- Near-zone stomp pulse settings
+local SHAKE_NEAR_AMP   = 3.5   -- amplitude at ground zero
+local SHAKE_NEAR_FREQ  = 18    -- frequency (twitchy / metallic)
+local SHAKE_NEAR_DUR   = 0.12  -- duration per pulse
+
+-- Far-zone rumble settings
+local SHAKE_FAR_AMP    = 1.0   -- max amplitude at FAR inner edge
+local SHAKE_FAR_FREQ   = 8
+local SHAKE_FAR_DUR    = 0.08
+
+local function GekkoDoShake(ent)
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return end
+
+    -- Only shake when the Gekko is actually moving
+    local speed = ent:GetNWFloat("GekkoSpeed", 0)
+    if speed < SHAKE_MIN_SPEED then return end
+
+    local dist = ply:GetPos():Distance(ent:GetPos())
+    if dist >= SHAKE_FAR_DIST then return end
+
+    local t         = CurTime()
+    local jumpState = ent:GetGekkoJumpState()
+    local airborne  = (jumpState == JUMP_RISING or jumpState == JUMP_FALLING)
+
+    -- ---- NEAR ZONE: stomp-synced pulses ----
+    if dist < SHAKE_NEAR_DIST and not airborne then
+        -- Replicate the footstep cycle timing from GekkoSyncFootsteps
+        local cycleHz = (speed > 160) and 1.1 or 0.71
+        local cycleT  = t * cycleHz * 2 * math.pi
+        local sinR    = math.sin(cycleT)
+        local sinL    = math.sin(cycleT + math.pi)
+
+        local prevR   = ent._shakePhaseR or sinR
+        local prevL   = ent._shakePhaseL or sinL
+        ent._shakePhaseR = sinR
+        ent._shakePhaseL = sinL
+
+        -- Fire a pulse on each foot-plant (zero-crossing, positive→negative)
+        if (prevR > 0 and sinR <= 0) or (prevL > 0 and sinL <= 0) then
+            -- Scale amplitude: full at distance 0, half at SHAKE_NEAR_DIST
+            local alpha = 1 - (dist / SHAKE_NEAR_DIST)
+            local amp   = SHAKE_NEAR_AMP * alpha
+
+            util.ScreenShake(ent:GetPos(), amp, SHAKE_NEAR_FREQ, SHAKE_NEAR_DUR, 0)
+        end
+        return  -- near zone handled; skip the far rumble this frame
+    end
+
+    -- ---- FAR ZONE: continuous low rumble ----
+    -- Rate-limit to one shake per SHAKE_FAR_DUR seconds
+    local nextFarShake = ent._nextFarShake or 0
+    if t < nextFarShake then return end
+    ent._nextFarShake = t + SHAKE_FAR_DUR
+
+    -- Linear fade from FAR_AMP at SHAKE_NEAR_DIST to 0 at SHAKE_FAR_DIST
+    local alpha = 1 - ((dist - SHAKE_NEAR_DIST) / (SHAKE_FAR_DIST - SHAKE_NEAR_DIST))
+    alpha = math.Clamp(alpha, 0, 1)
+
+    util.ScreenShake(ent:GetPos(), SHAKE_FAR_AMP * alpha, SHAKE_FAR_FREQ, SHAKE_FAR_DUR, 0)
+end
+
+-- ============================================================
 --  DRAW
 -- ============================================================
 function ENT:Draw()
@@ -210,6 +297,9 @@ function ENT:Draw()
     if t < stompEnd and not airborne then
         GekkoStompLegs(self)
     end
+
+    -- Camera shake (proximity + movement check inside)
+    GekkoDoShake(self)
 
     self:DrawModel()
 end
