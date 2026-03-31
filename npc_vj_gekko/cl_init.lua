@@ -12,13 +12,13 @@ end
 --  JUMP STATE CONSTANTS  (mirror shared.lua)
 -- ============================================================
 local JUMP_NONE    = 0
-local JUMP_RISING  = 1  -- luacheck: ignore
-local JUMP_FALLING = 2  -- luacheck: ignore
-local JUMP_LAND    = 3  -- luacheck: ignore
+local JUMP_RISING  = 1
+local JUMP_FALLING = 2
+local JUMP_LAND    = 3
 
 -- ============================================================
 --  STOMP LEG DRIVER
---  Only runs when jumpState == JUMP_NONE (fully grounded).
+--  Only runs when fully grounded (JUMP_NONE) AND stompEnd active.
 -- ============================================================
 local function GekkoStompLegs(ent)
     local t      = CurTime()
@@ -130,6 +130,8 @@ end
 
 -- ============================================================
 --  HEAD DRIVER  (b_spine4)  —  YAW + PITCH
+--  Runs during RISING, FALLING, and NONE.
+--  Suppressed only during JUMP_LAND so the landing anim is clean.
 -- ============================================================
 local HEAD_LIMIT       =  50
 local HEAD_PITCH_UP    = -60
@@ -181,18 +183,26 @@ function ENT:Draw()
     self._cl_lastT = t
 
     local jumpState = self:GetGekkoJumpState()
-    local grounded  = (jumpState == JUMP_NONE)
 
-    -- Head tracking runs always (b_spine4 is safe, jump anims don't drive it)
-    GekkoUpdateHead(self, dt)
+    -- landing = ONLY the JUMP_LAND phase.
+    -- RISING and FALLING are free — head tracks, steps/shake are
+    -- harmless (GekkoSpeed=0 while airborne so they never fire).
+    local landing = (jumpState == JUMP_LAND)
 
-    -- Footstep sounds and camera shake: grounded only
-    if grounded then
+    -- Head tracking: free during RISING/FALLING, suppressed during LAND
+    -- so b_spine4 doesn’t fight the landing animation.
+    if not landing then
+        GekkoUpdateHead(self, dt)
+    end
+
+    -- Footstep sounds and camera shake: skip during landing only
+    if not landing then
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
     end
 
-    -- Stomp leg bones: grounded only
+    -- Stomp leg bones: only when fully grounded (JUMP_NONE) AND stompEnd active
+    local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then
         GekkoStompLegs(self)
