@@ -33,6 +33,10 @@ local WMODE_MISSILE = 2
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
+-- Head zone: fraction of collision height above which damage is reduced to 1/3
+-- 0.65 * 200 = 130 units above origin  →  sits above torso, below neck geometry
+local HEAD_Z_FRACTION = 0.65
+
 -- ============================================================
 --  Helpers
 -- ============================================================
@@ -294,9 +298,42 @@ end
 
 -- ============================================================
 --  Damage override
+--  Head zone = top 35% of collision bbox (z * 0.65 threshold)
+--  Legs absorb full damage; head/turret takes only 1/3
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
+
+    -- Fast-path: engine already resolved a head hitgroup
+    local hitgroup = dmginfo:GetDamageType() -- note: we check hitgroup separately below
+    if dmginfo:GetHitGroup() == HITGROUP_HEAD then
+        dmginfo:ScaleDamage(1 / 3)
+        self.BaseClass.OnTakeDamage(self, dmginfo)
+        return
+    end
+
+    -- Positional check for all other damage types
+    local hitPos = dmginfo:GetDamagePosition()
+
+    if hitPos == vector_origin then
+        local inflictor = dmginfo:GetInflictor()
+        if IsValid(inflictor) then
+            hitPos = inflictor:GetPos()
+        else
+            -- No position data — pass through unmodified
+            dmginfo:SetDamagePosition(self:GetPos())
+            self.BaseClass.OnTakeDamage(self, dmginfo)
+            return
+        end
+    end
+
+    local _, maxs   = self:GetCollisionBounds()
+    local headZ     = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
+
+    if hitPos.z > headZ then
+        dmginfo:ScaleDamage(1 / 3)
+    end
+
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
@@ -366,7 +403,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
         self._mgBurstActive = true
         self._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
-        self:SetNWBool("GekkoMGFiring", true)   -- enable clientside FX
+        self:SetNWBool("GekkoMGFiring", true)
         local entRef = self
 
         print(string.format(
@@ -421,7 +458,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
                 if i == mgRounds - 1 then
                     entRef._mgBurstActive = false
-                    entRef:SetNWBool("GekkoMGFiring", false)   -- disable clientside FX
+                    entRef:SetNWBool("GekkoMGFiring", false)
                 end
             end)
         end
