@@ -121,7 +121,7 @@ local function GekkoFootShake(ent)
 end
 
 -- ============================================================
---  HEAD DRIVER  (b_spine4)  —  YAW + PITCH
+--  HEAD DRIVER  (b_spine4)  — YAW + PITCH
 -- ============================================================
 local HEAD_LIMIT       =  50
 local HEAD_PITCH_UP    = -60
@@ -169,7 +169,7 @@ local function GekkoDoJumpDust(ent)
 
     local e = EffectData()
     e:SetOrigin(ent:GetPos())
-    e:SetScale(200)
+    e:SetScale(math.random(80, 200))
     e:SetEntity(ent)
     util.Effect("ThumperDust", e, false)
     util.Effect("ThumperDust", e, false)
@@ -186,7 +186,7 @@ local function GekkoDoLandDust(ent)
 
     local e = EffectData()
     e:SetOrigin(ent:GetPos())
-    e:SetScale(200)
+    e:SetScale(math.random(80, 200))
     e:SetEntity(ent)
     util.Effect("ThumperDust", e, false)
     util.Effect("ThumperDust", e, false)
@@ -225,7 +225,7 @@ local function GekkoDoMGFX(ent)
     end
 
     if not ent._nextSparkT or now >= ent._nextSparkT then
-        ent._nextSparkT = now + math.Rand(0.4, 0.9)
+        ent._nextSparkT = now + math.Rand(1.5, 3.5)
 
         local fwd = ang:Forward()
         local e = EffectData()
@@ -233,9 +233,9 @@ local function GekkoDoMGFX(ent)
         e:SetNormal(fwd)
         e:SetAngles(ang)
         e:SetEntity(ent)
-        e:SetMagnitude(3)
-        e:SetScale(1)
-        e:SetRadius(12)
+        e:SetMagnitude(math.Rand(2, 6))
+        e:SetScale(math.Rand(0.5, 2.0))
+        e:SetRadius(math.random(8, 20))
         util.Effect("ManhackSparks", e, false)
     end
 end
