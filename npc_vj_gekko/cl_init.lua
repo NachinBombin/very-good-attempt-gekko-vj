@@ -157,20 +157,7 @@ local function GekkoUpdateHead(ent, dt)
 end
 
 -- ============================================================
---  THUMPER DUST HELPER
---  Wiki fields: Origin, Scale, Entity  (exactly these three)
---  util.Effect args: name, data  (no extra args from clientside)
--- ============================================================
-local function SpawnThumperDust(pos, ent, scale)
-    local e = EffectData()
-    e:SetOrigin(pos)
-    e:SetScale(scale or 1)
-    e:SetEntity(ent)
-    util.Effect("ThumperDust", e)
-end
-
--- ============================================================
---  JUMP DUST
+--  THUMPER DUST  —  Origin, Scale, Entity
 -- ============================================================
 local ATT_MACHINEGUN = 3
 
@@ -181,13 +168,20 @@ local function GekkoDoJumpDust(ent)
     ent._lastJumpDustPulse = pulse
 
     local pos = ent:GetPos()
-    SpawnThumperDust(pos,                    ent, 1.2)
-    SpawnThumperDust(pos + Vector(0, 0, 20), ent, 0.8)
+
+    local e1 = EffectData()
+    e1:SetOrigin(pos)
+    e1:SetScale(1.2)
+    e1:SetEntity(ent)
+    util.Effect("ThumperDust", e1)
+
+    local e2 = EffectData()
+    e2:SetOrigin(pos + Vector(0, 0, 20))
+    e2:SetScale(0.8)
+    e2:SetEntity(ent)
+    util.Effect("ThumperDust", e2)
 end
 
--- ============================================================
---  LAND DUST
--- ============================================================
 local function GekkoDoLandDust(ent)
     local pulse = ent:GetNWInt("GekkoLandDust", 0)
     if pulse == 0 then return end
@@ -198,16 +192,27 @@ local function GekkoDoLandDust(ent)
     local fwd   = ent:GetForward()
     local right = ent:GetRight()
 
-    SpawnThumperDust(pos,               ent, 1.5)
-    SpawnThumperDust(pos + fwd   * 48,  ent, 1.0)
-    SpawnThumperDust(pos - right * 48,  ent, 1.0)
-    SpawnThumperDust(pos + right * 48,  ent, 1.0)
+    local origins = {
+        pos,
+        pos + fwd   * 48,
+        pos - right * 48,
+        pos + right * 48,
+    }
+    local scales = { 1.5, 1.0, 1.0, 1.0 }
+
+    for i = 1, 4 do
+        local e = EffectData()
+        e:SetOrigin(origins[i])
+        e:SetScale(scales[i])
+        e:SetEntity(ent)
+        util.Effect("ThumperDust", e)
+    end
 end
 
 -- ============================================================
 --  MG FIRING FX
---  RifleShellEject fields: Entity, Origin, Angles
---  ManhackSparks fields:   Origin, Normal, Angles
+--  RifleShellEject — Entity, Origin, Angles
+--  ManhackSparks   — Origin, Normal, Angles (intermittent)
 -- ============================================================
 local SHELL_INTERVAL = 0.09
 
@@ -223,34 +228,41 @@ local function GekkoDoMGFX(ent)
 
     local pos = attData.Pos
     local ang = attData.Ang
-    local fwd = ang:Forward()
     local now = CurTime()
 
-    -- Shell eject: rate-limited to ~11/sec
     if not ent._nextShellT or now >= ent._nextShellT then
         ent._nextShellT = now + SHELL_INTERVAL
 
-        local shellEff = EffectData()
-        shellEff:SetEntity(ent)
-        shellEff:SetOrigin(pos)
-        shellEff:SetAngles(ang)
-        util.Effect("RifleShellEject", shellEff)
+        local e = EffectData()
+        e:SetEntity(ent)
+        e:SetOrigin(pos)
+        e:SetAngles(ang)
+        util.Effect("RifleShellEject", e)
     end
 
-    -- Manhack sparks intermittently
     if not ent._nextSparkT or now >= ent._nextSparkT then
         ent._nextSparkT = now + math.Rand(0.4, 0.9)
 
-        local sparkEff = EffectData()
-        sparkEff:SetOrigin(pos + fwd * 8)
-        sparkEff:SetNormal(fwd)
-        sparkEff:SetAngles(ang)
-        sparkEff:SetEntity(ent)
-        sparkEff:SetMagnitude(3)
-        sparkEff:SetScale(1)
-        sparkEff:SetRadius(12)
-        util.Effect("ManhackSparks", sparkEff)
+        local fwd = ang:Forward()
+        local e = EffectData()
+        e:SetOrigin(pos + fwd * 8)
+        e:SetNormal(fwd)
+        e:SetAngles(ang)
+        e:SetEntity(ent)
+        e:SetMagnitude(3)
+        e:SetScale(1)
+        e:SetRadius(12)
+        util.Effect("ManhackSparks", e)
     end
+end
+
+-- ============================================================
+--  THINK  — effect dispatches run here, not in Draw
+-- ============================================================
+function ENT:Think()
+    GekkoDoJumpDust(self)
+    GekkoDoLandDust(self)
+    GekkoDoMGFX(self)
 end
 
 -- ============================================================
@@ -284,10 +296,6 @@ function ENT:Draw()
     if t < stompEnd and grounded then
         GekkoStompLegs(self)
     end
-
-    GekkoDoJumpDust(self)
-    GekkoDoLandDust(self)
-    GekkoDoMGFX(self)
 
     self:DrawModel()
 end
