@@ -87,19 +87,21 @@ end
 -- ============================================================
 --  FOOTSTEP CAMERA SHAKE
 --
---  Fires a short screen-shake pulse on every footplant, using
---  the same sine-wave zero-crossing that GekkoSyncFootsteps
---  uses for sounds — so shake and sound are always in sync.
+--  Fires on the same zero-crossing as GekkoSyncFootsteps so
+--  shake and sound are always locked together.
 --
---  Two distance zones:
---    NEAR  (< 350 units) — strong per-footstep pulse
---    FAR   (< 750 units) — lighter pulse, fades with distance
+--  util.ScreenShake( origin, amplitude, frequency, duration, radius )
+--    radius must be > 0 and cover the player or the shake is
+--    never delivered.  We use SHAKE_FAR_DIST as the radius so
+--    any player within range receives it.
 --
---  No shake while the Gekko is airborne.
+--  Amplitude scale (GMod reference: explosion = ~10-15):
+--    NEAR  (< 350 units) : 12  — heavy stomp, very noticeable
+--    FAR   (350-750 units): 5  — lighter rumble, fades to ~1.5
 -- ============================================================
 local SHAKE_NEAR_DIST = 350
 local SHAKE_FAR_DIST  = 750
-local SHAKE_MIN_SPEED = 8     -- matches GekkoSyncFootsteps floor
+local SHAKE_MIN_SPEED = 8
 
 local function GekkoFootShake(ent)
     local ply = LocalPlayer()
@@ -114,7 +116,6 @@ local function GekkoFootShake(ent)
     local jumpState = ent:GetGekkoJumpState()
     if jumpState == JUMP_RISING or jumpState == JUMP_FALLING then return end
 
-    -- Reuse the same cycle already computed by GekkoSyncFootsteps
     local cycleHz = (vel > 160) and 1.1 or 0.71
     local cycleT  = CurTime() * cycleHz * 2 * math.pi
 
@@ -129,14 +130,18 @@ local function GekkoFootShake(ent)
     local footplant = (prevR > 0 and sinR <= 0) or (prevL > 0 and sinL <= 0)
     if not footplant then return end
 
-    -- Scale amplitude linearly: full at 0, zero at FAR_DIST
+    -- Linear falloff: 1.0 at dist=0, 0.0 at dist=SHAKE_FAR_DIST
     local alpha = 1 - (dist / SHAKE_FAR_DIST)
-    -- Near zone gets a stronger pulse
-    local amp = (dist < SHAKE_NEAR_DIST) and (3.5 * alpha) or (1.5 * alpha)
 
-    -- util.ScreenShake( origin, amplitude, frequency, duration, radius )
-    -- radius 0 = local client only (no server broadcast needed)
-    util.ScreenShake(ent:GetPos(), amp, 18, 0.12, 0)
+    local amp
+    if dist < SHAKE_NEAR_DIST then
+        amp = 12 * alpha   -- up to 12 up close
+    else
+        amp = 5  * alpha   -- up to ~2.5 at mid range
+    end
+
+    -- radius = SHAKE_FAR_DIST ensures the shake envelope covers the player
+    util.ScreenShake(ent:GetPos(), amp, 14, 0.18, SHAKE_FAR_DIST)
 end
 
 -- ============================================================
