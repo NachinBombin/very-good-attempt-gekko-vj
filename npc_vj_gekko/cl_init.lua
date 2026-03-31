@@ -158,23 +158,23 @@ end
 
 -- ============================================================
 --  THUMPER DUST HELPER
---  ThumperDust is a C++ engine effect (util.Effect), NOT a PCF
---  particle system. Must use EffectData with Origin, Scale, Entity.
+--  Required fields per wiki: Origin, Scale, Entity, Normal
+--  Normal MUST be Vector(0,0,1) so the ring knows its spread plane.
+--  Without it the effect has no surface to spread along and is invisible.
 -- ============================================================
 local function SpawnThumperDust(pos, ent, scale)
     local e = EffectData()
     e:SetOrigin(pos)
+    e:SetNormal(Vector(0, 0, 1))   -- ground plane normal: critical for visibility
     e:SetEntity(ent)
     e:SetScale(scale or 1)
     util.Effect("ThumperDust", e, false, true)
 end
 
 -- ============================================================
---  JUMP DUST  —  ThumperDust pulse when Gekko launches
---  Triggered by an incrementing NW int (GekkoJumpDust).
---  One-shot per unique value so it fires exactly once per jump.
+--  JUMP DUST  —  ThumperDust when Gekko launches
 -- ============================================================
-local ATT_MACHINEGUN = 3   -- mirror init.lua constant (client-safe)
+local ATT_MACHINEGUN = 3
 
 local function GekkoDoJumpDust(ent)
     local pulse = ent:GetNWInt("GekkoJumpDust", 0)
@@ -183,13 +183,12 @@ local function GekkoDoJumpDust(ent)
     ent._lastJumpDustPulse = pulse
 
     local pos = ent:GetPos()
-    -- Two blasts at launch feet, slightly varied scale
     SpawnThumperDust(pos,                    ent, 1.2)
     SpawnThumperDust(pos + Vector(0, 0, 20), ent, 0.8)
 end
 
 -- ============================================================
---  LAND DUST  —  ThumperDust pulse on landing impact
+--  LAND DUST  —  ThumperDust on landing impact
 -- ============================================================
 local function GekkoDoLandDust(ent)
     local pulse = ent:GetNWInt("GekkoLandDust", 0)
@@ -201,7 +200,6 @@ local function GekkoDoLandDust(ent)
     local fwd   = ent:GetForward()
     local right = ent:GetRight()
 
-    -- Four blasts: center + spread for a wide landing cloud
     SpawnThumperDust(pos,               ent, 1.5)
     SpawnThumperDust(pos + fwd   * 48,  ent, 1.0)
     SpawnThumperDust(pos - right * 48,  ent, 1.0)
@@ -210,13 +208,17 @@ end
 
 -- ============================================================
 --  MG FIRING FX
---  While GekkoMGFiring NW bool is true:
---    * ShellEject fired every Draw() tick at the MG attachment
---    * ManhackSparks fired intermittently (random 0.4-0.9s interval)
+--  ShellEject: wiki fields are Entity + Origin + Angles ONLY.
+--    SetScale is NOT a valid field and was causing culling issues.
+--    Rate-limited to ~0.09s so shells are individually visible.
+--  ManhackSparks: intermittent, 0.4-0.9s random interval.
 -- ============================================================
+local SHELL_INTERVAL = 0.09   -- one shell per ~90ms = ~11 shells/sec, visible stream
+
 local function GekkoDoMGFX(ent)
     if not ent:GetNWBool("GekkoMGFiring", false) then
         ent._nextSparkT = nil
+        ent._nextShellT = nil
         return
     end
 
@@ -226,17 +228,20 @@ local function GekkoDoMGFX(ent)
     local pos = attData.Pos
     local ang = attData.Ang
     local fwd = ang:Forward()
+    local now = CurTime()
 
-    -- Shell eject every frame
-    local shellEff = EffectData()
-    shellEff:SetOrigin(pos)
-    shellEff:SetAngles(ang)
-    shellEff:SetEntity(ent)
-    shellEff:SetScale(1)
-    util.Effect("ShellEject", shellEff, false, true)
+    -- Shell eject: rate-limited, Entity+Origin+Angles only (no SetScale)
+    if not ent._nextShellT or now >= ent._nextShellT then
+        ent._nextShellT = now + SHELL_INTERVAL
+
+        local shellEff = EffectData()
+        shellEff:SetOrigin(pos)
+        shellEff:SetAngles(ang)
+        shellEff:SetEntity(ent)
+        util.Effect("ShellEject", shellEff, false, true)
+    end
 
     -- Manhack sparks intermittently
-    local now = CurTime()
     if not ent._nextSparkT or now >= ent._nextSparkT then
         ent._nextSparkT = now + math.Rand(0.4, 0.9)
 
