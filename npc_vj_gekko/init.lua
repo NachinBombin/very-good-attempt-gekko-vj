@@ -327,11 +327,12 @@ end
 
 -- ============================================================
 --  Range attack
+--  Fires regardless of jump or crouch state — Gekko shoots
+--  while moving, jumping, and crouching.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
-    if self:GekkoJump_IsAirborne() then return true end
 
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     local mode   = self._weaponMode

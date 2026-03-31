@@ -28,10 +28,14 @@
 --
 --    Velocity/speed zeroing on entry is intentionally omitted.
 --    Crouch is a walking crouch — the NPC should keep moving.
---    Zeroing velocity caused GetVelocity() to read ~0 for several
---    ticks after entry, selecting cidle instead of c_walk, then
---    rapidly oscillating between the two as VJBase restored movement
---    — each switch fired ResetSequence and caused the visible bobbing.
+--
+--    GetVelocity() reads near-zero on the exact tick EnterCrouch
+--    runs (VJBase hasn't restored movement yet), which locked the
+--    seq to cidle forever.  We use the position-delta speed stored
+--    in the GekkoSpeed NWFloat by GekkoUpdateAnimation instead —
+--    it is computed from actual position change and is always valid.
+--    On the very first tick after entry _gekkoCrouchSeqSet == -1 so
+--    we default to c_walk; the correct seq locks in on the next tick.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -56,11 +60,9 @@ local RAND_CHANCE     = 0.69
 local RAND_DUR_MIN    = 3
 local RAND_DUR_MAX    = 10
 
-local DEFAULT_MOVE_SPEED = 150
-local DEFAULT_RUN_SPEED  = 300
-local DEFAULT_WALK_SPEED = 150
-
+local DEFAULT_MOVE_SPEED    = 150
 local CWALK_STATIONARY_RATE = 0.05
+local CWALK_MOVING_THRESH   = 5   -- units/s (matches standing locomotion)
 
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes (obstacle check only)
@@ -258,8 +260,6 @@ local function ExitCrouch(ent)
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
     ent:SetNWBool("GekkoIsCrouching", false)
-
-    -- Re-enable VJBase's movement thinkers.
     ent.VJ_CanMoveThink = true
 
     print("[GeckoCrouch] → Standing")
@@ -341,18 +341,20 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Sequence enforcement ──────────────────────────────────
-    -- VJBase's funcAnimThink fires BEFORE OnThink and resets the
-    -- sequence every frame via MaintainIdleAnimation.
-    -- Fix: call ResetSequence ONCE when the target sequence changes
-    -- (entry or walk↔idle switch), then SetSequence every subsequent
-    -- tick.  SetSequence updates which clip plays without restarting
-    -- from frame 0, so the animation runs smoothly.
-    local vel    = self:GetVelocity()
-    local speed2 = vel.x * vel.x + vel.y * vel.y
+    -- Use the position-delta speed from GekkoUpdateAnimation (stored
+    -- as GekkoSpeed NWFloat) rather than GetVelocity().  GetVelocity()
+    -- reads near-zero on the first tick of EnterCrouch because VJBase
+    -- hasn't restored movement yet, which permanently locks the seq
+    -- to cidle even while the NPC is physically moving.
+    --
+    -- On the very first tick _gekkoCrouchSeqSet == -1 (entry), so we
+    -- fall through to c_walk as the safe default; the correct seq
+    -- will lock in on the following tick once GekkoSpeed is populated.
+    local speed   = self:GetNWFloat("GekkoSpeed", 0)
     local rate, targetSeq
 
-    if speed2 > (16 * 16) then
-        rate      = math.Clamp(math.sqrt(speed2) / DEFAULT_MOVE_SPEED, 0.3, 1.5)
+    if speed > CWALK_MOVING_THRESH then
+        rate      = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.3, 1.5)
         targetSeq = self.GekkoSeq_CrouchWalk
     else
         rate      = CWALK_STATIONARY_RATE
@@ -361,14 +363,18 @@ function ENT:GeckoCrouch_Update()
                     or  self.GekkoSeq_CrouchWalk
     end
 
+    -- Safe fallback: if targetSeq is still -1 (seqs not cached yet),
+    -- use c_walk so the first tick never plays ragdoll.
+    if not targetSeq or targetSeq == -1 then
+        targetSeq = self.GekkoSeq_CrouchWalk
+    end
+
     if targetSeq and targetSeq ~= -1 then
         if self._gekkoCrouchSeqSet ~= targetSeq then
-            -- Sequence changed (entry or walk<->idle): hard-restart it once.
             self:ResetSequence(targetSeq)
             self._gekkoCrouchSeqSet = targetSeq
-            print(string.format("[GeckoCrouch] SeqSwitch → %d (speed2=%.0f)", targetSeq, speed2))
+            print(string.format("[GeckoCrouch] SeqSwitch → %d (speed=%.1f)", targetSeq, speed))
         else
-            -- Same sequence as last tick: keep it active without restarting.
             self:SetSequence(targetSeq)
         end
         self:SetPlaybackRate(rate)
