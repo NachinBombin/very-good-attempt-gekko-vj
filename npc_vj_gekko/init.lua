@@ -20,10 +20,12 @@ local ANIM_RUN_SPEED     = 20
 local RUN_ENGAGE_DIST    = 2000
 local RUN_DISENGAGE_DIST = 1600
 
-local MG_ROUNDS   = 24
-local MG_INTERVAL = 0.149
-local MG_DAMAGE   = 20
-local MG_SPREAD   = 0.4
+local MG_ROUNDS_MIN = 9
+local MG_ROUNDS_MAX = 36
+local MG_INTERVAL   = 0.149
+local MG_DAMAGE     = 20
+local MG_SPREAD_MIN = 0.2
+local MG_SPREAD_MAX = 2.0
 
 local WMODE_MG      = 1
 local WMODE_MISSILE = 2
@@ -48,7 +50,7 @@ local function SafeResetSequence(ent, seq)
 end
 
 -- ============================================================
---  Animation translations  (standing / normal)
+--  Animation translations
 -- ============================================================
 function ENT:SetAnimationTranslations()
     if not self.AnimationTranslations then
@@ -81,21 +83,11 @@ function ENT:SetAnimationTranslations()
 end
 
 -- ============================================================
---  Core animation update  (called from OnThink each tick)
---
---  GekkoSpeed is computed from position-delta FIRST, before any
---  early-return, so GeckoCrouch_Update always reads a fresh value
---  regardless of which branch executes.
+--  Core animation update
 -- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self.Flinching then return end
 
-    -- ── Always compute position-delta speed first ────────────
-    -- GeckoCrouch_Update reads GekkoSpeed via GetNWFloat to decide
-    -- which crouch seq to play.  If we write it only at the end of
-    -- the standing-locomotion path it stays stale (0) whenever
-    -- crouch or jump causes an early return — causing cidle to lock
-    -- in right after landing.
     local now    = CurTime()
     local curPos = self:GetPos()
     local vel    = 0
@@ -108,9 +100,8 @@ function ENT:GekkoUpdateAnimation()
     end
     self._gekkoLastPos  = curPos
     self._gekkoLastTime = now
-    self:SetNWFloat("GekkoSpeed", vel)   -- written before ANY early-return
+    self:SetNWFloat("GekkoSpeed", vel)
 
-    -- ── Jump animation ───────────────────────────────────────
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING  or
        jumpState == self.JUMP_FALLING or
@@ -121,10 +112,8 @@ function ENT:GekkoUpdateAnimation()
         return
     end
 
-    -- GeckoCrouch_Update handles its own ResetSequence every tick.
     if self:GeckoCrouch_Update() then return end
 
-    -- ── Standing locomotion ──────────────────────────────────
     local enemy = GetActiveEnemy(self)
     local dist  = 0
     if IsValid(enemy) then
@@ -159,8 +148,6 @@ function ENT:GekkoUpdateAnimation()
 
     arate = math.Clamp(arate, 0.5, 3.0)
 
-    -- Always call ResetSequence — VJBase overwrites it every frame
-    -- via its own Think hook, so we must always overwrite back.
     if targetSeq and targetSeq ~= -1 then
         SafeResetSequence(self, targetSeq)
     end
@@ -237,9 +224,6 @@ function ENT:Init()
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
 
         selfRef:GeckoCrouch_CacheSeqs()
-
-        -- Populate AnimationTranslations so native MaintainIdleAnimation
-        -- resolves ACT_IDLE → seq 2 (idle) instead of seq 0 (ragdoll).
         selfRef:SetAnimationTranslations()
 
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
@@ -289,8 +273,6 @@ end
 --  Think
 -- ============================================================
 function ENT:OnThink()
-    -- Safety: unstick _mgBurstActive if the burst timer has expired
-    -- (can happen if entity was invalid mid-burst and timer never fired).
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
     end
@@ -333,8 +315,6 @@ end
 
 -- ============================================================
 --  Range attack
---  Fires regardless of jump or crouch state — Gekko shoots
---  while moving, jumping, and crouching.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
@@ -346,12 +326,21 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
 
     if mode == WMODE_MG then
         if self._mgBurstActive then return true end
+
+        -- Randomize rounds and spread for this burst
+        local mgRounds = math.random(MG_ROUNDS_MIN, MG_ROUNDS_MAX)
+        local mgSpread = math.Rand(MG_SPREAD_MIN, MG_SPREAD_MAX)
+
         self._mgBurstActive = true
-        -- Safety deadline: burst duration + 1s grace
-        self._mgBurstEndT = CurTime() + (MG_ROUNDS * MG_INTERVAL) + 1.0
+        self._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
         local entRef = self
 
-        for i = 0, MG_ROUNDS - 1 do
+        print(string.format(
+            "[GekkoMG] Burst | rounds=%d  spread=%.2f",
+            mgRounds, mgSpread
+        ))
+
+        for i = 0, mgRounds - 1 do
             timer.Simple(i * MG_INTERVAL, function()
                 if not IsValid(entRef) then return end
 
@@ -384,8 +373,8 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                     TracerName = "Tracer",
                     Num        = 1,
                     Spread     = Vector(
-                        (math.random() - 0.5) * 2 * MG_SPREAD,
-                        (math.random() - 0.5) * 2 * MG_SPREAD,
+                        (math.random() - 0.5) * 2 * mgSpread,
+                        (math.random() - 0.5) * 2 * mgSpread,
                         0
                     ),
                 })
@@ -396,7 +385,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
                 util.Effect("MuzzleFlash", eff)
                 entRef:EmitSound("weapons/ar2/fire1.wav", 75, math.random(95, 115))
 
-                if i == MG_ROUNDS - 1 then
+                if i == mgRounds - 1 then
                     entRef._mgBurstActive = false
                 end
             end)

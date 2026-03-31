@@ -7,16 +7,16 @@ local JUMP_RISING  = 1
 local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
-local JUMP_FORCE          = 1000
+local JUMP_FORCE_MIN      = 200
+local JUMP_FORCE_MAX      = 1300
 local JUMP_FORWARD_FORCE  = 300
-local JUMP_LAND_LOCKOUT   = 1.4   -- matches land anim duration
-local JUMP_COOLDOWN       = 8.0
+local JUMP_LAND_LOCKOUT   = 1.4
+local JUMP_COOLDOWN_MIN   = 8.0
+local JUMP_COOLDOWN_MAX   = 30.0
 local JUMP_GROUND_DIST    = 24
 local JUMP_MIN_ENEMY_DIST = 600
 local JUMP_MAX_ENEMY_DIST = 19400
 
--- Safety timeout: if RISING state lasts longer than this without
--- the NPC actually leaving the ground, abort and return to NONE.
 local JUMP_RISING_TIMEOUT = 1.5
 
 local function GekkoIsGrounded(ent)
@@ -107,8 +107,6 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
---  ForceSeq — single authoritative place to slam a jump-phase sequence.
--- ============================================================
 local function ForceSeq(ent, seq, rate)
     ent:ResetSequence(seq)
     ent:SetCycle(0)
@@ -124,6 +122,10 @@ end
 function ENT:GekkoJump_Execute()
     if self:GetGekkoJumpState() ~= JUMP_NONE then return end
 
+    -- Randomize force and cooldown for this jump
+    local jumpForce    = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
+    local jumpCooldown = math.Rand(JUMP_COOLDOWN_MIN, JUMP_COOLDOWN_MAX)
+
     local enemy = self:GetEnemy()
     local fwd   = IsValid(enemy)
                   and (enemy:GetPos() - self:GetPos()):GetNormalized()
@@ -137,19 +139,22 @@ function ENT:GekkoJump_Execute()
     self:SetMoveType(MOVETYPE_FLYGRAVITY)
 
     local vel = self:GetVelocity()
-    vel.z     = JUMP_FORCE
+    vel.z     = jumpForce
     vel       = vel + fwd * JUMP_FORWARD_FORCE
     self:SetVelocity(vel)
 
     self:SetSchedule(SCHED_NONE)
 
     self:SetGekkoJumpState(JUMP_RISING)
-    self._jumpCooldown        = CurTime() + JUMP_COOLDOWN
+    self._jumpCooldown        = CurTime() + jumpCooldown
     self._gekkoJustJumped     = CurTime() + 0.3
     self._jumpRisingStartTime = CurTime()
     self._jumpDidLiftoff      = false
 
-    print("[GekkoJump] EXECUTE → RISING  seqJump=" .. self._seqJump)
+    print(string.format(
+        "[GekkoJump] EXECUTE → RISING  seqJump=%d  force=%.0f  cooldown=%.1fs",
+        self._seqJump, jumpForce, jumpCooldown
+    ))
 
     if self._seqJump ~= -1 then
         ForceSeq(self, self._seqJump, 1.0)
@@ -186,9 +191,6 @@ function ENT:GekkoJump_Think()
         self._jumpThinkPrint = now + 0.2
     end
 
-    -- --------------------------------------------------------
-    --  RISING: confirm liftoff, handle timeout
-    -- --------------------------------------------------------
     if state == JUMP_RISING then
         if vel.z > 50 then
             self._jumpDidLiftoff = true
@@ -208,9 +210,8 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqName = ""
             self._gekkoSuppressActivity = now + 0.15
             self.VJ_CanMoveThink = true
-            self._jumpCooldown = now + JUMP_COOLDOWN * 2
+            self._jumpCooldown = now + JUMP_COOLDOWN_MAX * 2
             self:GekkoJump_StopJetFX()
-            -- FIX 2: if crouching, let AnimApply reclaim the sequence cleanly
             if self._gekkoCrouching then
                 self._gekkoCrouchJustEntered = true
             end
@@ -228,9 +229,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- --------------------------------------------------------
-    --  FALLING: keep fall anim alive.
-    -- --------------------------------------------------------
     if state == JUMP_FALLING then
         if self._seqFall ~= -1 then
             if self:GetSequence() ~= self._seqFall then
@@ -243,9 +241,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- --------------------------------------------------------
-    --  FALLING → LAND
-    -- --------------------------------------------------------
     if state == JUMP_FALLING and grounded then
         self:SetGekkoJumpState(JUMP_LAND)
         self:SetGekkoJumpTimer(now + JUMP_LAND_LOCKOUT)
@@ -261,9 +256,6 @@ function ENT:GekkoJump_Think()
         return
     end
 
-    -- --------------------------------------------------------
-    --  LAND → NONE
-    -- --------------------------------------------------------
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         self:SetGekkoJumpState(JUMP_NONE)
         self:SetGekkoJumpTimer(0)
@@ -279,8 +271,6 @@ function ENT:GekkoJump_Think()
         self.VJ_CanMoveThink = true
         print("[GekkoJump] → NONE (lockout done)")
 
-        -- FIX 2: if we were crouching before the jump, raise the re-entry
-        -- flag so GeckoCrouch_AnimApply reclaims c_walk on the very next tick.
         if self._gekkoCrouching then
             self._gekkoCrouchJustEntered = true
             print("[GekkoJump] → crouch active after landing — signalling AnimApply")
