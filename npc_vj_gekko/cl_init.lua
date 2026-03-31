@@ -85,6 +85,61 @@ local function GekkoSyncFootsteps(ent)
 end
 
 -- ============================================================
+--  FOOTSTEP CAMERA SHAKE
+--
+--  Fires a short screen-shake pulse on every footplant, using
+--  the same sine-wave zero-crossing that GekkoSyncFootsteps
+--  uses for sounds — so shake and sound are always in sync.
+--
+--  Two distance zones:
+--    NEAR  (< 350 units) — strong per-footstep pulse
+--    FAR   (< 750 units) — lighter pulse, fades with distance
+--
+--  No shake while the Gekko is airborne.
+-- ============================================================
+local SHAKE_NEAR_DIST = 350
+local SHAKE_FAR_DIST  = 750
+local SHAKE_MIN_SPEED = 8     -- matches GekkoSyncFootsteps floor
+
+local function GekkoFootShake(ent)
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return end
+
+    local vel = ent:GetNWFloat("GekkoSpeed", 0)
+    if vel < SHAKE_MIN_SPEED then return end
+
+    local dist = ply:GetPos():Distance(ent:GetPos())
+    if dist >= SHAKE_FAR_DIST then return end
+
+    local jumpState = ent:GetGekkoJumpState()
+    if jumpState == JUMP_RISING or jumpState == JUMP_FALLING then return end
+
+    -- Reuse the same cycle already computed by GekkoSyncFootsteps
+    local cycleHz = (vel > 160) and 1.1 or 0.71
+    local cycleT  = CurTime() * cycleHz * 2 * math.pi
+
+    local sinR = math.sin(cycleT)
+    local sinL = math.sin(cycleT + math.pi)
+
+    local prevR = ent._shakePhaseR or sinR
+    local prevL = ent._shakePhaseL or sinL
+    ent._shakePhaseR = sinR
+    ent._shakePhaseL = sinL
+
+    local footplant = (prevR > 0 and sinR <= 0) or (prevL > 0 and sinL <= 0)
+    if not footplant then return end
+
+    -- Scale amplitude linearly: full at 0, zero at FAR_DIST
+    local alpha = 1 - (dist / SHAKE_FAR_DIST)
+    -- Near zone gets a stronger pulse
+    local amp = (dist < SHAKE_NEAR_DIST) and (3.5 * alpha) or (1.5 * alpha)
+
+    -- util.ScreenShake( origin, amplitude, frequency, duration, radius )
+    -- radius 0 = local client only (no server broadcast needed)
+    util.ScreenShake(ent:GetPos(), amp, 18, 0.12, 0)
+end
+
+-- ============================================================
 --  ARM AIM DRIVER
 -- ============================================================
 local ARM_YAW_LIMIT   = 75
@@ -204,6 +259,7 @@ function ENT:Draw()
     end
 
     GekkoSyncFootsteps(self)
+    GekkoFootShake(self)
 
     -- Stomp legs only when grounded and moving
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
