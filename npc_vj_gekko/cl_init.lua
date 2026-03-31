@@ -17,6 +17,54 @@ local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
 -- ============================================================
+--  CRUSH HIT — net receiver
+--  Plays a random body impact sound at the hit position and
+--  fires a boosted screen shake from the Gekko's position.
+-- ============================================================
+local CRUSH_IMPACT_SOUNDS = {
+    "physics/body/body_medium_impact_hard1.wav",
+    "physics/body/body_medium_impact_hard2.wav",
+    "physics/body/body_medium_impact_hard3.wav",
+    "physics/body/body_medium_impact_hard4.wav",
+    "physics/body/body_medium_impact_hard5.wav",
+    "physics/body/body_medium_impact_hard6.wav",
+}
+
+local CRUSH_SHAKE_RADIUS = 750   -- matches SHAKE_FAR_DIST
+local CRUSH_SHAKE_AMP    = 22    -- ~2x the walk-stomp near amplitude
+local CRUSH_SHAKE_FREQ   = 18
+local CRUSH_SHAKE_DUR    = 0.25
+
+net.Receive("GekkoCrushHit", function()
+    local hitPos   = net.ReadVector()
+    local gekkoPos = net.ReadVector()
+
+    -- Sound at the point of impact
+    sound.Play(
+        CRUSH_IMPACT_SOUNDS[math.random(#CRUSH_IMPACT_SOUNDS)],
+        hitPos,
+        85,     -- volume
+        100     -- pitch
+    )
+
+    -- Boosted shake — distance-attenuated from the Gekko
+    local ply = LocalPlayer()
+    if IsValid(ply) then
+        local dist  = ply:GetPos():Distance(gekkoPos)
+        local alpha = 1 - math.Clamp(dist / CRUSH_SHAKE_RADIUS, 0, 1)
+        if alpha > 0 then
+            util.ScreenShake(
+                gekkoPos,
+                CRUSH_SHAKE_AMP * alpha,
+                CRUSH_SHAKE_FREQ,
+                CRUSH_SHAKE_DUR,
+                CRUSH_SHAKE_RADIUS
+            )
+        end
+    end
+end)
+
+-- ============================================================
 --  STOMP LEG DRIVER
 -- ============================================================
 local function GekkoStompLegs(ent)
@@ -257,8 +305,6 @@ end
 local BLOOD_DECAL   = "Blood"
 local BLOOD_DECAL2  = "YellowBlood"
 
--- Returns a random unit vector biased toward a given direction.
--- bias: 0 = fully random sphere, 1 = perfectly aligned with dir
 local function RandBiasedDir(dir, bias)
     local r = Vector(
         (math.random() - 0.5) * 2,
@@ -269,11 +315,7 @@ local function RandBiasedDir(dir, bias)
     return (r + dir * bias):GetNormalized()
 end
 
--- Spawn a blob of blood at pos going in dir at speed.
--- This uses EffectData with BloodImpact, Blixibon blood, and
--- util.Decal for persistent pools.
 local function SpawnBloodBlob(pos, dir, speed, scale)
-    -- Blood impact spray
     local e = EffectData()
     e:SetOrigin(pos)
     e:SetNormal(dir)
@@ -282,7 +324,6 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     e:SetRadius(math.random(12, 36))
     util.Effect("BloodImpact", e, false)
 
-    -- Also fire a BloodSpray for extra volume
     local e2 = EffectData()
     e2:SetOrigin(pos)
     e2:SetNormal(dir)
@@ -290,7 +331,6 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     e2:SetMagnitude(math.Rand(8, 22))
     util.Effect("BloodSpray", e2, false)
 
-    -- Trace ahead and stamp a decal where it would land
     local tr = util.TraceLine({
         start  = pos,
         endpos = pos + dir * speed,
@@ -302,8 +342,6 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     end
 end
 
--- ---- VARIANT 1: Geyser -----------------------------------------
--- A violent upward column, blobs lofted high with slight outward drift.
 local function BloodVariant_Geyser(origin)
     local count = math.random(18, 32)
     for _ = 1, count do
@@ -319,7 +357,6 @@ local function BloodVariant_Geyser(origin)
         local scale   = math.Rand(8, 22)
         SpawnBloodBlob(origin + Vector(0, 0, spawnH), dir, speed, scale)
     end
-    -- Wide base splat at origin
     for _ = 1, math.random(4, 8) do
         local e = EffectData()
         e:SetOrigin(origin + Vector((math.random()-0.5)*80, (math.random()-0.5)*80, 4))
@@ -330,11 +367,9 @@ local function BloodVariant_Geyser(origin)
     end
 end
 
--- ---- VARIANT 2: Radial Ring ------------------------------------
--- Sprays outward in a flat ring like a land mine went off in a body.
 local function BloodVariant_RadialRing(origin)
     local spokes  = math.random(20, 36)
-    local ringH   = math.Rand(40, 100)   -- height of the ring
+    local ringH   = math.Rand(40, 100)
     for i = 1, spokes do
         local angle = (i / spokes) * math.pi * 2
         local dir   = Vector(
@@ -347,7 +382,6 @@ local function BloodVariant_RadialRing(origin)
         local scale = math.Rand(10, 28)
         SpawnBloodBlob(origin + Vector(0,0,ringH), dir, speed, scale)
     end
-    -- Dense center burst
     for _ = 1, math.random(6, 12) do
         local e = EffectData()
         e:SetOrigin(origin + Vector(0,0,ringH))
@@ -358,8 +392,6 @@ local function BloodVariant_RadialRing(origin)
     end
 end
 
--- ---- VARIANT 3: Burst Cloud ------------------------------------
--- Omnidirectional dense explosion — the whole sphere bleeds.
 local function BloodVariant_BurstCloud(origin)
     local count = math.random(28, 50)
     for _ = 1, count do
@@ -369,7 +401,6 @@ local function BloodVariant_BurstCloud(origin)
         local scale = math.Rand(10, 30)
         SpawnBloodBlob(origin + Vector(0, 0, h), dir, speed, scale)
     end
-    -- Extra BloodImpact bursts at varied heights
     for _ = 1, math.random(8, 16) do
         local e = EffectData()
         e:SetOrigin(origin + Vector(
@@ -384,9 +415,6 @@ local function BloodVariant_BurstCloud(origin)
     end
 end
 
--- ---- VARIANT 4: Arc Shower -------------------------------------
--- Strong forward-biased arc — blood flung ahead and up like a
--- pressure hose pointed forward.
 local function BloodVariant_ArcShower(origin, forwardDir)
     local count = math.random(22, 40)
     for _ = 1, count do
@@ -396,7 +424,6 @@ local function BloodVariant_ArcShower(origin, forwardDir)
         local scale = math.Rand(8, 24)
         SpawnBloodBlob(origin + Vector(0, 0, h), dir, speed, scale)
     end
-    -- Side splashes
     for _ = 1, math.random(4, 10) do
         local side  = RandBiasedDir(Vector(
             (math.random()-0.5)*2, (math.random()-0.5)*2, 0.1), 0.1)
@@ -409,12 +436,9 @@ local function BloodVariant_ArcShower(origin, forwardDir)
     end
 end
 
--- ---- VARIANT 5: Ground Pool Splat ------------------------------
--- Low, wide — blood splatters outward along the floor hard.
 local function BloodVariant_GroundPool(origin)
     local count = math.random(20, 38)
     for _ = 1, count do
-        -- Near-horizontal dirs, slight random upward wobble
         local angle = math.Rand(0, math.pi * 2)
         local dir   = Vector(
             math.cos(angle),
@@ -426,7 +450,6 @@ local function BloodVariant_GroundPool(origin)
         local scale = math.Rand(14, 36)
         SpawnBloodBlob(origin + Vector(0, 0, math.Rand(5, 40)), dir, speed, scale)
     end
-    -- Big central impact stamp
     for _ = 1, math.random(5, 10) do
         local e = EffectData()
         e:SetOrigin(origin + Vector(
@@ -441,7 +464,6 @@ local function BloodVariant_GroundPool(origin)
     end
 end
 
--- Master dispatcher — reads NW int, unpacks pulse + variant, fires once.
 local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
     if packed == 0 then return end
@@ -450,7 +472,7 @@ local function GekkoDoBloodSplat(ent)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
 
-    local variant = (packed % 8) + 1   -- 1-5
+    local variant = (packed % 8) + 1
     local origin  = ent:GetPos() + Vector(0, 0, 80)
     local fwd     = ent:GetForward()
 
@@ -464,7 +486,6 @@ end
 
 -- ============================================================
 --  THINK  — all effect dispatches here
---  (ENT:Think IS called clientside in VJBase cl entities)
 -- ============================================================
 function ENT:Think()
     GekkoDoJumpDust(self)

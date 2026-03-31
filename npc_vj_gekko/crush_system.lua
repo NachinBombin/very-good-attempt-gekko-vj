@@ -8,8 +8,16 @@
 --  3. Land Blast   — sphere damage + knockup on landing
 -- ============================================================
 
--- Shared helper: apply damage + physics impulse to a single entity.
--- `impulseVec` is the world-space force to apply (can be zero vector).
+-- Net message registration (server-side)
+if SERVER then
+    util.AddNetworkString("GekkoCrushHit")
+end
+
+-- ============================================================
+--  Shared helper: apply damage + physics impulse to a single entity.
+--  On success, broadcasts GekkoCrushHit to all clients so they can
+--  play the stomp sound and boosted screen shake.
+-- ============================================================
 local function CrushDamageEnt(attacker, target, dmg, impulseVec)
     if not IsValid(target)             then return end
     if target == attacker              then return end
@@ -31,6 +39,12 @@ local function CrushDamageEnt(attacker, target, dmg, impulseVec)
     if IsValid(phys) then
         phys:ApplyForceCenter(impulseVec)
     end
+
+    -- Notify all clients: play impact sound + boosted shake
+    net.Start("GekkoCrushHit")
+        net.WriteVector(target:GetPos())    -- impact origin for the sound
+        net.WriteVector(attacker:GetPos())  -- gekko origin for shake distance
+    net.Broadcast()
 end
 
 -- ============================================================
@@ -38,10 +52,10 @@ end
 --     Called every think tick from GeckoCrush_Think.
 --     Only active during JUMP_NONE and speed > threshold.
 -- ============================================================
-local WALK_CRUSH_DIST    = 96     -- how far ahead to sweep (units)
-local WALK_CRUSH_WIDTH   = 52     -- half-width / half-height of sweep box
-local WALK_CRUSH_DAMAGE  = 35
-local WALK_CRUSH_SPEED   = 30     -- minimum GekkoSpeed to enable
+local WALK_CRUSH_DIST     = 96     -- how far ahead to sweep (units)
+local WALK_CRUSH_WIDTH    = 52     -- half-width / half-height of sweep box
+local WALK_CRUSH_DAMAGE   = 35
+local WALK_CRUSH_SPEED    = 30     -- minimum GekkoSpeed to enable
 local WALK_CRUSH_COOLDOWN = 0.4   -- seconds between hits on the same entity
 local WALK_CRUSH_IMPULSE  = 9000  -- force magnitude on hit entity
 
@@ -108,7 +122,6 @@ function ENT:GeckoCrush_LaunchBlast()
     for _, ent in ipairs(ents.FindInSphere(origin, LAUNCH_RADIUS)) do
         if ent ~= self and (ent:IsNPC() or ent:IsPlayer() or IsValid(ent:GetPhysicsObject())) then
             local dir     = (ent:GetPos() - origin):GetNormalized()
-            -- Blast outward + slight up
             local impulse = (dir + Vector(0, 0, 0.5)):GetNormalized() * LAUNCH_IMPULSE
             CrushDamageEnt(self, ent, LAUNCH_DAMAGE, impulse)
         end
@@ -132,7 +145,6 @@ function ENT:GeckoCrush_LandBlast()
     for _, ent in ipairs(ents.FindInSphere(origin, LAND_RADIUS)) do
         if ent ~= self and (ent:IsNPC() or ent:IsPlayer() or IsValid(ent:GetPhysicsObject())) then
             local dir     = (ent:GetPos() - origin):GetNormalized()
-            -- Upward-biased knockup
             local impulse = (dir + Vector(0, 0, 1.2)):GetNormalized() * LAND_IMPULSE
             CrushDamageEnt(self, ent, LAND_DAMAGE, impulse)
         end
