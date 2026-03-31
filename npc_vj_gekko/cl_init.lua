@@ -157,65 +157,48 @@ local function GekkoUpdateHead(ent, dt)
 end
 
 -- ============================================================
---  THUMPER DUST  —  Origin, Scale, Entity
---  NOTE: util.Effect must be called from Draw(), not Think().
---        VJBase clientside entities never call ENT:Think().
+--  JUMP DUST  (ThumperDust: Origin, Scale, Entity)
 -- ============================================================
+local ATT_MACHINEGUN = 3
+
 local function GekkoDoJumpDust(ent)
     local pulse = ent:GetNWInt("GekkoJumpDust", 0)
     if pulse == 0 then return end
     if pulse == ent._lastJumpDustPulse then return end
     ent._lastJumpDustPulse = pulse
 
-    local pos = ent:GetPos()
-
-    local e1 = EffectData()
-    e1:SetOrigin(pos)
-    e1:SetScale(1.2)
-    e1:SetEntity(ent)
-    util.Effect("ThumperDust", e1)
-
-    local e2 = EffectData()
-    e2:SetOrigin(pos + Vector(0, 0, 20))
-    e2:SetScale(0.8)
-    e2:SetEntity(ent)
-    util.Effect("ThumperDust", e2)
+    local e = EffectData()
+    e:SetOrigin(ent:GetPos())
+    e:SetScale(200)
+    e:SetEntity(ent)
+    util.Effect("ThumperDust", e, false)
+    util.Effect("ThumperDust", e, false)
 end
 
+-- ============================================================
+--  LAND DUST  (ThumperDust: Origin, Scale, Entity)
+-- ============================================================
 local function GekkoDoLandDust(ent)
     local pulse = ent:GetNWInt("GekkoLandDust", 0)
     if pulse == 0 then return end
     if pulse == ent._lastLandDustPulse then return end
     ent._lastLandDustPulse = pulse
 
-    local pos   = ent:GetPos()
-    local fwd   = ent:GetForward()
-    local right = ent:GetRight()
-
-    local origins = {
-        pos,
-        pos + fwd   * 48,
-        pos - right * 48,
-        pos + right * 48,
-    }
-    local scales = { 1.5, 1.0, 1.0, 1.0 }
-
-    for i = 1, 4 do
-        local e = EffectData()
-        e:SetOrigin(origins[i])
-        e:SetScale(scales[i])
-        e:SetEntity(ent)
-        util.Effect("ThumperDust", e)
-    end
+    local e = EffectData()
+    e:SetOrigin(ent:GetPos())
+    e:SetScale(200)
+    e:SetEntity(ent)
+    util.Effect("ThumperDust", e, false)
+    util.Effect("ThumperDust", e, false)
+    util.Effect("ThumperDust", e, false)
 end
 
 -- ============================================================
 --  MG FIRING FX
---  RifleShellEject — Entity, Origin, Angles
---  ManhackSparks   — Origin, Normal, Angles (intermittent)
+--  RifleShellEject: Entity, Origin, Angles
+--  ManhackSparks: intermittent
 -- ============================================================
-local ATT_MACHINEGUN  = 3
-local SHELL_INTERVAL  = 0.09
+local SHELL_INTERVAL = 0.09
 
 local function GekkoDoMGFX(ent)
     if not ent:GetNWBool("GekkoMGFiring", false) then
@@ -238,7 +221,7 @@ local function GekkoDoMGFX(ent)
         e:SetEntity(ent)
         e:SetOrigin(pos)
         e:SetAngles(ang)
-        util.Effect("RifleShellEject", e)
+        util.Effect("RifleShellEject", e, false)
     end
 
     if not ent._nextSparkT or now >= ent._nextSparkT then
@@ -253,15 +236,21 @@ local function GekkoDoMGFX(ent)
         e:SetMagnitude(3)
         e:SetScale(1)
         e:SetRadius(12)
-        util.Effect("ManhackSparks", e)
+        util.Effect("ManhackSparks", e, false)
     end
 end
 
 -- ============================================================
+--  THINK  — all effect dispatches here
+-- ============================================================
+function ENT:Think()
+    GekkoDoJumpDust(self)
+    GekkoDoLandDust(self)
+    GekkoDoMGFX(self)
+end
+
+-- ============================================================
 --  DRAW
---  All clientside effect dispatches live here.
---  ENT:Think() is NOT called on clientside VJBase entities —
---  Draw() is the only per-frame hook available to us.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -276,11 +265,6 @@ function ENT:Draw()
 
     local jumpState = self:GetGekkoJumpState()
     local landing   = (jumpState == JUMP_LAND)
-
-    -- Effect dispatches (must run every frame to catch NW changes)
-    GekkoDoJumpDust(self)
-    GekkoDoLandDust(self)
-    GekkoDoMGFX(self)
 
     if not landing then
         GekkoUpdateHead(self, dt)
