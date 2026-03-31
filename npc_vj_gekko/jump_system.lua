@@ -244,6 +244,20 @@ function ENT:GekkoJump_Think()
             return
         end
 
+        -- Mirror the falling hold logic exactly:
+        -- re-assert the sequence every tick if VJ stole it,
+        -- and freeze at the peak frame (cycle > 0.90 → rewind to 0.5)
+        -- so the airborne pose holds for the full duration of RISING.
+        if self._seqJump ~= -1 then
+            if self:GetSequence() ~= self._seqJump then
+                self:ResetSequence(self._seqJump)
+                self:SetPlaybackRate(0.8)
+            end
+            if self:GetCycle() > 0.90 then
+                self:SetCycle(0.5)
+            end
+        end
+
         if vel.z < 0 then
             self:SetGekkoJumpState(JUMP_FALLING)
             self:GekkoJump_StopJetFX()
