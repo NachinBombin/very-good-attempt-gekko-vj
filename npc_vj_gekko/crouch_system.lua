@@ -1,41 +1,6 @@
 -- ============================================================
 --  crouch_system.lua
 --  Gekko VJ NPC — Crouch mechanic
---
---  STRATEGY:
---
---    VJBase captures ENT.MaintainIdleAnimation into a local closure
---    (local idleFunc = ENT.MaintainIdleAnimation) at file-load time,
---    before any entity-instance code runs.  This means any override
---    of ENT:MaintainIdleAnimation in init.lua is completely invisible
---    to VJBase's funcAnimThink hook — it always calls the original
---    GMod engine MaintainIdleAnimation directly, every Think tick.
---
---    That engine function resolves GetIdealActivity() → TranslateActivity
---    → ResetSequence.  With an empty AnimationTranslations table it
---    resolves to sequence 0 (ragdoll), locking the legs every ~1s.
---
---    The only reliable fix is to call SetSequence ourselves from
---    OnThink (which runs AFTER the Think hook), overwriting whatever
---    MaintainIdleAnimation just set.  We call ResetSequence ONCE on
---    crouch entry (or sequence change), then SetSequence every
---    subsequent tick so the animation continues playing without
---    restarting from frame 0 each tick.
---
---    Hull resize (SetCollisionBounds) is intentionally omitted.
---    Runtime hull resizing on a VJBase NPC causes the engine to
---    vertically reposition the entity every tick.
---
---    Velocity/speed zeroing on entry is intentionally omitted.
---    Crouch is a walking crouch — the NPC should keep moving.
---
---    GetVelocity() reads near-zero on the exact tick EnterCrouch
---    runs (VJBase hasn't restored movement yet), which locked the
---    seq to cidle forever.  We use the position-delta speed stored
---    in the GekkoSpeed NWFloat by GekkoUpdateAnimation instead —
---    it is computed from actual position change and is always valid.
---    On the very first tick after entry _gekkoCrouchSeqSet == -1 so
---    we default to c_walk; the correct seq locks in on the next tick.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -62,7 +27,7 @@ local RAND_DUR_MAX    = 10
 
 local DEFAULT_MOVE_SPEED    = 150
 local CWALK_STATIONARY_RATE = 0.05
-local CWALK_MOVING_THRESH   = 5   -- units/s (matches standing locomotion)
+local CWALK_MOVING_THRESH   = 5
 
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes (obstacle check only)
@@ -229,10 +194,16 @@ local function EnterCrouch(ent, randDuration)
         holdLen = randDuration
     end
     ent._gekkoCrouchHoldUntil = now + holdLen
-    ent._gekkoCrouchSeqSet    = -1  -- force ResetSequence on first tick
+    ent._gekkoCrouchSeqSet    = -1
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
+
+    -- Shrink collision hull to crouched height
+    ent:SetCollisionBounds(
+        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
+    )
 
     ent:SetNWBool("GekkoIsCrouching", true)
 
@@ -259,6 +230,12 @@ local function ExitCrouch(ent)
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
+    -- Restore full standing hull
+    ent:SetCollisionBounds(
+        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+    )
+
     ent:SetNWBool("GekkoIsCrouching", false)
     ent.VJ_CanMoveThink = true
 
@@ -274,7 +251,6 @@ end
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
-    -- Never crouch during a jump.
     local jumpState  = self:GetGekkoJumpState()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
@@ -315,7 +291,6 @@ function ENT:GeckoCrouch_Update()
             return false
         end
     else
-        -- Extend hold while ceiling is still low.
         if ceilHit then
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
@@ -335,21 +310,11 @@ function ENT:GeckoCrouch_Update()
                 ExitCrouch(self)
                 return false
             end
-            -- Another trigger still active; keep crouching.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
     end
 
     -- ── Sequence enforcement ──────────────────────────────────
-    -- Use the position-delta speed from GekkoUpdateAnimation (stored
-    -- as GekkoSpeed NWFloat) rather than GetVelocity().  GetVelocity()
-    -- reads near-zero on the first tick of EnterCrouch because VJBase
-    -- hasn't restored movement yet, which permanently locks the seq
-    -- to cidle even while the NPC is physically moving.
-    --
-    -- On the very first tick _gekkoCrouchSeqSet == -1 (entry), so we
-    -- fall through to c_walk as the safe default; the correct seq
-    -- will lock in on the following tick once GekkoSpeed is populated.
     local speed   = self:GetNWFloat("GekkoSpeed", 0)
     local rate, targetSeq
 
@@ -363,8 +328,6 @@ function ENT:GeckoCrouch_Update()
                     or  self.GekkoSeq_CrouchWalk
     end
 
-    -- Safe fallback: if targetSeq is still -1 (seqs not cached yet),
-    -- use c_walk so the first tick never plays ragdoll.
     if not targetSeq or targetSeq == -1 then
         targetSeq = self.GekkoSeq_CrouchWalk
     end
