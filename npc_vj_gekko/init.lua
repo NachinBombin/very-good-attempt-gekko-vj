@@ -4,9 +4,9 @@
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
+include("crush_system.lua")   -- must come before jump_system (jump calls crush methods)
 include("jump_system.lua")
 include("crouch_system.lua")
-include("crush_system.lua")
 
 -- ============================================================
 --  Constants
