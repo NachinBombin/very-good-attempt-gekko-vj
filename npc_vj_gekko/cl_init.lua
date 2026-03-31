@@ -158,21 +158,18 @@ end
 
 -- ============================================================
 --  THUMPER DUST HELPER
---  Required fields per wiki: Origin, Scale, Entity, Normal
---  Normal MUST be Vector(0,0,1) so the ring knows its spread plane.
---  Without it the effect has no surface to spread along and is invisible.
+--  Wiki-confirmed fields: Origin, Scale, Entity  (nothing else)
 -- ============================================================
 local function SpawnThumperDust(pos, ent, scale)
     local e = EffectData()
     e:SetOrigin(pos)
-    e:SetNormal(Vector(0, 0, 1))   -- ground plane normal: critical for visibility
-    e:SetEntity(ent)
     e:SetScale(scale or 1)
+    e:SetEntity(ent)
     util.Effect("ThumperDust", e, false, true)
 end
 
 -- ============================================================
---  JUMP DUST  —  ThumperDust when Gekko launches
+--  JUMP DUST
 -- ============================================================
 local ATT_MACHINEGUN = 3
 
@@ -188,7 +185,7 @@ local function GekkoDoJumpDust(ent)
 end
 
 -- ============================================================
---  LAND DUST  —  ThumperDust on landing impact
+--  LAND DUST
 -- ============================================================
 local function GekkoDoLandDust(ent)
     local pulse = ent:GetNWInt("GekkoLandDust", 0)
@@ -208,12 +205,10 @@ end
 
 -- ============================================================
 --  MG FIRING FX
---  ShellEject: wiki fields are Entity + Origin + Angles ONLY.
---    SetScale is NOT a valid field and was causing culling issues.
---    Rate-limited to ~0.09s so shells are individually visible.
---  ManhackSparks: intermittent, 0.4-0.9s random interval.
+--  RifleShellEject: wiki fields are Entity + Origin + Angles
+--  ManhackSparks:   intermittent, 0.4-0.9s random interval
 -- ============================================================
-local SHELL_INTERVAL = 0.09   -- one shell per ~90ms = ~11 shells/sec, visible stream
+local SHELL_INTERVAL = 0.09
 
 local function GekkoDoMGFX(ent)
     if not ent:GetNWBool("GekkoMGFiring", false) then
@@ -230,15 +225,15 @@ local function GekkoDoMGFX(ent)
     local fwd = ang:Forward()
     local now = CurTime()
 
-    -- Shell eject: rate-limited, Entity+Origin+Angles only (no SetScale)
+    -- Rifle shell eject: rate-limited, Entity+Origin+Angles only
     if not ent._nextShellT or now >= ent._nextShellT then
         ent._nextShellT = now + SHELL_INTERVAL
 
         local shellEff = EffectData()
+        shellEff:SetEntity(ent)
         shellEff:SetOrigin(pos)
         shellEff:SetAngles(ang)
-        shellEff:SetEntity(ent)
-        util.Effect("ShellEject", shellEff, false, true)
+        util.Effect("RifleShellEject", shellEff, false, true)
     end
 
     -- Manhack sparks intermittently
@@ -273,29 +268,23 @@ function ENT:Draw()
     local jumpState = self:GetGekkoJumpState()
     local landing   = (jumpState == JUMP_LAND)
 
-    -- Head tracking
     if not landing then
         GekkoUpdateHead(self, dt)
     end
 
-    -- Footstep sounds and camera shake
     if not landing then
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
     end
 
-    -- Stomp leg bones
     local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then
         GekkoStompLegs(self)
     end
 
-    -- Jump / land dust clouds
     GekkoDoJumpDust(self)
     GekkoDoLandDust(self)
-
-    -- MG sparks + shell eject
     GekkoDoMGFX(self)
 
     self:DrawModel()
