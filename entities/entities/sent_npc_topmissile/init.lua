@@ -5,37 +5,24 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  NPC Top-Attack Missile  (npc_vj_gekko)
 --
---  Based on sent_neuro_javelin (Hoffa & Smithy285 / NeuroTec).
---
---  FIX LOG:
+--  CHANGE LOG:
+--    - SND_WARN changed to buttons/button17.wav (loud electronic
+--      alarm beep) at max volume 511 from npc init caller
 --    - Velocity kick fires in Initialize() so missile is moving
---      before FireEngine() fires at +0.75s (prevents spin torque)
---    - 22-degree tilt REMOVED: that's for a forward-launched
---      player weapon; our missile launches upward from an NPC
---      attachment and needs no tilt
---    - SpeedValue ramp now produces enough thrust to fight drag:
---      FORCE_PER_TICK = 120000 N so missile sustains ~2000 u/s
---    - PhysicsCollide has a 0.5s immunity window from spawn so
---      the initial kick doesn't self-collide with the NPC body
---      and silently swallow the explosion
---    - Drag ON (was accidentally OFF in earlier version)
+--      before FireEngine() fires at +0.75s
+--    - 22-degree tilt REMOVED
+--    - FORCE_PER_TICK = 120000 N sustains ~2000 u/s
+--    - PhysicsCollide 0.5 s immunity window (self-collision fix)
+--    - Drag ON
 -- ============================================================
 
-local SND_LAUNCH  = "weapons/rpg/rocket1.wav"
+local SND_LAUNCH  = "buttons/button17.wav"   -- loud electronic beep
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
--- How hard the engine pushes every physics tick.
--- 120 000 N on a 500 kg body = 240 u/s^2 per tick.
--- At 66 ticks/s this easily sustains 2000 u/s against drag.
 local FORCE_PER_TICK = 120000
-
 local SPEED_CAP  = game.SinglePlayer() and 1800 or 2300
 local LIFETIME   = 45
-
--- Seconds after spawn during which PhysicsCollide is ignored.
--- Prevents the 108 450 u/s kick from immediately self-colliding
--- with the NPC hull or spawn-point geometry.
 local COLLISION_IMMUNE_TIME = 0.5
 
 -- ============================================================
@@ -56,9 +43,6 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity( true )
     end
 
-    -- NO tilt: missile launches straight up from the NPC attachment.
-    -- The Javelin 22-deg tilt is only needed for a forward player weapon.
-
     self.SpeedValue       = 0
     self.Destroyed        = false
     self.ActivatedAlmonds = false
@@ -77,15 +61,15 @@ function ENT:Initialize()
         print( "[TopMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
-    -- Fire the kick IMMEDIATELY so the missile is already in flight
-    -- when FireEngine() activates at +0.75s.
     if IsValid( self.PhysObj ) then
         self.PhysObj:SetVelocityInstantaneous( self:GetForward() * 108450 )
         self.PhysObj:SetVelocity( self:GetForward() * 108450 )
     end
 
+    -- Max-volume electronic beep on launch
+    sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
+
     self.EngineSound = CreateSound( self, SND_ENGINE )
-    sound.Play( SND_LAUNCH, self:GetPos(), 85, 100 )
 
     local selfRef = self
     timer.Simple( 0.75, function()
@@ -99,8 +83,6 @@ end
 
 -- ============================================================
 --  FireEngine  (+0.75 s)
---  Missile is already flying.  Start engine sound, set
---  damage/radius, attach trail -- no velocity change.
 -- ============================================================
 function ENT:FireEngine()
     if self.Destroyed then return end
@@ -129,16 +111,10 @@ end
 
 -- ============================================================
 --  PhysicsCollide
---  Immune for COLLISION_IMMUNE_TIME seconds after spawn so the
---  initial kick doesn't self-collide with the NPC body.
---  After that, any hit detonates (matches original Javelin).
 -- ============================================================
 function ENT:PhysicsCollide( data, physobj )
     if self.Destroyed then return end
-    -- Ignore collisions during launch immunity window
     if CurTime() - self.SpawnTime < COLLISION_IMMUNE_TIME then return end
-    -- Only detonate once engine is lit (prevents duds on slow grazes
-    -- before the missile has proper speed)
     if not self.ActivatedAlmonds then return end
     self:MissileDoExplosion()
 end
@@ -153,8 +129,6 @@ function ENT:PhysicsUpdate()
     local phys = self:GetPhysicsObject()
     if not IsValid( phys ) then return end
 
-    -- Only ramp SpeedValue while below cap; once at cap hold steady.
-    -- FORCE_PER_TICK is large enough to sustain cap speed against drag.
     if self:GetVelocity():Length() < SPEED_CAP then
         self.SpeedValue = math.min( self.SpeedValue + FORCE_PER_TICK, FORCE_PER_TICK * 10 )
     end
@@ -192,8 +166,6 @@ end
 
 -- ============================================================
 --  Think  -  proximity detonation + lifetime timeout
---  Proximity kill is the fallback for cases where the missile
---  overshoots and PhysicsCollide never fires.
 -- ============================================================
 function ENT:Think()
     self:NextThink( CurTime() )
@@ -204,7 +176,6 @@ function ENT:Think()
         return true
     end
 
-    -- Proximity detonation once engine is live
     if self.ActivatedAlmonds then
         local dist3d = ( self:GetPos() - self.Target ):Length()
         if dist3d < 180 then
