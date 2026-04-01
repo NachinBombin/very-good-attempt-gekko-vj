@@ -518,11 +518,11 @@ local function FireMGBurst(ent, enemy)
                 AmmoType   = "AR2",
                 TracerName = "Tracer",
                 Num        = 1,
-                Spread     = Vector(
-                    (math.random() - 0.5) * 2 * mgSpread,
-                    (math.random() - 0.5) * 2 * mgSpread,
-                    0
-                ),
+                -- Spread is a symmetric cone half-angle in local space.
+                -- All three axes must be equal for a proper circular cone.
+                -- Previously Z=0 created a flat horizontal pancake, causing
+                -- bullets to slam into the floor when Dir had any downward component.
+                Spread     = Vector(mgSpread, mgSpread, mgSpread),
             })
 
             local eff = EffectData()
