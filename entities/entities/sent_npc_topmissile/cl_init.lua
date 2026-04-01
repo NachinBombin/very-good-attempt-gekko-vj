@@ -3,16 +3,15 @@ include( "shared.lua" )
 -- ============================================================
 --  CLIENT  -  sent_npc_topmissile
 --
---  LAUNCH WINDOW (0 → 0.75 s, before FireEngine):
---    - ManhackSparks burst every frame at nozzle
---    - Dense clear-white steam cloud (SmokeEffect, white tint,
---      large scale) so the coasting phase is clearly visible
---    - NO dark smoke at all in this phase
+--  LAUNCH WINDOW (0 -> 0.75 s, before FireEngine):
+--    - Bright spark burst via emitter (muzzleflash1 sprites)
+--    - Clear white steam via emitter (smokesprites_0001, white,
+--      SetLighting false so world light can't darken them)
+--    - NO util.Effect calls (server-side only)
+--    - NO dark textures
 --
---  ENGINE ON (after FireEngine):
---    - Original scud_trail particle attachment on the prop
---    - Thin grey exhaust smoke trail (unchanged)
---    - Beam/heatwave exhaust (unchanged)
+--  ENGINE ON:
+--    - Original scud_trail + grey exhaust + beam/heatwave
 -- ============================================================
 
 local matHeatWave = Material( "sprites/heat_shimmer" )
@@ -20,69 +19,11 @@ local matFire     = Material( "effects/fire_cloud1" )
 
 ENT.NozzlePos = Vector( -12, 0, 0 )
 
--- -------------------------------------------------------
---  Spark helper  -  ManhackSparks burst at a world pos
--- -------------------------------------------------------
-local function EmitLaunchSparks( pos, fwd )
-    local e = EffectData()
-    e:SetOrigin( pos )
-    e:SetNormal( fwd )
-    e:SetMagnitude( 6 )    -- spark count
-    e:SetScale( 0.8 )      -- sprite scale
-    e:SetRadius( 18 )      -- spread radius
-    util.Effect( "ManhackSparks", e )
-end
-
--- -------------------------------------------------------
---  Steam helper  -  one clear white SmokeEffect puff
---  Uses SmokeEffect (thin, white-grey wisp) at large
---  scale so it's clearly visible but never dark.
--- -------------------------------------------------------
-local function EmitLaunchSteam( emitter, pos, fwd )
-    -- Large, opaque-start, fast-fade white puff
-    local p = emitter:Add( "effects/smokesprite0001", pos )
-    if p then
-        p:SetVelocity( fwd * -320
-            + Vector( math.Rand(-40,40), math.Rand(-40,40), math.Rand(60,160) ) )
-        p:SetDieTime( math.Rand( 0.5, 0.9 ) )
-        p:SetStartAlpha( math.Rand( 180, 230 ) )
-        p:SetEndAlpha( 0 )
-        p:SetStartSize( math.Rand( 28, 42 ) )
-        p:SetEndSize( math.Rand( 110, 180 ) )
-        p:SetRoll( math.Rand( 0, 360 ) )
-        p:SetRollDelta( math.Rand( -1.5, 1.5 ) )
-        -- Pure white - absolutely no dark tint
-        p:SetColor( 255, 255, 255 )
-        p:SetAirResistance( 40 )
-        p:SetGravity( Vector( 0, 0, 80 ) )
-        p:SetLighting( false )
-    end
-
-    -- Second smaller wisp for volume
-    local p2 = emitter:Add( "effects/smokesprite0001", pos
-        + Vector( math.Rand(-8,8), math.Rand(-8,8), 0 ) )
-    if p2 then
-        p2:SetVelocity( fwd * -180
-            + Vector( math.Rand(-60,60), math.Rand(-60,60), math.Rand(80,200) ) )
-        p2:SetDieTime( math.Rand( 0.35, 0.65 ) )
-        p2:SetStartAlpha( math.Rand( 120, 170 ) )
-        p2:SetEndAlpha( 0 )
-        p2:SetStartSize( math.Rand( 18, 30 ) )
-        p2:SetEndSize( math.Rand( 70, 110 ) )
-        p2:SetRoll( math.Rand( 0, 360 ) )
-        p2:SetRollDelta( math.Rand( -2, 2 ) )
-        p2:SetColor( 255, 255, 255 )
-        p2:SetAirResistance( 55 )
-        p2:SetGravity( Vector( 0, 0, 60 ) )
-        p2:SetLighting( false )
-    end
-end
-
 function ENT:Initialize()
     self:SetRenderMode( RENDERMODE_NORMAL )
-    local pos    = self:LocalToWorld( self.NozzlePos )
-    self.Emitter = ParticleEmitter( pos, false )
-    self.Seed    = math.Rand( 0, 10000 )
+    local pos     = self:LocalToWorld( self.NozzlePos )
+    self.Emitter  = ParticleEmitter( pos, false )
+    self.Seed     = math.Rand( 0, 10000 )
     self.Emittime = 0
     self.OnStart  = CurTime()
 end
@@ -112,20 +53,66 @@ function ENT:Draw()
     local engineOn = self:GetNWBool( "EngineStarted", false )
     local nozzle   = self:LocalToWorld( self.NozzlePos )
     local fwd      = self:GetForward()
+    local vel      = self:GetVelocity()
 
     -- -------------------------------------------------------
-    --  PRE-IGNITION  (launch window, engine not yet lit)
-    --  → sparks + clear white steam ONLY, zero dark smoke
+    --  PRE-IGNITION  -  sparks + clear white steam
     -- -------------------------------------------------------
     if not engineOn then
-        -- ManhackSparks every frame
-        EmitLaunchSparks( nozzle, fwd )
 
-        -- 2 white steam puffs per frame for a dense cloud
-        EmitLaunchSteam( self.Emitter, nozzle, fwd )
-        EmitLaunchSteam( self.Emitter,
-            nozzle + Vector( math.Rand(-6,6), math.Rand(-6,6), math.Rand(0,12) ),
-            fwd )
+        -- --- SPARKS: muzzleflash1 sprites, bright yellow-white ---
+        for i = 1, 8 do
+            local sp = self.Emitter:Add( "effects/muzzleflash1", nozzle )
+            if sp then
+                local randDir = VectorRand():GetNormalized()
+                sp:SetVelocity(
+                    fwd * math.Rand( -600, -200 )
+                    + randDir * math.Rand( 80, 280 )
+                )
+                sp:SetDieTime( math.Rand( 0.04, 0.12 ) )
+                sp:SetStartAlpha( 255 )
+                sp:SetEndAlpha( 0 )
+                sp:SetStartSize( math.Rand( 3, 7 ) )
+                sp:SetEndSize( 0 )
+                sp:SetRoll( math.Rand( 0, 360 ) )
+                sp:SetRollDelta( math.Rand( -8, 8 ) )
+                -- Bright white-yellow, no dark tint possible
+                local r = math.random( 230, 255 )
+                local g = math.random( 200, 245 )
+                sp:SetColor( r, g, 80 )
+                sp:SetLighting( false )
+                sp:SetGravity( Vector( 0, 0, -120 ) )
+                sp:SetAirResistance( 20 )
+            end
+        end
+
+        -- --- STEAM: white puffs, correct smokesprites path ---
+        for i = 1, 3 do
+            local idx = math.random( 1, 9 )
+            local sm  = self.Emitter:Add(
+                "particle/smokesprites_000" .. idx,
+                nozzle + Vector( math.Rand(-4,4), math.Rand(-4,4), 0 )
+            )
+            if sm then
+                sm:SetVelocity(
+                    fwd * math.Rand( -250, -80 )
+                    + Vector( math.Rand(-50,50), math.Rand(-50,50), math.Rand(60,180) )
+                )
+                sm:SetDieTime( math.Rand( 0.45, 0.85 ) )
+                sm:SetStartAlpha( math.Rand( 160, 220 ) )
+                sm:SetEndAlpha( 0 )
+                sm:SetStartSize( math.Rand( 20, 36 ) )
+                sm:SetEndSize( math.Rand( 90, 160 ) )
+                sm:SetRoll( math.Rand( 0, 360 ) )
+                sm:SetRollDelta( math.Rand( -1.5, 1.5 ) )
+                -- Pure white
+                sm:SetColor( 255, 255, 255 )
+                sm:SetLighting( false )
+                sm:SetAirResistance( 45 )
+                sm:SetGravity( Vector( 0, 0, 70 ) )
+            end
+        end
+
         return
     end
 
@@ -135,11 +122,10 @@ function ENT:Draw()
 
     local dlight = DynamicLight( self:EntIndex() )
     if dlight then
-        local c = Color( 250 + math.random(-5,5), 170 + math.random(-5,5), 0, 100 )
         dlight.Pos        = self:GetPos()
-        dlight.r          = c.r
-        dlight.g          = c.g
-        dlight.b          = c.b
+        dlight.r          = 250 + math.random(-5,5)
+        dlight.g          = 170 + math.random(-5,5)
+        dlight.b          = 0
         dlight.Brightness = 1
         dlight.Decay      = 0.1
         dlight.Size       = 2048
@@ -152,7 +138,7 @@ function ENT:Draw()
         )
         if particle then
             particle:SetVelocity(
-                ( self:GetVelocity() / 10 ) * -1
+                ( vel / 10 ) * -1
                 + Vector( math.Rand(-2.5,2.5), math.Rand(-2.5,2.5), math.Rand(2.5,15.5) )
                 + fwd * -280
             )
