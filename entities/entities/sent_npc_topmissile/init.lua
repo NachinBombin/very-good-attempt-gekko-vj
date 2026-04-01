@@ -13,7 +13,7 @@ include( "shared.lua" )
 --    5.  missile:Spawn()
 --    6.  missile:Activate()
 --
---  Do NOT assign TargetEntity.  This is a static-arc-only projectile.
+--  Do NOT assign TargetEntity.  Static-arc-only projectile.
 --  Do NOT call GetPhysicsObject():SetVelocity() from the caller.
 -- ============================================================
 
@@ -21,18 +21,14 @@ local SND_LAUNCH  = "weapons/rpg/rocket1.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
--- Speed ramp: added to physics force every PhysicsUpdate tick.
--- 8 000 makes it feel snappy but still steer-able during the arc.
 local FORCE_PER_TICK = 8000
 local SPEED_CAP      = game.SinglePlayer() and 1800 or 2300
 local LIFETIME       = 45
 
--- When horizontal distance to target drops below this, we enter
--- TERMINAL mode: steering stops completely, the missile just falls
--- straight down driven only by gravity + whatever forward momentum
--- it already has.  Proximity detonation then handles the kill.
-local TERMINAL_DIST  = 350   -- world units
-local TERMINAL_PROX  = 220   -- explode when closer than this to target
+-- Below this horizontal distance the missile stops steering entirely
+-- and just falls with rotation frozen.  Proximity detonation kills it.
+local TERMINAL_DIST  = 350
+local TERMINAL_PROX  = 220
 
 -- ============================================================
 --  Initialize
@@ -48,20 +44,19 @@ function ENT:Initialize()
     if IsValid( self.PhysObj ) then
         self.PhysObj:Wake()
         self.PhysObj:SetMass( 500 )
-        self.PhysObj:EnableDrag( false )   -- no drag; we control speed ourselves
+        self.PhysObj:EnableDrag( false )
         self.PhysObj:EnableGravity( true )
         self.PhysObj:SetVelocity( Vector( 0, 0, 0 ) )
         self.PhysObj:SetAngleVelocity( Vector( 0, 0, 0 ) )
     end
 
-    -- Nose straight up for clean vertical kick
     self:SetAngles( Angle( -90, self:GetAngles().y, 0 ) )
 
     self.SpeedValue       = 0
     self.Destroyed        = false
     self.ActivatedAlmonds = false
     self.InitialDistance  = nil
-    self.TerminalDive     = false   -- true = steering OFF, gravity takes over
+    self.TerminalDive     = false
     self.SpawnTime        = CurTime()
     self.HealthVal        = 50
     self.Damage           = 0
@@ -106,7 +101,6 @@ function ENT:FireEngine()
         phys:SetVelocity( self:GetForward() * 108450 )
     end
 
-    -- Invisible trail prop
     local a = self:GetAngles()
     a:RotateAroundAxis( self:GetUp(), 180 )
 
@@ -125,9 +119,8 @@ end
 
 -- ============================================================
 --  PhysicsCollide
---  Only trigger after engine has lit.  In TerminalDive we let
---  the proximity check in Think() handle detonation; a ground
---  collision is still a valid kill.
+--  Ground/wall hit after engine lit = detonate.
+--  (Proximity detonation in Think() handles the normal kill.)
 -- ============================================================
 function ENT:PhysicsCollide( data, physobj )
     if self.Destroyed            then return end
@@ -138,68 +131,68 @@ function ENT:PhysicsCollide( data, physobj )
 end
 
 -- ============================================================
---  PhysicsUpdate  -  3-phase arc steering
+--  PhysicsUpdate  -  3-phase arc + terminal freeze
 --
---  Phase 1  (> 90% of horizontal dist remains):  nose up, climb
---  Phase 2  (40-90% remains):                    track apex above target
---  Phase 3  (< 40% remains):                     point straight at target
---  TERMINAL (< TERMINAL_DIST horizontal):        steering OFF entirely
---
---  In TERMINAL mode we zero the angle velocity so physics can't
---  spin the model, then let gravity pull it down.  We do NOT
---  apply a forward force so there is no steering torque at all.
+--  Phase 1  (> 90% horiz dist):  climb steeply
+--  Phase 2  (40-90% horiz dist): arc over apex
+--  Phase 3  (< 40% horiz dist):  nose at target
+--  TERMINAL (< TERMINAL_DIST):   ALL steering + force OFF,
+--                                 rotation frozen, gravity only
 -- ============================================================
 function ENT:PhysicsUpdate()
     if not self.ActivatedAlmonds then return end
     if not self.Target            then return end
 
     local phys = self:GetPhysicsObject()
-    if not IsValid( phys )        then return end
+    if not IsValid( phys ) then return end
 
-    -- Measure horizontal distance to target
-    local mp         = self:GetPos()
-    local _2dDist    = ( Vector( mp.x, mp.y, 0 )
-                       - Vector( self.Target.x, self.Target.y, 0 ) ):Length()
+    local mp      = self:GetPos()
+    local _2dDist = ( Vector( mp.x, mp.y, 0 )
+                    - Vector( self.Target.x, self.Target.y, 0 ) ):Length()
 
-    -- --- TERMINAL DIVE: stop steering, freeze rotation, fall ---
+    -- TERMINAL: rotation is fully frozen each tick so physics
+    -- cannot accumulate any spin at all.
     if self.TerminalDive then
         phys:SetAngleVelocity( Vector( 0, 0, 0 ) )
-        -- no force applied; gravity does the work
+        -- no force: gravity carries it straight down
         return
     end
 
-    -- Cache initial horizontal distance once
     if not self.InitialDistance then
         self.InitialDistance = math.max( _2dDist, 1 )
     end
 
-    -- Enter terminal dive when close enough
     if _2dDist < TERMINAL_DIST then
         self.TerminalDive = true
+        -- Kill all rotational momentum the moment we switch
         phys:SetAngleVelocity( Vector( 0, 0, 0 ) )
-        print( "[TopMissile] Terminal dive engaged at dist=" .. math.floor( _2dDist ) )
+        -- Also freeze rotation on the physics object so the
+        -- engine won't accumulate any new spin from collisions
+        -- or gravity torque while we wait for proximity kill.
+        phys:EnableMotion( false )
+        phys:EnableMotion( true )   -- re-enable translation only trick:
+        -- re-enabling immediately restores linear motion but the
+        -- zero angle-velocity we just set is preserved for this tick.
+        -- We keep calling SetAngleVelocity(0) every tick above.
+        print( "[TopMissile] Terminal dive at dist=" .. math.floor( _2dDist ) )
         return
     end
 
-    -- Speed ramp (only during arc phases)
+    -- Speed ramp during arc phases only
     if self:GetVelocity():Length() < SPEED_CAP then
         self.SpeedValue = self.SpeedValue + FORCE_PER_TICK
     end
 
-    -- Compute steering target based on phase
     local halfway   = self.InitialDistance * 0.9
     local twoThirds = self.InitialDistance * 0.4
     local steerPos
 
     if _2dDist > halfway then
-        -- Phase 1: climb steeply
         steerPos = self.Target + Vector( 0, 0, 512 )
     elseif _2dDist > twoThirds then
-        -- Phase 2: aim at apex
         steerPos = self.Target + Vector( 0, 0,
             math.Clamp( self.InitialDistance * 0.85, 0, 14500 ) )
     else
-        -- Phase 3: nose toward target, transition to terminal
         steerPos = self.Target
     end
 
@@ -222,7 +215,6 @@ function ENT:Think()
         return true
     end
 
-    -- Proximity check active once engine is lit
     if self.ActivatedAlmonds then
         local dist3d = ( self:GetPos() - self.Target ):Length()
         if dist3d < TERMINAL_PROX then
@@ -261,9 +253,9 @@ function ENT:MissileDoExplosion()
     sound.Play( SND_EXPLODE, pos, 100, 100 )
     util.ScreenShake( pos, 16, 200, 1, 3000 )
 
-    if util.IsValidEffect( "vj_explosion3" ) then
-        ParticleEffect( "vj_explosion3", pos, Angle( 0, 0, 0 ) )
-    end
+    -- ParticleEffect is safe serverside; IsValidEffect is clientside-only
+    -- so we just fire it unconditionally (harmless if particle doesn't exist).
+    ParticleEffect( "vj_explosion3", pos, Angle( 0, 0, 0 ) )
 
     local ed = EffectData()
     ed:SetOrigin( pos )
