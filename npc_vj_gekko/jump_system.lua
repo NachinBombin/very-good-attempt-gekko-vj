@@ -22,8 +22,22 @@ local JUMP_LAND_SUPPRESS_PAD = 1.1
 
 -- Extra cooldown applied ON LANDING on top of JUMP_LAND_LOCKOUT.
 -- Prevents ShouldJump from firing the instant the land anim finishes.
--- Must be > JUMP_LAND_LOCKOUT to be meaningful.
 local JUMP_POST_LAND_COOLDOWN = 3.0
+
+-- ============================================================
+--  Internal helpers
+-- ============================================================
+
+-- Read the authoritative LOCAL state (never touches the NW var for logic).
+local function GetLocalState(ent)
+    return ent._jumpStateLOCAL or JUMP_NONE
+end
+
+-- Write both the local field AND the NW var (for clientside rendering only).
+local function SetLocalState(ent, state)
+    ent._jumpStateLOCAL = state
+    ent:SetGekkoJumpState(state)
+end
 
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
@@ -40,6 +54,9 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_Init()
+    -- _jumpStateLOCAL is the ONLY field used by ShouldJump / Think for logic.
+    -- GetGekkoJumpState() (NW var) is used by cl_init.lua for rendering only.
+    self._jumpStateLOCAL      = JUMP_NONE
     self:SetGekkoJumpState(JUMP_NONE)
     self:SetGekkoJumpTimer(0)
     self._jumpCooldown        = 0
@@ -50,8 +67,9 @@ function ENT:GekkoJump_Init()
     self._seqLand             = -1
     self._jumpRisingStartTime = 0
     self._jumpDidLiftoff      = false
-    -- Separate guard: set to CurTime()+N on landing, ShouldJump checks it.
-    self._jumpLandCooldown    = 0
+    -- Armed immediately so even a first-frame ground-check can't fire.
+    -- Will be overwritten to a real future time whenever landing occurs.
+    self._jumpLandCooldown    = CurTime() + JUMP_POST_LAND_COOLDOWN
 
     self.JUMP_NONE    = JUMP_NONE
     self.JUMP_RISING  = JUMP_RISING
@@ -89,18 +107,22 @@ function ENT:GekkoJump_ScanAttachments()
 end
 
 -- ============================================================
+--  ShouldJump
+--  Uses _jumpStateLOCAL (plain Lua field, set synchronously on
+--  the same tick as any state change) instead of GetGekkoJumpState()
+--  (NW var). This eliminates the one-tick window where the NW var
+--  already reads NONE but the land cooldown hasn't been evaluated yet.
+-- ============================================================
 function ENT:GekkoJump_ShouldJump()
-    -- FIX layer 1: state must be NONE *and* the land cooldown must have expired.
-    -- Previously only _jumpCooldown was checked; _jumpLandCooldown is a separate
-    -- post-land guard that outlasts the JUMP_LAND animation.
-    if self._jumpCooldown    > CurTime() then return false end
+    if self._jumpCooldown     > CurTime() then return false end
     if self._jumpLandCooldown > CurTime() then return false end
-    if self:GetGekkoJumpState() ~= JUMP_NONE then return false end
-    if not self:IsOnGround()               then return false end
-    if self._mgBurstActive                 then return false end
+    -- Use the LOCAL field, not the NW var.
+    if GetLocalState(self) ~= JUMP_NONE   then return false end
+    if not self:IsOnGround()              then return false end
+    if self._mgBurstActive                then return false end
 
     local enemy = self:GetEnemy()
-    if not IsValid(enemy)                  then return false end
+    if not IsValid(enemy)                 then return false end
 
     local dist = self:GetPos():Distance2D(enemy:GetPos())
     if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
@@ -122,7 +144,8 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_Execute()
-    if self:GetGekkoJumpState() ~= JUMP_NONE then return end
+    -- Guard against double-fire: check LOCAL state, not NW var.
+    if GetLocalState(self) ~= JUMP_NONE then return end
 
     local jumpForce    = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
     local jumpCooldown = math.Rand(JUMP_COOLDOWN_MIN, JUMP_COOLDOWN_MAX)
@@ -146,12 +169,12 @@ function ENT:GekkoJump_Execute()
 
     self:SetSchedule(SCHED_NONE)
 
-    self:SetGekkoJumpState(JUMP_RISING)
+    SetLocalState(self, JUMP_RISING)
     self._jumpCooldown        = CurTime() + jumpCooldown
     self._gekkoJustJumped     = CurTime() + 0.3
     self._jumpRisingStartTime = CurTime()
     self._jumpDidLiftoff      = false
-    -- Land cooldown starts cleared when a new jump begins.
+    -- Clear land cooldown when a new jump begins.
     self._jumpLandCooldown    = 0
 
     if self._seqJump ~= -1 then
@@ -165,7 +188,7 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_Think()
-    local state    = self:GetGekkoJumpState()
+    local state    = GetLocalState(self)
     if state == JUMP_NONE then return end
 
     local vel      = self:GetVelocity()
@@ -201,14 +224,16 @@ function ENT:GekkoJump_Think()
         self._jumpThinkPrint = now + 0.2
     end
 
+    -- ── RISING ────────────────────────────────────────────────
     if state == JUMP_RISING then
         if vel.z > 50 then
             self._jumpDidLiftoff = true
         end
 
+        -- Abort: never got airborne within timeout.
         if not self._jumpDidLiftoff and
            (now - self._jumpRisingStartTime) > JUMP_RISING_TIMEOUT then
-            self:SetGekkoJumpState(JUMP_NONE)
+            SetLocalState(self, JUMP_NONE)
             self:SetGekkoJumpTimer(0)
             self:SetMoveType(MOVETYPE_STEP)
             self:SetVelocity(Vector(0, 0, 0))
@@ -217,6 +242,7 @@ function ENT:GekkoJump_Think()
             self._gekkoSuppressActivity = now + 0.15
             self.VJ_CanMoveThink = true
             self._jumpCooldown     = now + JUMP_COOLDOWN_MAX * 2
+            -- Arm land cooldown on the abort path too.
             self._jumpLandCooldown = now + JUMP_POST_LAND_COOLDOWN
             self:GekkoJump_StopJetFX()
             if self._gekkoCrouching then
@@ -236,7 +262,7 @@ function ENT:GekkoJump_Think()
         end
 
         if vel.z < 0 then
-            self:SetGekkoJumpState(JUMP_FALLING)
+            SetLocalState(self, JUMP_FALLING)
             self:GekkoJump_StopJetFX()
             if self._seqFall ~= -1 then
                 ForceSeq(self, self._seqFall, 1.0, 0.5, "fall")
@@ -245,6 +271,7 @@ function ENT:GekkoJump_Think()
         end
     end
 
+    -- ── FALLING ───────────────────────────────────────────────
     if state == JUMP_FALLING then
         if self._seqFall ~= -1 then
             if self:GetSequence() ~= self._seqFall then
@@ -257,17 +284,18 @@ function ENT:GekkoJump_Think()
         end
     end
 
+    -- ── FALLING → LAND ────────────────────────────────────────
     if state == JUMP_FALLING and grounded then
-        self:SetGekkoJumpState(JUMP_LAND)
+        SetLocalState(self, JUMP_LAND)
         self:SetGekkoJumpTimer(now + JUMP_LAND_LOCKOUT)
         self:SetMoveType(MOVETYPE_STEP)
 
-        -- FIX layer 2: zero velocity immediately AND one tick later to catch
-        -- any residual momentum the engine applies on the movetype-switch frame.
+        -- Zero velocity immediately and one tick later to absorb any
+        -- residual momentum from the movetype-switch frame.
         self:SetVelocity(Vector(0, 0, 0))
         local selfRef = self
         timer.Simple(0, function()
-            if IsValid(selfRef) and selfRef:GetGekkoJumpState() == JUMP_LAND then
+            if IsValid(selfRef) and GetLocalState(selfRef) == JUMP_LAND then
                 selfRef:SetVelocity(Vector(0, 0, 0))
             end
         end)
@@ -279,17 +307,18 @@ function ENT:GekkoJump_Think()
                 JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD, "land")
         end
 
-        -- FIX layer 3: set _jumpLandCooldown NOW, before state transitions to
-        -- JUMP_NONE, so ShouldJump is blocked for JUMP_POST_LAND_COOLDOWN seconds
-        -- after the land anim finishes.
+        -- Arm the post-land cooldown NOW (before state ever reaches NONE)
+        -- so ShouldJump is blocked for the full JUMP_POST_LAND_COOLDOWN
+        -- seconds after the land animation finishes.
         self._jumpLandCooldown = now + JUMP_LAND_LOCKOUT + JUMP_POST_LAND_COOLDOWN
 
         self:GekkoJump_LandImpact()
         return
     end
 
+    -- ── LAND → NONE ───────────────────────────────────────────
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
-        self:SetGekkoJumpState(JUMP_NONE)
+        SetLocalState(self, JUMP_NONE)
         self:SetGekkoJumpTimer(0)
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
@@ -306,14 +335,14 @@ function ENT:GekkoJump_Think()
         if self._gekkoCrouching then
             self._gekkoCrouchJustEntered = true
         end
-        -- _jumpLandCooldown is still ticking here -- ShouldJump remains blocked
-        -- for JUMP_POST_LAND_COOLDOWN seconds after this point.
+        -- _jumpLandCooldown keeps blocking ShouldJump for JUMP_POST_LAND_COOLDOWN
+        -- seconds from this point. No change needed here.
     end
 end
 
 -- ============================================================
 function ENT:GekkoJump_IsAirborne()
-    local s = self:GetGekkoJumpState()
+    local s = GetLocalState(self)
     return s == JUMP_RISING or s == JUMP_FALLING
 end
 
