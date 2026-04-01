@@ -30,14 +30,33 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 75   -- MG burst
-local WWEIGHT_MISSILE_SINGLE = 20   -- single accurate rocket
-local WWEIGHT_MISSILE_DOUBLE = 5   -- double inaccurate salvo
+local WWEIGHT_MG             = 55
+local WWEIGHT_MISSILE_SINGLE = 15
+local WWEIGHT_MISSILE_DOUBLE = 10
+local WWEIGHT_GRENADE        = 20
 
--- Double-salvo inaccuracy: random offset added to the aim point (world units)
-local SALVO_SPREAD_XY = 220   -- horizontal wobble per rocket
-local SALVO_SPREAD_Z  = 80    -- vertical wobble per rocket
-local SALVO_DELAY     = 0.8   -- seconds between the two shots
+-- Double-salvo inaccuracy
+local SALVO_SPREAD_XY = 220
+local SALVO_SPREAD_Z  = 80
+local SALVO_DELAY     = 0.8
+
+-- Grenade launcher
+local GL_COUNT_MIN      = 4
+local GL_COUNT_MAX      = 8
+local GL_INTERVAL       = 0.35   -- seconds between each grenade
+local GL_SPREAD_XY      = 350    -- random forward scatter (world units)
+local GL_SPREAD_Y       = 250    -- lateral scatter
+local GL_LAUNCH_Z       = 180    -- launch height above Gekko origin
+local GL_LAUNCH_SPEED   = 650    -- initial velocity magnitude
+local GL_SOUND_FIDGET   = "mac_bo2_m32/fidget.wav"
+local GL_SOUND_FIRE     = "mac_bo2_m32/fire.wav"
+local GL_SOUND_INSERT   = "mac_bo2_m32/insert.wav"
+local GL_FIDGET_LEAD    = 0.5    -- fidget plays this many seconds before fire
+local GL_GRENADE_TYPES  = {
+    "bombin_gas_grenade",
+    "ent_gas_stun",
+    "ent_flashbang",
+}
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
@@ -64,20 +83,21 @@ local function SafeResetSequence(ent, seq)
     end
 end
 
--- Roll a weapon choice. Returns one of: "MG", "MISSILE", "SALVO"
+-- Weapon roll — returns one of: "MG", "MISSILE", "SALVO", "GRENADE"
 local function RollWeapon()
     local r = math.random(1, 100)
     if r <= WWEIGHT_MG then
         return "MG"
     elseif r <= WWEIGHT_MG + WWEIGHT_MISSILE_SINGLE then
         return "MISSILE"
-    else
+    elseif r <= WWEIGHT_MG + WWEIGHT_MISSILE_SINGLE + WWEIGHT_MISSILE_DOUBLE then
         return "SALVO"
+    else
+        return "GRENADE"
     end
 end
 
--- Spawns one rocket from the given attachment index toward aimPos.
--- spread: Vector offset applied to aimPos before computing direction.
+-- Single rocket helper
 local function SpawnRocket(ent, attIdx, aimPos, spread)
     local misAtt = ent:GetAttachment(attIdx)
     local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
@@ -101,7 +121,6 @@ local function SpawnRocket(ent, attIdx, aimPos, spread)
     util.Effect("MuzzleFlash", eff)
 end
 
--- Random XY+Z spread vector for the salvo
 local function SalvoSpread()
     return Vector(
         (math.random() - 0.5) * 2 * SALVO_SPREAD_XY,
@@ -287,7 +306,7 @@ function ENT:Init()
     self._crushHitTimes      = {}
     self._bloodSplatPulse    = 0
     self._gibCooldownT       = 0
-    self._lastWeaponChoice   = ""   -- debug only
+    self._lastWeaponChoice   = ""
 
     self:SetNWBool("GekkoMGFiring",   false)
     self:SetNWInt("GekkoJumpDust",    0)
@@ -440,10 +459,8 @@ function ENT:OnThink()
 end
 
 -- ============================================================
---  Weapon functions
+--  Weapon: MG burst
 -- ============================================================
-
--- MG burst
 local function FireMGBurst(ent, enemy)
     if ent._mgBurstActive then
         print("[GekkoMG] Burst skipped — already active")
@@ -515,26 +532,27 @@ local function FireMGBurst(ent, enemy)
     return true
 end
 
--- Single accurate missile
+-- ============================================================
+--  Weapon: single accurate missile
+-- ============================================================
 local function FireMissile(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    SpawnRocket(ent, attIdx, aimPos, nil)   -- nil spread = perfectly accurate
+    SpawnRocket(ent, attIdx, aimPos, nil)
     return true
 end
 
--- Double inaccurate salvo: two rockets, 0.8 s apart, independent wobble
+-- ============================================================
+--  Weapon: double inaccurate salvo
+-- ============================================================
 local function FireDoubleSalvo(ent, enemy)
-    -- Snapshot aim at the moment of firing; each rocket gets its own spread
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
-    -- First rocket — fires immediately
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx1 = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     SpawnRocket(ent, attIdx1, aimPos, SalvoSpread())
 
-    -- Second rocket — fires after SALVO_DELAY, re-checks enemy position
     timer.Simple(SALVO_DELAY, function()
         if not IsValid(ent) then return end
         local curEnemy = GetActiveEnemy(ent)
@@ -550,9 +568,86 @@ local function FireDoubleSalvo(ent, enemy)
 end
 
 -- ============================================================
+--  Weapon: grenade launcher (M32-style)
+--
+--  Sound sequence:
+--    t=0              fidget.wav  (loading cue)
+--    t=GL_FIDGET_LEAD fire.wav    (first shot sound, plays once)
+--    t=last_grenade   insert.wav  (reload finish cue)
+--
+--  Grenade type is rolled ONCE per event; all rounds use that type.
+--  Projectiles scatter randomly in front of the Gekko.
+-- ============================================================
+local function FireGrenadeLauncher(ent, enemy)
+    local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
+    local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
+
+    -- Forward facing of the Gekko at the moment of firing
+    local forward = ent:GetForward()
+    local right   = ent:GetRight()
+    local origin  = ent:GetPos() + Vector(0, 0, GL_LAUNCH_Z)
+
+    print(string.format("[GekkoGL] Firing %d x %s", count, grenadeType))
+
+    -- ── Sound sequence ──
+    -- fidget.wav now
+    ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
+
+    -- fire.wav after the lead time
+    timer.Simple(GL_FIDGET_LEAD, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(GL_SOUND_FIRE, 80, 100, 1)
+    end)
+
+    -- insert.wav after the last grenade has left the tube
+    local lastGrenadeT = GL_FIDGET_LEAD + (count - 1) * GL_INTERVAL
+    timer.Simple(lastGrenadeT + 0.1, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
+    end)
+
+    -- ── Grenade spawns ──
+    -- First grenade fires at fidget-lead time so fire.wav and first pop align.
+    for i = 0, count - 1 do
+        local delay = GL_FIDGET_LEAD + i * GL_INTERVAL
+        timer.Simple(delay, function()
+            if not IsValid(ent) then return end
+
+            -- Random scatter in front of Gekko
+            local scatter = forward * (math.Rand(300, 700))
+                          + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
+            local spawnPos = origin + scatter * 0.05   -- spawn close, let physics carry it
+            local launchDir = (scatter):GetNormalized()
+            launchDir.z = launchDir.z + 0.35           -- lob arc
+            launchDir:Normalize()
+
+            local gren = ents.Create(grenadeType)
+            if IsValid(gren) then
+                gren:SetPos(spawnPos)
+                gren:SetAngles(launchDir:Angle())
+                gren:SetOwner(ent)
+                gren:Spawn()
+                gren:Activate()
+
+                local phys = gren:GetPhysicsObject()
+                if IsValid(phys) then
+                    phys:SetVelocity(launchDir * GL_LAUNCH_SPEED)
+                    phys:SetAngleVelocity(Vector(
+                        math.Rand(-200, 200),
+                        math.Rand(-200, 200),
+                        math.Rand(-200, 200)
+                    ))
+                end
+            end
+        end)
+    end
+
+    return true
+end
+
+-- ============================================================
 --  Range attack entry point
---  Pure random roll every call — no fixed rotation, no state.
---  Any weapon can repeat any number of times in a row.
+--  Pure random roll every call. No state, no fixed rotation.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
@@ -566,8 +661,10 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
         return FireMGBurst(self, enemy)
     elseif choice == "MISSILE" then
         return FireMissile(self, enemy)
-    else
+    elseif choice == "SALVO" then
         return FireDoubleSalvo(self, enemy)
+    else
+        return FireGrenadeLauncher(self, enemy)
     end
 end
 
