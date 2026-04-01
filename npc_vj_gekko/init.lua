@@ -4,9 +4,10 @@
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
-include("crush_system.lua")   -- must come before jump_system (jump calls crush methods)
+include("crush_system.lua")   -- must come before jump_system
 include("jump_system.lua")
 include("crouch_system.lua")
+include("gib_system.lua")     -- metal chunk gibs on heavy hits
 
 -- ============================================================
 --  Constants
@@ -33,7 +34,6 @@ local WMODE_MISSILE = 2
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
--- Head zone: top 35% of collision bbox
 local HEAD_Z_FRACTION = 0.65
 
 -- Blood splat
@@ -64,14 +64,12 @@ function ENT:AnimApply()
     if CurTime() < (self._gekkoSuppressActivity or 0) then
         return true
     end
-
     local js = self:GetGekkoJumpState()
     if js == self.JUMP_RISING  or
        js == self.JUMP_FALLING or
        js == self.JUMP_LAND    then
         return true
     end
-
     return false
 end
 
@@ -227,6 +225,7 @@ function ENT:Init()
     self._missileCount       = 0
     self._mgBurstActive      = false
     self._mgBurstEndT        = 0
+    -- Always start on MG; missile is always the follow-up
     self._weaponMode         = WMODE_MG
     self._gekkoRunning       = false
     self._gekkoLastEnemyDist = nil
@@ -235,12 +234,13 @@ function ENT:Init()
     self._gekkoSuppressActivity = 0
     self._gekkoSkipAnimTick  = false
     self._crushHitTimes      = {}
-    self._bloodSplatPulse    = 0   -- incremented each time we fire a splat
+    self._bloodSplatPulse    = 0
+    self._gibCooldownT       = 0
 
     self:SetNWBool("GekkoMGFiring",   false)
     self:SetNWInt("GekkoJumpDust",    0)
     self:SetNWInt("GekkoLandDust",    0)
-    self:SetNWInt("GekkoBloodSplat",  0)   -- packed: pulse*8 + (variant-1)
+    self:SetNWInt("GekkoBloodSplat",  0)
 
     SafeInitVJTables(self)
     self:GekkoJump_Init()
@@ -302,12 +302,9 @@ end
 
 -- ============================================================
 --  Damage override
---  Positional head zone: top 35% of bbox = 1/3 damage
---  Fallback: zero hitPos -> inflictor:GetPos() (covers interactive_debris)
---
---  Blood splat triggers:
---    (a) 1 in BLOOD_RANDOM_CHANCE on any hit
---    (b) single-hit damage >= BLOOD_DAMAGE_THRESHOLD
+--  • Head zone: top 35% of bbox = 1/3 damage
+--  • Blood splat: 1-in-40 random OR single hit >= 900
+--  • Gib chunks: delegated to gib_system.lua
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
@@ -332,21 +329,18 @@ function ENT:OnTakeDamage(dmginfo)
         dmginfo:ScaleDamage(1 / 3)
     end
 
-    -- --------------------------------------------------------
-    --  Blood splat check
-    -- --------------------------------------------------------
+    -- Blood splat
     local rawDmg  = dmginfo:GetDamage()
     local doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1)
                  or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
-
     if doSplat then
         self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
         local variant = math.random(1, 5)
-        -- pack: pulse in upper bits, variant (0-based) in lower 3 bits
-        -- client reads: pulse = floor(packed/8), variant = (packed%8)+1
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
     end
-    -- --------------------------------------------------------
+
+    -- Gib chunks (defined in gib_system.lua)
+    self:GekkoGib_OnDamage(rawDmg, dmginfo)
 
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
@@ -383,7 +377,7 @@ function ENT:OnThink()
             src  = "none"
         end
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s  crouch=%s  VJ_Crouch=%s  ceil=%s",
+            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s  crouch=%s  VJ_Crouch=%s  ceil=%s  wmode=%s  mgActive=%s",
             self:GetNWFloat("GekkoSpeed", 0),
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
@@ -392,105 +386,108 @@ function ENT:OnThink()
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching),
             tostring(self.VJ_IsBeingCrouched),
-            tostring(self._gekkoCeilingHit)
+            tostring(self._gekkoCeilingHit),
+            (self._weaponMode == WMODE_MG) and "MG" or "MISSILE",
+            tostring(self._mgBurstActive)
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
 end
 
 -- ============================================================
---  Range attack
+--  MG burst
+--  Mode flip happens AFTER committing to fire, never before.
 -- ============================================================
-function ENT:OnRangeAttackExecute(status, enemy, projectile)
-    if status ~= "Init" then return end
-    if not IsValid(enemy) then return true end
-
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
-    local mode   = self._weaponMode
-    self._weaponMode = (mode == WMODE_MG) and WMODE_MISSILE or WMODE_MG
-
-    if mode == WMODE_MG then
-        if self._mgBurstActive then return true end
-
-        local mgRounds = math.random(MG_ROUNDS_MIN, MG_ROUNDS_MAX)
-        local mgSpread = math.Rand(MG_SPREAD_MIN, MG_SPREAD_MAX)
-
-        self._mgBurstActive = true
-        self._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
-        self:SetNWBool("GekkoMGFiring", true)
-        local entRef = self
-
-        print(string.format(
-            "[GekkoMG] Burst | rounds=%d  spread=%.2f",
-            mgRounds, mgSpread
-        ))
-
-        for i = 0, mgRounds - 1 do
-            timer.Simple(i * MG_INTERVAL, function()
-                if not IsValid(entRef) then return end
-
-                local curEnemy = GetActiveEnemy(entRef)
-                local curAim   = IsValid(curEnemy)
-                    and (curEnemy:GetPos() + Vector(0, 0, 40))
-                    or  aimPos
-
-                local src
-                local mgAtt = entRef:GetAttachment(ATT_MACHINEGUN)
-                if mgAtt then
-                    src = mgAtt.Pos
-                else
-                    local boneIdx = entRef.GekkoLGunBone
-                    if boneIdx and boneIdx >= 0 then
-                        local m = entRef:GetBoneMatrix(boneIdx)
-                        if m then src = m:GetTranslation() + m:GetForward() * 28 end
-                    end
-                    src = src or (entRef:GetPos() + Vector(0, 0, 200))
-                end
-
-                local dir = (curAim - src):GetNormalized()
-
-                entRef:FireBullets({
-                    Attacker   = entRef,
-                    Damage     = MG_DAMAGE,
-                    Dir        = dir,
-                    Src        = src,
-                    AmmoType   = "AR2",
-                    TracerName = "Tracer",
-                    Num        = 1,
-                    Spread     = Vector(
-                        (math.random() - 0.5) * 2 * mgSpread,
-                        (math.random() - 0.5) * 2 * mgSpread,
-                        0
-                    ),
-                })
-
-                local eff = EffectData()
-                eff:SetOrigin(src)
-                eff:SetNormal(dir)
-                util.Effect("MuzzleFlash", eff)
-                entRef:EmitSound("weapons/ar2/fire1.wav", 75, math.random(95, 115))
-
-                if i == mgRounds - 1 then
-                    entRef._mgBurstActive = false
-                    entRef:SetNWBool("GekkoMGFiring", false)
-                end
-            end)
-        end
-        return true
+local function FireMGBurst(ent, enemy)
+    if ent._mgBurstActive then
+        print("[GekkoMG] Burst skipped — already active")
+        return false
     end
 
-    -- Missile
-    self._missileCount = (self._missileCount or 0) + 1
-    local missileAttIdx = (self._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    local misAtt = self:GetAttachment(missileAttIdx)
-    local src    = misAtt and misAtt.Pos or (self:GetPos() + Vector(0, 0, 160))
+    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
+    local mgRounds = math.random(MG_ROUNDS_MIN, MG_ROUNDS_MAX)
+    local mgSpread = math.Rand(MG_SPREAD_MIN, MG_SPREAD_MAX)
+
+    ent._mgBurstActive = true
+    ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
+    ent:SetNWBool("GekkoMGFiring", true)
+    ent._weaponMode = WMODE_MISSILE   -- flip only after commit
+
+    print(string.format("[GekkoMG] Burst | rounds=%d  spread=%.2f", mgRounds, mgSpread))
+
+    for i = 0, mgRounds - 1 do
+        timer.Simple(i * MG_INTERVAL, function()
+            if not IsValid(ent) then return end
+
+            local curEnemy = GetActiveEnemy(ent)
+            local curAim   = IsValid(curEnemy)
+                and (curEnemy:GetPos() + Vector(0, 0, 40))
+                or  aimPos
+
+            local src
+            local mgAtt = ent:GetAttachment(ATT_MACHINEGUN)
+            if mgAtt then
+                src = mgAtt.Pos
+            else
+                local boneIdx = ent.GekkoLGunBone
+                if boneIdx and boneIdx >= 0 then
+                    local m = ent:GetBoneMatrix(boneIdx)
+                    if m then src = m:GetTranslation() + m:GetForward() * 28 end
+                end
+                src = src or (ent:GetPos() + Vector(0, 0, 200))
+            end
+
+            local dir = (curAim - src):GetNormalized()
+
+            ent:FireBullets({
+                Attacker   = ent,
+                Damage     = MG_DAMAGE,
+                Dir        = dir,
+                Src        = src,
+                AmmoType   = "AR2",
+                TracerName = "Tracer",
+                Num        = 1,
+                Spread     = Vector(
+                    (math.random() - 0.5) * 2 * mgSpread,
+                    (math.random() - 0.5) * 2 * mgSpread,
+                    0
+                ),
+            })
+
+            local eff = EffectData()
+            eff:SetOrigin(src)
+            eff:SetNormal(dir)
+            util.Effect("MuzzleFlash", eff)
+            ent:EmitSound("weapons/ar2/fire1.wav", 75, math.random(95, 115))
+
+            if i == mgRounds - 1 then
+                ent._mgBurstActive = false
+                ent:SetNWBool("GekkoMGFiring", false)
+            end
+        end)
+    end
+
+    return true
+end
+
+-- ============================================================
+--  Missile
+--  Flips back to MG after firing so the cycle always continues.
+-- ============================================================
+local function FireMissile(ent, enemy)
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local missileAttIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local misAtt = ent:GetAttachment(missileAttIdx)
+    local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
     local dir    = (aimPos - src):GetNormalized()
 
     local rocket = ents.Create("obj_vj_rocket")
     if IsValid(rocket) then
         rocket:SetPos(src)
         rocket:SetAngles(dir:Angle())
-        rocket:SetOwner(self)
+        rocket:SetOwner(ent)
         rocket:Spawn()
         rocket:Activate()
         local phys = rocket:GetPhysicsObject()
@@ -501,7 +498,23 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     eff:SetOrigin(src)
     eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
+
+    ent._weaponMode = WMODE_MG   -- flip back so cycle continues
     return true
+end
+
+-- ============================================================
+--  Range attack entry point  (clean 3-line dispatcher)
+-- ============================================================
+function ENT:OnRangeAttackExecute(status, enemy, projectile)
+    if status ~= "Init" then return end
+    if not IsValid(enemy) then return true end
+
+    if self._weaponMode == WMODE_MG then
+        return FireMGBurst(self, enemy)
+    else
+        return FireMissile(self, enemy)
+    end
 end
 
 -- ============================================================
