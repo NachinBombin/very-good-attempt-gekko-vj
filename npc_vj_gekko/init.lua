@@ -1,14 +1,13 @@
 -- ============================================================
 --  npc_vj_gekko / init.lua
---  + 5th weapon: Top-Attack Terror Missile (sent_npc_topmissile)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
-include("crush_system.lua")   -- must come before jump_system
+include("crush_system.lua")
 include("jump_system.lua")
 include("crouch_system.lua")
-include("gib_system.lua")     -- metal chunk gibs on heavy hits
+include("gib_system.lua")
 
 -- ============================================================
 --  Constants
@@ -31,13 +30,12 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 45   -- reduced from 55 to make room for TOPMISSILE
+local WWEIGHT_MG             = 45
 local WWEIGHT_MISSILE_SINGLE = 15
 local WWEIGHT_MISSILE_DOUBLE = 10
 local WWEIGHT_GRENADE        = 20
-local WWEIGHT_TOPMISSILE     = 10   -- 5th weapon
+local WWEIGHT_TOPMISSILE     = 10
 
--- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
 local SALVO_SPREAD_Z  = 80
 local SALVO_DELAY     = 0.8
@@ -45,15 +43,15 @@ local SALVO_DELAY     = 0.8
 -- Grenade launcher
 local GL_COUNT_MIN      = 4
 local GL_COUNT_MAX      = 8
-local GL_INTERVAL       = 0.35   -- seconds between each grenade
-local GL_SPREAD_XY      = 350    -- random forward scatter (world units)
-local GL_SPREAD_Y       = 250    -- lateral scatter
-local GL_LAUNCH_Z       = 180    -- launch height above Gekko origin
-local GL_LAUNCH_SPEED   = 650    -- initial velocity magnitude
+local GL_INTERVAL       = 0.35
+local GL_SPREAD_XY      = 350
+local GL_SPREAD_Y       = 250
+local GL_LAUNCH_Z       = 180
+local GL_LAUNCH_SPEED   = 650
 local GL_SOUND_FIDGET   = "mac_bo2_m32/fidget.wav"
 local GL_SOUND_FIRE     = "mac_bo2_m32/fire.wav"
 local GL_SOUND_INSERT   = "mac_bo2_m32/insert.wav"
-local GL_FIDGET_LEAD    = 0.5    -- fidget plays this many seconds before fire
+local GL_FIDGET_LEAD    = 0.5
 local GL_GRENADE_TYPES  = {
     "bombin_gas_grenade",
     "ent_gas_stun",
@@ -61,15 +59,12 @@ local GL_GRENADE_TYPES  = {
 }
 
 -- Top-attack missile
--- Below this distance the arc cannot form; the roll is re-tried once.
-local TOPMISSILE_MIN_DIST  = 1200
+local TOPMISSILE_MIN_DIST   = 1200
+local TOPMISSILE_KICK       = 90000   -- initial velocity (Hammer units/s)
 local TOPMISSILE_SOUND_WARN = "npc/strider/fire.wav"
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
-
-local HEAD_Z_FRACTION = 0.65
-
--- Blood splat
+local HEAD_Z_FRACTION  = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 
@@ -90,7 +85,7 @@ local function SafeResetSequence(ent, seq)
     end
 end
 
--- Weapon roll — returns one of: "MG", "MISSILE", "SALVO", "GRENADE", "TOPMISSILE"
+-- Weapon roll
 local function RollWeapon()
     local r = math.random(1, 100)
     if r <= WWEIGHT_MG then
@@ -106,28 +101,52 @@ local function RollWeapon()
     end
 end
 
--- Single rocket helper
-local function SpawnRocket(ent, attIdx, aimPos, spread)
-    local misAtt = ent:GetAttachment(attIdx)
-    local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    local target = aimPos + (spread or Vector(0, 0, 0))
-    local dir    = (target - src):GetNormalized()
+-- ============================================================
+--  Core missile spawn helper
+--  Implements the CORRECT spawn order:
+--    1. Set Owner + Target BEFORE Spawn()
+--    2. Spawn() + Activate()
+--    3. SetVelocityInstantaneous AFTER Spawn() (PhysObj now exists)
+--    4. Gravity OFF until engine fires
+--  TargetEntity is optional (live tracking); Target (Vector) is required.
+-- ============================================================
+local function SpawnGuidedMissile(ent, attIdx, targetPos, targetEnt, kickSpeed)
+    local att    = ent:GetAttachment(attIdx)
+    local src    = att and att.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local ang    = att and att.Ang or ent:GetAngles()
 
-    local rocket = ents.Create("obj_vj_rocket")
-    if IsValid(rocket) then
-        rocket:SetPos(src)
-        rocket:SetAngles(dir:Angle())
-        rocket:SetOwner(ent)
-        rocket:Spawn()
-        rocket:Activate()
-        local phys = rocket:GetPhysicsObject()
-        if IsValid(phys) then phys:SetVelocity(dir * 1200) end
+    local missile = ents.Create("sent_npc_topmissile")
+    if not IsValid(missile) then
+        print("[GekkoMissile] ERROR: sent_npc_topmissile could not be created")
+        return nil
+    end
+
+    -- STEP 1: set fields BEFORE Spawn() so Initialize() sees them
+    missile.Owner        = ent
+    missile.Target       = targetPos
+    missile.TargetEntity = targetEnt  -- may be nil/NULL, that is fine
+
+    missile:SetPos(src)
+    missile:SetAngles(ang)
+
+    -- STEP 2: Spawn
+    missile:Spawn()
+    missile:Activate()
+
+    -- STEP 3: initial kick velocity (PhysObj valid now)
+    local phys = missile:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:SetVelocityInstantaneous(missile:GetForward() * (kickSpeed or TOPMISSILE_KICK))
+        -- STEP 4: gravity OFF — Initialize() already does this, but be explicit
+        phys:EnableGravity(false)
     end
 
     local eff = EffectData()
     eff:SetOrigin(src)
-    eff:SetNormal(dir)
+    eff:SetNormal(missile:GetForward())
     util.Effect("MuzzleFlash", eff)
+
+    return missile
 end
 
 local function SalvoSpread()
@@ -518,10 +537,6 @@ local function FireMGBurst(ent, enemy)
                 AmmoType   = "AR2",
                 TracerName = "Tracer",
                 Num        = 1,
-                -- Spread is a symmetric cone half-angle in local space.
-                -- All three axes must be equal for a proper circular cone.
-                -- Previously Z=0 created a flat horizontal pancake, causing
-                -- bullets to slam into the floor when Dir had any downward component.
                 Spread     = Vector(mgSpread, mgSpread, mgSpread),
             })
 
@@ -543,34 +558,39 @@ end
 
 -- ============================================================
 --  Weapon: single accurate missile
+--
+--  Uses SpawnGuidedMissile — correct spawn order:
+--  Owner+Target set BEFORE Spawn(), kick velocity AFTER.
 -- ============================================================
 local function FireMissile(ent, enemy)
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     ent._missileCount = (ent._missileCount or 0) + 1
-    local attIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    SpawnRocket(ent, attIdx, aimPos, nil)
+    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
+
+    SpawnGuidedMissile(ent, attIdx, aimPos, enemy, TOPMISSILE_KICK)
     return true
 end
 
 -- ============================================================
 --  Weapon: double inaccurate salvo
+--
+--  Same correct pattern. Second missile re-snapshots enemy.
 -- ============================================================
 local function FireDoubleSalvo(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx1 = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    SpawnRocket(ent, attIdx1, aimPos, SalvoSpread())
+    SpawnGuidedMissile(ent, attIdx1, aimPos + SalvoSpread(), enemy, TOPMISSILE_KICK)
 
     timer.Simple(SALVO_DELAY, function()
         if not IsValid(ent) then return end
         local curEnemy = GetActiveEnemy(ent)
-        local curAim   = IsValid(curEnemy)
-            and (curEnemy:GetPos() + Vector(0, 0, 40))
-            or  aimPos
+        if not IsValid(curEnemy) then curEnemy = enemy end
+        local curAim = curEnemy:GetPos() + Vector(0, 0, 40)
         ent._missileCount = (ent._missileCount or 0) + 1
         local attIdx2 = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-        SpawnRocket(ent, attIdx2, curAim, SalvoSpread())
+        SpawnGuidedMissile(ent, attIdx2, curAim + SalvoSpread(), curEnemy, TOPMISSILE_KICK)
     end)
 
     return true
@@ -578,27 +598,17 @@ end
 
 -- ============================================================
 --  Weapon: grenade launcher (M32-style)
---
---  Sound sequence:
---    t=0              fidget.wav  (loading cue)
---    t=GL_FIDGET_LEAD fire.wav    (first shot sound, plays once)
---    t=last_grenade   insert.wav  (reload finish cue)
---
---  Grenade type is rolled ONCE per event; all rounds use that type.
---  Projectiles scatter randomly in front of the Gekko.
 -- ============================================================
 local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
     local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
 
-    -- Forward facing of the Gekko at the moment of firing
     local forward = ent:GetForward()
     local right   = ent:GetRight()
     local origin  = ent:GetPos() + Vector(0, 0, GL_LAUNCH_Z)
 
     print(string.format("[GekkoGL] Firing %d x %s", count, grenadeType))
 
-    -- Sound sequence
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
 
     timer.Simple(GL_FIDGET_LEAD, function()
@@ -651,15 +661,13 @@ end
 -- ============================================================
 --  Weapon: top-attack terror missile  (5th weapon)
 --
---  When the enemy is too close for a proper arc, we skip
---  this weapon and re-roll the randomiser once rather than
---  forcing a specific fallback weapon.
+--  Uses SpawnGuidedMissile — identical pattern to FireMissile,
+--  but with a minimum-distance guard for arc clearance.
 -- ============================================================
 local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
 
     if dist < TOPMISSILE_MIN_DIST then
-        -- Re-roll: keep rolling until we land on something other than TOPMISSILE
         print(string.format(
             "[GekkoTM] Too close (%.0f < %d) — re-rolling",
             dist, TOPMISSILE_MIN_DIST
@@ -678,51 +686,24 @@ local function FireTopMissile(ent, enemy)
         end
     end
 
-    -- Warning sound on the Gekko body
     ent:EmitSound(TOPMISSILE_SOUND_WARN, 90, math.random(90, 110), 1)
 
-    -- Launch from right missile pod attachment, fall back to spine height
-    local launchAtt = ent:GetAttachment(ATT_MISSILE_R)
-    local launchPos = launchAtt and launchAtt.Pos or (ent:GetPos() + Vector(0, 0, 180))
-    local launchAng = ent:GetAngles()
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
-    local targetPos = enemy:GetPos() + Vector(0, 0, 40)
-
-    local missile = ents.Create("sent_npc_topmissile")
-    if not IsValid(missile) then
-        print("[GekkoTM] ERROR: sent_npc_topmissile could not be created — re-rolling")
-        local reroll
-        repeat reroll = RollWeapon() until reroll ~= "TOPMISSILE"
-        if reroll == "MG" then
-            return FireMGBurst(ent, enemy)
-        elseif reroll == "MISSILE" then
-            return FireMissile(ent, enemy)
-        elseif reroll == "SALVO" then
-            return FireDoubleSalvo(ent, enemy)
-        else
-            return FireGrenadeLauncher(ent, enemy)
-        end
+    local m = SpawnGuidedMissile(ent, attIdx, aimPos, enemy, TOPMISSILE_KICK)
+    if not IsValid(m) then
+        -- entity class missing — graceful fallback
+        return FireMissile(ent, enemy)
     end
 
-    -- Set Owner and Target BEFORE Spawn() so Initialize() can read them
-    missile.Owner  = ent
-    missile.Target = targetPos
-
-    missile:SetPos(launchPos)
-    missile:SetAngles(launchAng)
-    missile:Spawn()
-    missile:Activate()
-
-    print(string.format(
-        "[GekkoTM] Launched | dist=%.0f  target=%s",
-        dist, tostring(targetPos)
-    ))
+    print(string.format("[GekkoTM] Launched | dist=%.0f  target=%s", dist, tostring(aimPos)))
     return true
 end
 
 -- ============================================================
 --  Range attack entry point
---  Pure random roll every call. No state, no fixed rotation.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
