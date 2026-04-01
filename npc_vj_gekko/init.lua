@@ -42,13 +42,12 @@ local SALVO_SPREAD_XY = 220
 local SALVO_SPREAD_Z  = 80
 local SALVO_DELAY     = 0.8
 
--- Grenade launcher
+-- Grenade launcher — shared
 local GL_COUNT_MIN    = 4
 local GL_COUNT_MAX    = 8
 local GL_INTERVAL     = 0.35
 local GL_SPREAD_Y     = 250
 local GL_LAUNCH_Z     = 180
-local GL_LAUNCH_SPEED = 2650
 local GL_SOUND_FIDGET = "mac_bo2_m32/fidget.wav"
 local GL_SOUND_FIRE   = "mac_bo2_m32/fire.wav"
 local GL_SOUND_INSERT = "mac_bo2_m32/insert.wav"
@@ -59,23 +58,41 @@ local GL_GRENADE_TYPES = {
     "ent_flashbang",
 }
 
--- Grenade launcher spark effect
+-- ── Per-grenade-type launch tuning ──────────────────────────
+-- bombin_gas_grenade : heaviest / longest range → keep close to old default
+-- ent_gas_stun       : medium — nudge up slightly
+-- ent_flashbang      : lightest casing → needs the most force to travel
+--
+-- loft_bias is added to launchDir.z before normalise (0 = flat, 0.5 = arced)
+local GL_TYPE_PARAMS = {
+    ["bombin_gas_grenade"] = { speed = 2200, loft = 0.28 },  -- smoke: tamed down from 2650
+    ["ent_gas_stun"]       = { speed = 2750, loft = 0.35 },  -- stun gas: more punch
+    ["ent_flashbang"]      = { speed = 3500, loft = 0.42 },  -- flashbang: much heavier loft+speed
+}
+local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }  -- fallback for unknown types
+
+-- ── Grenade smoke trail ──────────────────────────────────────
+-- A timer ticks every GL_TRAIL_INTERVAL seconds while the grenade is airborne
+-- (above GL_TRAIL_GROUND_Z units off the ground) and emits a single white
+-- SmokeEffect puff at the grenade's current position.
+local GL_TRAIL_INTERVAL  = 0.08   -- seconds between puffs  (lower = denser trail)
+local GL_TRAIL_SCALE     = 0.22   -- EffectData scale (small, whispy)
+local GL_TRAIL_GROUND_Z  = 18     -- stop trail when this close to ground
+local GL_TRAIL_MAX_LIFE  = 8.0    -- hard-cap: remove timer after this many seconds
+
+-- Grenade launcher spark / vapor effects
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
 local GL_SPARK_SCALE     = 0.5
 local GL_SPARK_MAGNITUDE = 4
 local GL_SPARK_RADIUS    = 10
-
--- Grenade launcher vapor/smoke effect
-local GL_VAPOR_EFFECT   = "SmokeEffect"
-local GL_SMOKE_EFFECT   = "BlackSmoke"
-local GL_VAPOR_SCALE    = 0.6
-local GL_SMOKE_SCALE    = 0.4
-local GL_SMOKE_EVERY    = 2
+local GL_VAPOR_EFFECT    = "SmokeEffect"
+local GL_SMOKE_EFFECT    = "BlackSmoke"
+local GL_VAPOR_SCALE     = 0.6
+local GL_SMOKE_SCALE     = 0.4
+local GL_SMOKE_EVERY     = 2
 
 -- Top-attack missile
--- Launch position is raised well above the NPC so the initial
--- 108 450 u/s kick clears the NPC hull before collision tests run.
-local TOPMISSILE_LAUNCH_Z   = 300   -- units above NPC origin
+local TOPMISSILE_LAUNCH_Z   = 300
 local TOPMISSILE_MIN_DIST   = 1200
 local TOPMISSILE_SOUND_WARN = "npc/strider/fire.wav"
 
@@ -152,8 +169,8 @@ local function SalvoSpread()
 end
 
 local function GLSparkAtAttachment(ent, shotIndex)
-    local cycle  = GL_SPARK_ATT_CYCLE
-    local attIdx = cycle[((shotIndex - 1) % #cycle) + 1]
+    local cycle   = GL_SPARK_ATT_CYCLE
+    local attIdx  = cycle[((shotIndex - 1) % #cycle) + 1]
     local attData = ent:GetAttachment(attIdx)
     if not attData then return end
 
@@ -169,8 +186,8 @@ local function GLSparkAtAttachment(ent, shotIndex)
 end
 
 local function GLVaporAtAttachment(ent, shotIndex)
-    local cycle  = GL_SPARK_ATT_CYCLE
-    local attIdx = cycle[((shotIndex - 1) % #cycle) + 1]
+    local cycle   = GL_SPARK_ATT_CYCLE
+    local attIdx  = cycle[((shotIndex - 1) % #cycle) + 1]
     local attData = ent:GetAttachment(attIdx)
     if not attData then return end
 
@@ -192,6 +209,52 @@ local function GLVaporAtAttachment(ent, shotIndex)
         es:SetMagnitude(1)
         util.Effect(GL_SMOKE_EFFECT, es)
     end
+end
+
+-- ============================================================
+--  Grenade smoke trail
+--  Attaches a repeating timer to a freshly spawned grenade that
+--  emits a small white SmokeEffect puff at the grenade's position
+--  every GL_TRAIL_INTERVAL seconds while it is airborne.
+--  The timer is removed as soon as the grenade lands or is removed.
+-- ============================================================
+local _trailCounter = 0
+local function AttachGrenadeTrail(gren)
+    if not IsValid(gren) then return end
+
+    _trailCounter = _trailCounter + 1
+    local timerName = "GekkoGrenTrail_" .. _trailCounter
+    local deadlineT = CurTime() + GL_TRAIL_MAX_LIFE
+
+    timer.Create(timerName, GL_TRAIL_INTERVAL, 0, function()
+        -- Stop if the grenade is gone or has been on the ground long enough.
+        if not IsValid(gren) or CurTime() > deadlineT then
+            timer.Remove(timerName)
+            return
+        end
+
+        -- Proximity-to-ground check via downward trace.
+        local pos = gren:GetPos()
+        local tr  = util.TraceLine({
+            start  = pos,
+            endpos = pos + Vector(0, 0, -(GL_TRAIL_GROUND_Z + 4)),
+            filter = gren,
+            mask   = MASK_SOLID_BRUSHONLY,
+        })
+        if tr.Hit then
+            -- Grenade has landed — remove trail and stop.
+            timer.Remove(timerName)
+            return
+        end
+
+        -- Emit a small white smoke puff.
+        local e = EffectData()
+        e:SetOrigin(pos)
+        e:SetNormal(Vector(0, 0, 1))
+        e:SetScale(GL_TRAIL_SCALE)
+        e:SetMagnitude(0.5)
+        util.Effect("SmokeEffect", e, true, true)
+    end)
 end
 
 -- ============================================================
@@ -631,10 +694,18 @@ end
 
 -- ============================================================
 --  Weapon: grenade launcher (M32-style)
+--
+--  Per-grenade-type physics tuning via GL_TYPE_PARAMS:
+--    bombin_gas_grenade  — heavy smoke round, tamed range
+--    ent_gas_stun        — medium stun canister, moderate extra force
+--    ent_flashbang       — light casing, much higher speed + loft
+--
+--  Each grenade also receives a white smoke trail via AttachGrenadeTrail.
 -- ============================================================
 local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
     local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
+    local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
 
     local forward = ent:GetForward()
     local right   = ent:GetRight()
@@ -642,7 +713,8 @@ local function FireGrenadeLauncher(ent, enemy)
 
     ent._glSparkCounter = 0
 
-    print(string.format("[GekkoGL] Firing %d x %s", count, grenadeType))
+    print(string.format("[GekkoGL] Firing %d x %s  spd=%d  loft=%.2f",
+        count, grenadeType, typeParams.speed, typeParams.loft))
 
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
     timer.Simple(GL_FIDGET_LEAD, function()
@@ -668,7 +740,7 @@ local function FireGrenadeLauncher(ent, enemy)
                             + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
             local spawnPos  = origin + scatter * 0.05
             local launchDir = scatter:GetNormalized()
-            launchDir.z     = launchDir.z + 0.35
+            launchDir.z     = launchDir.z + typeParams.loft
             launchDir:Normalize()
 
             local gren = ents.Create(grenadeType)
@@ -681,13 +753,16 @@ local function FireGrenadeLauncher(ent, enemy)
 
                 local phys = gren:GetPhysicsObject()
                 if IsValid(phys) then
-                    phys:SetVelocity(launchDir * GL_LAUNCH_SPEED)
+                    phys:SetVelocity(launchDir * typeParams.speed)
                     phys:SetAngleVelocity(Vector(
                         math.Rand(-200, 200),
                         math.Rand(-200, 200),
                         math.Rand(-200, 200)
                     ))
                 end
+
+                -- Attach a white smoke trail that follows the grenade until landing.
+                AttachGrenadeTrail(gren)
             end
         end)
     end
@@ -697,10 +772,6 @@ end
 
 -- ============================================================
 --  Weapon: top-attack terror missile  (5th weapon)
---
---  Launch position is raised TOPMISSILE_LAUNCH_Z units above
---  the NPC so the initial velocity kick clears the NPC hull
---  entirely before any collision tests are evaluated.
 -- ============================================================
 local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -726,7 +797,6 @@ local function FireTopMissile(ent, enemy)
 
     ent:EmitSound(TOPMISSILE_SOUND_WARN, 90, math.random(90, 110), 1)
 
-    -- Spawn well above the NPC so the kick clears the hull
     local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
 
     local missile = ents.Create("sent_npc_topmissile")
@@ -749,7 +819,7 @@ local function FireTopMissile(ent, enemy)
     missile.Target = enemy:GetPos() + Vector(0, 0, 40)
 
     missile:SetPos(launchPos)
-    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))  -- point straight up
+    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
     missile:Spawn()
     missile:Activate()
 
