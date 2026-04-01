@@ -17,8 +17,13 @@ local JUMP_GROUND_DIST    = 24
 local JUMP_MIN_ENEMY_DIST = 600
 local JUMP_MAX_ENEMY_DIST = 19400
 
-local JUMP_RISING_TIMEOUT = 1.5
+local JUMP_RISING_TIMEOUT    = 1.5
 local JUMP_LAND_SUPPRESS_PAD = 1.1
+
+-- Extra cooldown applied ON LANDING on top of JUMP_LAND_LOCKOUT.
+-- Prevents ShouldJump from firing the instant the land anim finishes.
+-- Must be > JUMP_LAND_LOCKOUT to be meaningful.
+local JUMP_POST_LAND_COOLDOWN = 3.0
 
 local function GekkoIsGrounded(ent)
     local mins, maxs = ent:OBBMins(), ent:OBBMaxs()
@@ -45,6 +50,8 @@ function ENT:GekkoJump_Init()
     self._seqLand             = -1
     self._jumpRisingStartTime = 0
     self._jumpDidLiftoff      = false
+    -- Separate guard: set to CurTime()+N on landing, ShouldJump checks it.
+    self._jumpLandCooldown    = 0
 
     self.JUMP_NONE    = JUMP_NONE
     self.JUMP_RISING  = JUMP_RISING
@@ -83,13 +90,17 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_ShouldJump()
-    if self._jumpCooldown > CurTime()        then return false end
+    -- FIX layer 1: state must be NONE *and* the land cooldown must have expired.
+    -- Previously only _jumpCooldown was checked; _jumpLandCooldown is a separate
+    -- post-land guard that outlasts the JUMP_LAND animation.
+    if self._jumpCooldown    > CurTime() then return false end
+    if self._jumpLandCooldown > CurTime() then return false end
     if self:GetGekkoJumpState() ~= JUMP_NONE then return false end
-    if not self:IsOnGround()                 then return false end
-    if self._mgBurstActive                   then return false end
+    if not self:IsOnGround()               then return false end
+    if self._mgBurstActive                 then return false end
 
     local enemy = self:GetEnemy()
-    if not IsValid(enemy)                    then return false end
+    if not IsValid(enemy)                  then return false end
 
     local dist = self:GetPos():Distance2D(enemy:GetPos())
     if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
@@ -140,17 +151,15 @@ function ENT:GekkoJump_Execute()
     self._gekkoJustJumped     = CurTime() + 0.3
     self._jumpRisingStartTime = CurTime()
     self._jumpDidLiftoff      = false
+    -- Land cooldown starts cleared when a new jump begins.
+    self._jumpLandCooldown    = 0
 
     if self._seqJump ~= -1 then
         ForceSeq(self, self._seqJump, 1.0, 0.5, "jump")
     end
 
-    -- Crush blast at launch origin
     self:GeckoCrush_LaunchBlast()
-
-    -- Signal clientside jump dust
     self:SetNWInt("GekkoJumpDust", (self:GetNWInt("GekkoJumpDust", 0) + 1) % 255)
-
     self:GekkoJump_StartJetFX()
 end
 
@@ -207,7 +216,8 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqName = ""
             self._gekkoSuppressActivity = now + 0.15
             self.VJ_CanMoveThink = true
-            self._jumpCooldown = now + JUMP_COOLDOWN_MAX * 2
+            self._jumpCooldown     = now + JUMP_COOLDOWN_MAX * 2
+            self._jumpLandCooldown = now + JUMP_POST_LAND_COOLDOWN
             self:GekkoJump_StopJetFX()
             if self._gekkoCrouching then
                 self._gekkoCrouchJustEntered = true
@@ -251,13 +261,29 @@ function ENT:GekkoJump_Think()
         self:SetGekkoJumpState(JUMP_LAND)
         self:SetGekkoJumpTimer(now + JUMP_LAND_LOCKOUT)
         self:SetMoveType(MOVETYPE_STEP)
+
+        -- FIX layer 2: zero velocity immediately AND one tick later to catch
+        -- any residual momentum the engine applies on the movetype-switch frame.
         self:SetVelocity(Vector(0, 0, 0))
+        local selfRef = self
+        timer.Simple(0, function()
+            if IsValid(selfRef) and selfRef:GetGekkoJumpState() == JUMP_LAND then
+                selfRef:SetVelocity(Vector(0, 0, 0))
+            end
+        end)
+
         local a = self:GetAngles()
         self:SetAngles(Angle(0, a.y, 0))
         if self._seqLand ~= -1 then
             ForceSeq(self, self._seqLand, 1.0,
                 JUMP_LAND_LOCKOUT + JUMP_LAND_SUPPRESS_PAD, "land")
         end
+
+        -- FIX layer 3: set _jumpLandCooldown NOW, before state transitions to
+        -- JUMP_NONE, so ShouldJump is blocked for JUMP_POST_LAND_COOLDOWN seconds
+        -- after the land anim finishes.
+        self._jumpLandCooldown = now + JUMP_LAND_LOCKOUT + JUMP_POST_LAND_COOLDOWN
+
         self:GekkoJump_LandImpact()
         return
     end
@@ -280,6 +306,8 @@ function ENT:GekkoJump_Think()
         if self._gekkoCrouching then
             self._gekkoCrouchJustEntered = true
         end
+        -- _jumpLandCooldown is still ticking here -- ShouldJump remains blocked
+        -- for JUMP_POST_LAND_COOLDOWN seconds after this point.
     end
 end
 
@@ -327,10 +355,6 @@ function ENT:GekkoJump_LandImpact()
     util.Effect("dust", eff)
 
     ParticleEffect("impact_dirt_cheap", shakePos, Angle(0, 0, 0))
-
-    -- Signal clientside land dust
     self:SetNWInt("GekkoLandDust", (self:GetNWInt("GekkoLandDust", 0) + 1) % 255)
-
-    -- Crush blast at landing site
     self:GeckoCrush_LandBlast()
 end
