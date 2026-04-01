@@ -60,11 +60,20 @@ local GL_GRENADE_TYPES = {
 }
 
 -- Grenade launcher spark effect
--- Three attachment slots cycle per shot: MG barrel → missile-L → missile-R
+-- Three attachment slots cycle per shot: MG barrel -> missile-L -> missile-R
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
 local GL_SPARK_SCALE     = 0.5   -- ManhackSparks magnitude multiplier
 local GL_SPARK_MAGNITUDE = 4     -- base spark count (scaled by GL_SPARK_SCALE)
 local GL_SPARK_RADIUS    = 10    -- effect radius
+
+-- Grenade launcher vapor/smoke effect
+-- SmokeEffect   = thin white wisp at the muzzle (powder burn)
+-- BlackSmoke     = one denser puff per shot for visual weight
+local GL_VAPOR_EFFECT   = "SmokeEffect"   -- light vapor wisp
+local GL_SMOKE_EFFECT   = "BlackSmoke"    -- denser smoke puff
+local GL_VAPOR_SCALE    = 0.6             -- keep it subtle
+local GL_SMOKE_SCALE    = 0.4
+local GL_SMOKE_EVERY    = 2               -- fire BlackSmoke every N shots (not every)
 
 -- Top-attack missile
 local TOPMISSILE_MIN_DIST   = 1200
@@ -159,6 +168,41 @@ local function GLSparkAtAttachment(ent, shotIndex)
     e:SetScale(GL_SPARK_SCALE)
     e:SetRadius(GL_SPARK_RADIUS)
     util.Effect("ManhackSparks", e)
+end
+
+-- ============================================================
+--  GL vapor + smoke effect
+--  Fires a thin SmokeEffect wisp every shot and a denser
+--  BlackSmoke puff every GL_SMOKE_EVERY shots.
+--  Uses the same attachment cycle as the spark so the effects
+--  share a muzzle origin without extra lookups.
+-- ============================================================
+local function GLVaporAtAttachment(ent, shotIndex)
+    local cycle  = GL_SPARK_ATT_CYCLE
+    local attIdx = cycle[((shotIndex - 1) % #cycle) + 1]
+    local attData = ent:GetAttachment(attIdx)
+    if not attData then return end
+
+    local fwd    = attData.Ang:Forward()
+    local origin = attData.Pos + fwd * 6   -- slightly ahead of the barrel
+
+    -- Light vapor wisp (every shot)
+    local ev = EffectData()
+    ev:SetOrigin(origin)
+    ev:SetNormal(fwd)
+    ev:SetScale(GL_VAPOR_SCALE)
+    ev:SetMagnitude(1)
+    util.Effect(GL_VAPOR_EFFECT, ev)
+
+    -- Denser smoke puff (every GL_SMOKE_EVERY shots)
+    if shotIndex % GL_SMOKE_EVERY == 0 then
+        local es = EffectData()
+        es:SetOrigin(origin + Vector(0, 0, 8))
+        es:SetNormal(fwd)
+        es:SetScale(GL_SMOKE_SCALE)
+        es:SetMagnitude(1)
+        util.Effect(GL_SMOKE_EFFECT, es)
+    end
 end
 
 -- ============================================================
@@ -599,12 +643,10 @@ end
 -- ============================================================
 --  Weapon: grenade launcher (M32-style)
 --
---  Each shot pops a small ManhackSparks burst (scale 0.5) that
---  cycles across three attachment points:
---    shot 1 -> ATT_MACHINEGUN (3)
---    shot 2 -> ATT_MISSILE_L  (9)
---    shot 3 -> ATT_MISSILE_R  (10)
---    shot 4 -> ATT_MACHINEGUN again ... and so on
+--  Each shot:
+--    1. Cycles ManhackSparks (scale 0.5) across three attachments
+--    2. Fires a SmokeEffect vapor wisp at the same attachment
+--    3. Every GL_SMOKE_EVERY shots also fires a BlackSmoke puff
 -- ============================================================
 local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
@@ -632,7 +674,7 @@ local function FireGrenadeLauncher(ent, enemy)
         ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
     end)
 
-    -- Grenade spawns + per-shot spark
+    -- Grenade spawns + per-shot spark + vapor/smoke
     for i = 0, count - 1 do
         local shotNumber = i + 1   -- 1-based index for the cycle
         local delay      = GL_FIDGET_LEAD + i * GL_INTERVAL
@@ -641,6 +683,9 @@ local function FireGrenadeLauncher(ent, enemy)
 
             -- Spark: cycles MG -> MissL -> MissR -> MG ...
             GLSparkAtAttachment(ent, shotNumber)
+
+            -- Vapor + smoke at the same attachment
+            GLVaporAtAttachment(ent, shotNumber)
 
             -- Grenade projectile
             local scatter   = forward * (math.Rand(300, 700))

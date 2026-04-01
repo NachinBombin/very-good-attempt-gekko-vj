@@ -3,15 +3,16 @@
 --
 --  Spawns painted-black metal gib props when the Gekko takes
 --  significant damage. Each gib is:
---    • a random model from GEKKO_GIB_MODELS
---    • rendered black via SetColor (opaque, pure black)
---    • launched outward + upward with random spin
---    • removed after GIB_LIFETIME seconds
+--    * a random model from GEKKO_GIB_MODELS
+--    * rendered black via SetColor (opaque, pure black)
+--    * launched outward + upward with random spin
+--    * removed after GIB_LIFETIME seconds
 --
---  Custom spark effect fires at the gib origin on spawn:
---    WheelSparks (bright metal streak, not ManhackSparks).
---
---  Called from ENT:OnTakeDamage in init.lua.
+--  On spawn each gib gets:
+--    * ElectricSpark + Sparks  (metal strike sparks)
+--    * HelicopterMegaBomb explosion flash
+--    * Ignite() so it burns visually for GIB_BURN_TIME seconds
+--    * ParticleEffect(fire_medium_base) local fire column
 -- ============================================================
 
 -- ────────────────────────────────────────────────────────────
@@ -25,15 +26,25 @@ local GIB_LIFETIME         = 8.0   -- seconds before auto-remove
 local GIB_SPEED_MIN        = 260
 local GIB_SPEED_MAX        = 900
 local GIB_UP_MIN           = 80
-local GIB_UP_MAX            = 340
+local GIB_UP_MAX           = 340
 local GIB_SPIN_SCALE       = 200   -- random angular velocity magnitude
-local GIB_MASS             = 18    -- kg — heavy enough to feel metallic
-local GIB_COOLDOWN         = 4.0  -- seconds between gib events (spam guard)
+local GIB_MASS             = 18    -- kg
+local GIB_COOLDOWN         = 4.0   -- seconds between gib events (spam guard)
 
 -- Spark constants
-local SPARK_EFFECT         = "ElectricSpark"  -- bright electric/welding sparks
-local SPARK_EXTRA          = "Sparks"          -- secondary burst for density
-local SPARK_COUNT          = 3                 -- effect calls per gib
+local SPARK_EFFECT         = "ElectricSpark"
+local SPARK_EXTRA          = "Sparks"
+local SPARK_COUNT          = 3
+
+-- Fire / explosion constants
+-- GIB_EXPLOSION_EFFECT fires a small bright flash at the gib spawn point.
+-- GIB_FIRE_PARTICLE    plays a short fire column on the gib itself.
+-- GIB_BURN_TIME        how long the gib stays on fire (capped by GIB_LIFETIME).
+-- GIB_EXPLODE_CHANCE   not every gib needs the full explosion -- keep it punchy.
+local GIB_EXPLOSION_EFFECT = "HelicopterMegaBomb"  -- orange/white blast flash
+local GIB_FIRE_PARTICLE    = "fire_medium_base"    -- HL2 fire column particle
+local GIB_BURN_TIME        = 5.0                   -- seconds of visible flame
+local GIB_EXPLODE_CHANCE   = 0.65                  -- probability per gib
 
 -- ────────────────────────────────────────────────────────────
 --  Gib model pool
@@ -47,7 +58,6 @@ local GEKKO_GIB_MODELS = {
     "models/mechanics/solid_steel/steel_beam45_3.mdl",
 }
 
--- Precache on load (server)
 if SERVER then
     for _, mdl in ipairs(GEKKO_GIB_MODELS) do
         util.PrecacheModel(mdl)
@@ -55,7 +65,7 @@ if SERVER then
 end
 
 -- ────────────────────────────────────────────────────────────
---  SpawnGibSparks  (server — broadcasts via util.Effect)
+--  SpawnGibSparks  (electric strike sparks)
 -- ────────────────────────────────────────────────────────────
 local function SpawnGibSparks(pos, normal)
     for _ = 1, SPARK_COUNT do
@@ -68,7 +78,6 @@ local function SpawnGibSparks(pos, normal)
         util.Effect(SPARK_EFFECT, e)
     end
 
-    -- Secondary dense burst
     local e2 = EffectData()
     e2:SetOrigin(pos)
     e2:SetNormal(normal or Vector(0, 0, 1))
@@ -76,6 +85,39 @@ local function SpawnGibSparks(pos, normal)
     e2:SetScale(math.Rand(0.4, 1))
     e2:SetRadius(math.random(5, 12))
     util.Effect(SPARK_EXTRA, e2)
+end
+
+-- ────────────────────────────────────────────────────────────
+--  SpawnGibFireFX
+--  Fires at the gib's position on spawn:
+--    1. HelicopterMegaBomb flash (if GIB_EXPLODE_CHANCE passes)
+--    2. fire_medium_base particle column on the prop itself
+--    3. Ignite() for GIB_BURN_TIME seconds
+-- ────────────────────────────────────────────────────────────
+local function SpawnGibFireFX(gib, pos, normal)
+    -- Explosion flash (probabilistic -- not every chunk, keeps it interesting)
+    if math.random() < GIB_EXPLODE_CHANCE then
+        local eexp = EffectData()
+        eexp:SetOrigin(pos)
+        eexp:SetNormal(normal or Vector(0, 0, 1))
+        eexp:SetScale(0.4)      -- small -- this is a chunk, not the whole mech
+        eexp:SetMagnitude(1)
+        eexp:SetRadius(24)
+        util.Effect(GIB_EXPLOSION_EFFECT, eexp)
+    end
+
+    -- Fire column particle (client-side via ParticleEffect broadcast)
+    -- ParticleEffect on server routes to all clients automatically in VJ Base.
+    if IsValid(gib) then
+        ParticleEffect(GIB_FIRE_PARTICLE, pos, angle_zero, gib)
+
+        -- Ignite the prop so the default flame overlay also shows.
+        -- Duration is capped to GIB_LIFETIME so we don't orphan fire.
+        local burnDur = math.min(GIB_BURN_TIME, GIB_LIFETIME - 0.5)
+        if burnDur > 0 then
+            gib:Ignite(burnDur, 0)   -- second arg = 0 = don't use flame damage
+        end
+    end
 end
 
 -- ────────────────────────────────────────────────────────────
@@ -101,9 +143,8 @@ local function SpawnSingleGib(origin, hitNormal)
     gib:Spawn()
     gib:Activate()
 
-    -- Paint solid black — looks like charred/oily metal
     gib:SetColor(Color(0, 0, 0, 255))
-    gib:SetMaterial("models/debug/debugwhite")  -- flat shading amplifies the black
+    gib:SetMaterial("models/debug/debugwhite")
 
     local phys = gib:GetPhysicsObject()
     if IsValid(phys) then
@@ -111,7 +152,6 @@ local function SpawnSingleGib(origin, hitNormal)
         phys:EnableGravity(true)
         phys:Wake()
 
-        -- Launch outward from the hit normal + random upward component
         local outDir = (hitNormal + Vector(
             (math.random() - 0.5) * 1.2,
             (math.random() - 0.5) * 1.2,
@@ -123,7 +163,6 @@ local function SpawnSingleGib(origin, hitNormal)
         local vel   = outDir * speed + Vector(0, 0, upVel)
         phys:SetVelocity(vel)
 
-        -- Random tumble
         phys:SetAngleVelocity(Vector(
             (math.random() - 0.5) * 2 * GIB_SPIN_SCALE,
             (math.random() - 0.5) * 2 * GIB_SPIN_SCALE,
@@ -131,8 +170,11 @@ local function SpawnSingleGib(origin, hitNormal)
         ))
     end
 
-    -- Sparks at spawn point
+    -- Electric sparks at spawn point
     SpawnGibSparks(gib:GetPos(), hitNormal)
+
+    -- Fire + explosion flash
+    SpawnGibFireFX(gib, gib:GetPos(), hitNormal)
 
     -- Auto-remove
     timer.Simple(GIB_LIFETIME, function()
@@ -144,9 +186,6 @@ end
 
 -- ────────────────────────────────────────────────────────────
 --  ENT:GekkoGib_OnDamage
---  Call this from OnTakeDamage AFTER base damage is applied.
---  dmg = the actual damage value (number)
---  dmginfo = the DamageInfo object
 -- ────────────────────────────────────────────────────────────
 function ENT:GekkoGib_OnDamage(dmg, dmginfo)
     if dmg < GIB_DAMAGE_THRESHOLD then return end
@@ -156,18 +195,16 @@ function ENT:GekkoGib_OnDamage(dmg, dmginfo)
     if now < (self._gibCooldownT or 0) then return end
     self._gibCooldownT = now + GIB_COOLDOWN
 
-    -- Eject from the hit position, or mid-body if unavailable
     local hitPos = dmginfo:GetDamagePosition()
     if not hitPos or hitPos == vector_origin then
         hitPos = self:GetPos() + Vector(0, 0, 100)
     end
 
-    -- Normal points away from attacker
     local attacker  = dmginfo:GetAttacker()
     local hitNormal = Vector(0, 0, 1)
     if IsValid(attacker) then
         hitNormal = (self:GetPos() - attacker:GetPos()):GetNormalized()
-        hitNormal.z = math.Clamp(hitNormal.z, -0.3, 0.3)  -- keep it lateral
+        hitNormal.z = math.Clamp(hitNormal.z, -0.3, 0.3)
         hitNormal:Normalize()
     end
 
