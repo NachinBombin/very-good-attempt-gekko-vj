@@ -59,6 +59,13 @@ local GL_GRENADE_TYPES = {
     "ent_flashbang",
 }
 
+-- Grenade launcher spark effect
+-- Three attachment slots cycle per shot: MG barrel → missile-L → missile-R
+local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
+local GL_SPARK_SCALE     = 0.5   -- ManhackSparks magnitude multiplier
+local GL_SPARK_MAGNITUDE = 4     -- base spark count (scaled by GL_SPARK_SCALE)
+local GL_SPARK_RADIUS    = 10    -- effect radius
+
 -- Top-attack missile
 local TOPMISSILE_MIN_DIST   = 1200
 local TOPMISSILE_SOUND_WARN = "npc/strider/fire.wav"
@@ -133,6 +140,25 @@ local function SalvoSpread()
         (math.random() - 0.5) * 2 * SALVO_SPREAD_XY,
         (math.random() - 0.5) * 2 * SALVO_SPREAD_Z
     )
+end
+
+-- Fires a small ManhackSparks burst from an attachment, at half scale.
+-- attIdx cycles through GL_SPARK_ATT_CYCLE per grenade shot.
+local function GLSparkAtAttachment(ent, shotIndex)
+    local cycle  = GL_SPARK_ATT_CYCLE
+    local attIdx = cycle[((shotIndex - 1) % #cycle) + 1]
+    local attData = ent:GetAttachment(attIdx)
+    if not attData then return end
+
+    local fwd = attData.Ang:Forward()
+    local e   = EffectData()
+    e:SetOrigin(attData.Pos + fwd * 4)
+    e:SetNormal(fwd)
+    e:SetEntity(ent)
+    e:SetMagnitude(GL_SPARK_MAGNITUDE * GL_SPARK_SCALE)
+    e:SetScale(GL_SPARK_SCALE)
+    e:SetRadius(GL_SPARK_RADIUS)
+    util.Effect("ManhackSparks", e)
 end
 
 -- ============================================================
@@ -313,6 +339,7 @@ function ENT:Init()
     self._bloodSplatPulse    = 0
     self._gibCooldownT       = 0
     self._lastWeaponChoice   = ""
+    self._glSparkCounter     = 0   -- tracks which attachment to spark next
 
     self:SetNWBool("GekkoMGFiring",   false)
     self:SetNWInt("GekkoJumpDust",    0)
@@ -571,6 +598,13 @@ end
 
 -- ============================================================
 --  Weapon: grenade launcher (M32-style)
+--
+--  Each shot pops a small ManhackSparks burst (scale 0.5) that
+--  cycles across three attachment points:
+--    shot 1 -> ATT_MACHINEGUN (3)
+--    shot 2 -> ATT_MISSILE_L  (9)
+--    shot 3 -> ATT_MISSILE_R  (10)
+--    shot 4 -> ATT_MACHINEGUN again ... and so on
 -- ============================================================
 local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
@@ -580,26 +614,35 @@ local function FireGrenadeLauncher(ent, enemy)
     local right   = ent:GetRight()
     local origin  = ent:GetPos() + Vector(0, 0, GL_LAUNCH_Z)
 
+    -- Reset spark counter at the start of each grenade event so the
+    -- cycle always begins at ATT_MACHINEGUN for the first shot.
+    ent._glSparkCounter = 0
+
     print(string.format("[GekkoGL] Firing %d x %s", count, grenadeType))
 
+    -- Sound sequence
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
-
     timer.Simple(GL_FIDGET_LEAD, function()
         if not IsValid(ent) then return end
         ent:EmitSound(GL_SOUND_FIRE, 80, 100, 1)
     end)
-
     local lastGrenadeT = GL_FIDGET_LEAD + (count - 1) * GL_INTERVAL
     timer.Simple(lastGrenadeT + 0.1, function()
         if not IsValid(ent) then return end
         ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
     end)
 
+    -- Grenade spawns + per-shot spark
     for i = 0, count - 1 do
-        local delay = GL_FIDGET_LEAD + i * GL_INTERVAL
+        local shotNumber = i + 1   -- 1-based index for the cycle
+        local delay      = GL_FIDGET_LEAD + i * GL_INTERVAL
         timer.Simple(delay, function()
             if not IsValid(ent) then return end
 
+            -- Spark: cycles MG -> MissL -> MissR -> MG ...
+            GLSparkAtAttachment(ent, shotNumber)
+
+            -- Grenade projectile
             local scatter   = forward * (math.Rand(300, 700))
                             + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
             local spawnPos  = origin + scatter * 0.05
@@ -633,14 +676,6 @@ end
 
 -- ============================================================
 --  Weapon: top-attack terror missile  (5th weapon)
---
---  Passes only two fields to the missile:
---    Owner  = the NPC entity (for damage attribution)
---    Target = a frozen Vector of the enemy's position at fire time
---             (+ 40 z to aim at body centre)
---
---  The missile is a static-arc projectile -- it does NOT track
---  a moving entity.  Do NOT pass TargetEntity.
 -- ============================================================
 local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -685,7 +720,6 @@ local function FireTopMissile(ent, enemy)
         end
     end
 
-    -- Only Owner and Target.  No TargetEntity -- missile is static-arc only.
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0, 0, 40)
 
