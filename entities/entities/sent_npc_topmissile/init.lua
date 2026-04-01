@@ -5,33 +5,34 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  NPC Top-Attack Missile  (npc_vj_gekko)
 --
---  Based on sent_neuro_javelin by Hoffa & Smithy285.
---  Lifecycle (the caller in npc_vj_gekko/init.lua must follow this):
---
+--  Lifecycle (caller in npc_vj_gekko/init.lua must follow this):
 --    1.  missile = ents.Create( "sent_npc_topmissile" )
---    2.  missile.Owner        = npcEnt        -- BEFORE Spawn()
---    3.  missile.Target       = targetPos     -- BEFORE Spawn()  (Vector)
---    4.  missile.TargetEntity = targetEnt     -- BEFORE Spawn()  (Entity, optional)
---    5.  missile:SetPos( launchPos )          -- BEFORE Spawn()
---    6.  missile:SetAngles( launchAng )       -- BEFORE Spawn()  (any angle; Initialize overrides)
---    7.  missile:Spawn()
---    8.  missile:Activate()
+--    2.  missile.Owner  = npcEnt        -- BEFORE Spawn()
+--    3.  missile.Target = targetPos     -- BEFORE Spawn()  (Vector)
+--    4.  missile:SetPos( launchPos )    -- BEFORE Spawn()
+--    5.  missile:Spawn()
+--    6.  missile:Activate()
 --
+--  Do NOT assign TargetEntity.  This is a static-arc-only projectile.
 --  Do NOT call GetPhysicsObject():SetVelocity() from the caller.
---  FireEngine() applies the 108 450 u/s upward kick after 0.75 s.
---
---  Speed values match sent_neuro_javelin exactly:
---    initial kick  108 450 u/s
---    ramp          +250 per PhysicsUpdate tick
---    cap           2 300 u/s (1 800 in singleplayer)
 -- ============================================================
 
 local SND_LAUNCH  = "weapons/rpg/rocket1.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
-local SPEED_CAP = game.SinglePlayer() and 1800 or 2300
-local LIFETIME  = 45   -- auto-detonate after this many seconds
+-- Speed ramp: added to physics force every PhysicsUpdate tick.
+-- 8 000 makes it feel snappy but still steer-able during the arc.
+local FORCE_PER_TICK = 8000
+local SPEED_CAP      = game.SinglePlayer() and 1800 or 2300
+local LIFETIME       = 45
+
+-- When horizontal distance to target drops below this, we enter
+-- TERMINAL mode: steering stops completely, the missile just falls
+-- straight down driven only by gravity + whatever forward momentum
+-- it already has.  Proximity detonation then handles the kill.
+local TERMINAL_DIST  = 350   -- world units
+local TERMINAL_PROX  = 220   -- explode when closer than this to target
 
 -- ============================================================
 --  Initialize
@@ -47,35 +48,31 @@ function ENT:Initialize()
     if IsValid( self.PhysObj ) then
         self.PhysObj:Wake()
         self.PhysObj:SetMass( 500 )
-        self.PhysObj:EnableDrag( true )
+        self.PhysObj:EnableDrag( false )   -- no drag; we control speed ourselves
         self.PhysObj:EnableGravity( true )
         self.PhysObj:SetVelocity( Vector( 0, 0, 0 ) )
         self.PhysObj:SetAngleVelocity( Vector( 0, 0, 0 ) )
     end
 
-    -- Nose straight up so the kick goes cleanly upward
+    -- Nose straight up for clean vertical kick
     self:SetAngles( Angle( -90, self:GetAngles().y, 0 ) )
 
-    -- State
-    self.SpeedValue            = 0
-    self.Speed                 = 0
-    self.Destroyed             = false
-    self.ActivatedAlmonds      = false   -- engine ignited flag (guard for PhysicsCollide)
-    self.InitialDistance       = nil
-    self.Tracking              = false
-    self.UseMovingTargetAiming = false
-    self.SpawnTime             = CurTime()
-    self.HealthVal             = 50
-    self.Damage                = 0       -- set in FireEngine()
-    self.Radius                = 0       -- set in FireEngine()
+    self.SpeedValue       = 0
+    self.Destroyed        = false
+    self.ActivatedAlmonds = false
+    self.InitialDistance  = nil
+    self.TerminalDive     = false   -- true = steering OFF, gravity takes over
+    self.SpawnTime        = CurTime()
+    self.HealthVal        = 50
+    self.Damage           = 0
+    self.Radius           = 0
 
-    -- Validate Target
     if not self.Target or type( self.Target ) ~= "Vector" then
         local fwd = self:GetForward()
         fwd.z = 0
         fwd:Normalize()
         self.Target = self:GetPos() + fwd * 2000
-        print( "[TopMissile] WARNING: no Target set before Spawn — using fallback" )
+        print( "[TopMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
     self.EngineSound = CreateSound( self, SND_ENGINE )
@@ -109,7 +106,7 @@ function ENT:FireEngine()
         phys:SetVelocity( self:GetForward() * 108450 )
     end
 
-    -- Invisible prop to carry the scud_trail particle
+    -- Invisible trail prop
     local a = self:GetAngles()
     a:RotateAroundAxis( self:GetUp(), 180 )
 
@@ -128,88 +125,89 @@ end
 
 -- ============================================================
 --  PhysicsCollide
---  Guard: only explode after ActivatedAlmonds == true.
---  Without this, the missile detonates on the ground during the
---  0.75 s pre-ignition drift.
+--  Only trigger after engine has lit.  In TerminalDive we let
+--  the proximity check in Think() handle detonation; a ground
+--  collision is still a valid kill.
 -- ============================================================
 function ENT:PhysicsCollide( data, physobj )
-    if self.Destroyed then return end
-    if self.ActivatedAlmonds
-       and data.Speed     > 450
-       and data.DeltaTime > 0.2 then
+    if self.Destroyed            then return end
+    if not self.ActivatedAlmonds then return end
+    if data.Speed > 200 and data.DeltaTime > 0.1 then
         self:MissileDoExplosion()
     end
 end
 
 -- ============================================================
---  PhysicsUpdate  -  Javelin steering (Hoffa & Smithy285)
+--  PhysicsUpdate  -  3-phase arc steering
+--
+--  Phase 1  (> 90% of horizontal dist remains):  nose up, climb
+--  Phase 2  (40-90% remains):                    track apex above target
+--  Phase 3  (< 40% remains):                     point straight at target
+--  TERMINAL (< TERMINAL_DIST horizontal):        steering OFF entirely
+--
+--  In TERMINAL mode we zero the angle velocity so physics can't
+--  spin the model, then let gravity pull it down.  We do NOT
+--  apply a forward force so there is no steering torque at all.
 -- ============================================================
 function ENT:PhysicsUpdate()
     if not self.ActivatedAlmonds then return end
     if not self.Target            then return end
 
-    -- Speed ramp
+    local phys = self:GetPhysicsObject()
+    if not IsValid( phys )        then return end
+
+    -- Measure horizontal distance to target
+    local mp         = self:GetPos()
+    local _2dDist    = ( Vector( mp.x, mp.y, 0 )
+                       - Vector( self.Target.x, self.Target.y, 0 ) ):Length()
+
+    -- --- TERMINAL DIVE: stop steering, freeze rotation, fall ---
+    if self.TerminalDive then
+        phys:SetAngleVelocity( Vector( 0, 0, 0 ) )
+        -- no force applied; gravity does the work
+        return
+    end
+
+    -- Cache initial horizontal distance once
+    if not self.InitialDistance then
+        self.InitialDistance = math.max( _2dDist, 1 )
+    end
+
+    -- Enter terminal dive when close enough
+    if _2dDist < TERMINAL_DIST then
+        self.TerminalDive = true
+        phys:SetAngleVelocity( Vector( 0, 0, 0 ) )
+        print( "[TopMissile] Terminal dive engaged at dist=" .. math.floor( _2dDist ) )
+        return
+    end
+
+    -- Speed ramp (only during arc phases)
     if self:GetVelocity():Length() < SPEED_CAP then
-        self.SpeedValue = self.SpeedValue + 250
+        self.SpeedValue = self.SpeedValue + FORCE_PER_TICK
     end
 
-    -- Moving-target lead
-    if IsValid( self.TargetEntity ) and not self.UseMovingTargetAiming then
-        local zdiff  = self:GetPos().z - self.TargetEntity:GetPos().z
-        local tspeed = self.TargetEntity:GetVelocity():Length()
-        if zdiff < -200 and tspeed > 200 then
-            self.UseMovingTargetAiming = true
-        end
-    end
+    -- Compute steering target based on phase
+    local halfway   = self.InitialDistance * 0.9
+    local twoThirds = self.InitialDistance * 0.4
+    local steerPos
 
-    -- Steering
-    if self.UseMovingTargetAiming and IsValid( self.TargetEntity ) then
-        local dist = ( self.TargetEntity:GetPos() - self:GetPos() ):Length()
-        local pos  = self.TargetEntity:GetPos() + Vector( 0, 0, math.Clamp( dist / 5, 0, 2500 ) )
-        self:SetAngles( LerpAngle( 0.125, self:GetAngles(),
-            ( pos - self:GetPos() ):GetNormalized():Angle() ) )
+    if _2dDist > halfway then
+        -- Phase 1: climb steeply
+        steerPos = self.Target + Vector( 0, 0, 512 )
+    elseif _2dDist > twoThirds then
+        -- Phase 2: aim at apex
+        steerPos = self.Target + Vector( 0, 0,
+            math.Clamp( self.InitialDistance * 0.85, 0, 14500 ) )
     else
-        -- Static 3-phase top-attack arc
-        local mp          = self:GetPos()
-        local _2dDistance = ( Vector( mp.x, mp.y, 0 )
-                            - Vector( self.Target.x, self.Target.y, 0 ) ):Length()
-
-        if not self.InitialDistance then
-            self.InitialDistance = _2dDistance
-        end
-
-        local halfway   = self.InitialDistance * 0.9
-        local twoThirds = self.InitialDistance * 0.4
-        local pos       = self.Target
-
-        if not self.Tracking then
-            if _2dDistance > halfway then
-                -- Phase 1: climb
-                pos = self.Target + Vector( 0, 0, 512 )
-            elseif _2dDistance < halfway and _2dDistance > twoThirds then
-                -- Phase 2: apex
-                pos = self.Target + Vector( 0, 0,
-                    math.Clamp( self.InitialDistance * 0.85, 0, 14500 ) )
-            elseif _2dDistance < twoThirds then
-                -- Phase 3: terminal dive
-                pos = self.Target
-                if IsValid( self.TargetEntity ) then
-                    pos = self.TargetEntity:GetPos()
-                    self.Tracking = true
-                end
-            end
-        else
-            if IsValid( self.TargetEntity ) then
-                pos = self.TargetEntity:GetPos()
-            end
-        end
-
-        local lerpVal = _2dDistance < 1000 and 0.1 or 0.01
-        self:SetAngles( LerpAngle( lerpVal, self:GetAngles(),
-            ( pos - self:GetPos() ):GetNormalized():Angle() ) )
+        -- Phase 3: nose toward target, transition to terminal
+        steerPos = self.Target
     end
 
-    self:GetPhysicsObject():ApplyForceCenter( self:GetForward() * self.SpeedValue )
+    local lerpVal = _2dDist < 1000 and 0.1 or 0.01
+    self:SetAngles( LerpAngle( lerpVal, self:GetAngles(),
+        ( steerPos - mp ):GetNormalized():Angle() ) )
+
+    phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
 end
 
 -- ============================================================
@@ -224,9 +222,12 @@ function ENT:Think()
         return true
     end
 
-    if self.UseMovingTargetAiming and IsValid( self.TargetEntity ) then
-        if ( self:GetPos() - self.TargetEntity:GetPos() ):Length() < self.Radius * 0.65 then
+    -- Proximity check active once engine is lit
+    if self.ActivatedAlmonds then
+        local dist3d = ( self:GetPos() - self.Target ):Length()
+        if dist3d < TERMINAL_PROX then
             self:MissileDoExplosion()
+            return true
         end
     end
 
