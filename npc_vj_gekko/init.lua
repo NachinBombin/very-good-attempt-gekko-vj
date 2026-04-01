@@ -62,7 +62,7 @@ local GL_GRENADE_TYPES  = {
 
 -- Top-attack missile
 -- Below this distance the arc cannot form; the roll is re-tried once.
-local TOPMISSILE_MIN_DIST  = 1200
+local TOPMISSILE_MIN_DIST   = 1200
 local TOPMISSILE_SOUND_WARN = "npc/strider/fire.wav"
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
@@ -518,10 +518,6 @@ local function FireMGBurst(ent, enemy)
                 AmmoType   = "AR2",
                 TracerName = "Tracer",
                 Num        = 1,
-                -- Spread is a symmetric cone half-angle in local space.
-                -- All three axes must be equal for a proper circular cone.
-                -- Previously Z=0 created a flat horizontal pancake, causing
-                -- bullets to slam into the floor when Dir had any downward component.
                 Spread     = Vector(mgSpread, mgSpread, mgSpread),
             })
 
@@ -669,8 +665,6 @@ local function FireTopMissile(ent, enemy)
     local launchPos = launchAtt and launchAtt.Pos or (ent:GetPos() + Vector(0, 0, 180))
     local launchAng = ent:GetAngles()
 
-    local targetPos = enemy:GetPos() + Vector(0, 0, 40)
-
     local missile = ents.Create("sent_npc_topmissile")
     if not IsValid(missile) then
         print("[GekkoTM] ERROR: sent_npc_topmissile could not be created — re-rolling")
@@ -687,9 +681,13 @@ local function FireTopMissile(ent, enemy)
         end
     end
 
-    -- Set Owner and Target BEFORE Spawn() so Initialize() can read them
-    missile.Owner  = ent
-    missile.Target = targetPos
+    -- Set all three fields BEFORE Spawn() so Initialize() can read them.
+    -- Target       = position snapshot used for 3-phase static arc.
+    -- TargetEntity = live entity reference used for moving-target lead
+    --               and terminal-dive lock-on (Javelin pattern).
+    missile.Owner        = ent
+    missile.Target       = enemy:GetPos() + Vector(0, 0, 40)
+    missile.TargetEntity = enemy
 
     missile:SetPos(launchPos)
     missile:SetAngles(launchAng)
@@ -697,8 +695,8 @@ local function FireTopMissile(ent, enemy)
     missile:Activate()
 
     print(string.format(
-        "[GekkoTM] Launched | dist=%.0f  target=%s",
-        dist, tostring(targetPos)
+        "[GekkoTM] Launched | dist=%.0f  target=%s  entity=%s",
+        dist, tostring(missile.Target), tostring(enemy)
     ))
     return true
 end
