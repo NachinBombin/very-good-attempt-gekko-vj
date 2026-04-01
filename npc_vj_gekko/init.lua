@@ -29,8 +29,15 @@ local MG_DAMAGE     = 20
 local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
-local WMODE_MG      = 1
-local WMODE_MISSILE = 2
+-- Weapon selection weights (must sum to 100)
+local WWEIGHT_MG             = 40   -- MG burst
+local WWEIGHT_MISSILE_SINGLE = 35   -- single accurate rocket
+local WWEIGHT_MISSILE_DOUBLE = 25   -- double inaccurate salvo
+
+-- Double-salvo inaccuracy: random offset added to the aim point (world units)
+local SALVO_SPREAD_XY = 220   -- horizontal wobble per rocket
+local SALVO_SPREAD_Z  = 80    -- vertical wobble per rocket
+local SALVO_DELAY     = 0.8   -- seconds between the two shots
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
@@ -38,7 +45,7 @@ local HEAD_Z_FRACTION = 0.65
 
 -- Blood splat
 local BLOOD_DAMAGE_THRESHOLD = 900
-local BLOOD_RANDOM_CHANCE    = 40   -- 1 in N
+local BLOOD_RANDOM_CHANCE    = 40
 
 -- ============================================================
 --  Helpers
@@ -55,6 +62,52 @@ local function SafeResetSequence(ent, seq)
     if seq and seq ~= -1 then
         ent:ResetSequence(seq)
     end
+end
+
+-- Roll a weapon choice. Returns one of: "MG", "MISSILE", "SALVO"
+local function RollWeapon()
+    local r = math.random(1, 100)
+    if r <= WWEIGHT_MG then
+        return "MG"
+    elseif r <= WWEIGHT_MG + WWEIGHT_MISSILE_SINGLE then
+        return "MISSILE"
+    else
+        return "SALVO"
+    end
+end
+
+-- Spawns one rocket from the given attachment index toward aimPos.
+-- spread: Vector offset applied to aimPos before computing direction.
+local function SpawnRocket(ent, attIdx, aimPos, spread)
+    local misAtt = ent:GetAttachment(attIdx)
+    local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local target = aimPos + (spread or Vector(0, 0, 0))
+    local dir    = (target - src):GetNormalized()
+
+    local rocket = ents.Create("obj_vj_rocket")
+    if IsValid(rocket) then
+        rocket:SetPos(src)
+        rocket:SetAngles(dir:Angle())
+        rocket:SetOwner(ent)
+        rocket:Spawn()
+        rocket:Activate()
+        local phys = rocket:GetPhysicsObject()
+        if IsValid(phys) then phys:SetVelocity(dir * 1200) end
+    end
+
+    local eff = EffectData()
+    eff:SetOrigin(src)
+    eff:SetNormal(dir)
+    util.Effect("MuzzleFlash", eff)
+end
+
+-- Random XY+Z spread vector for the salvo
+local function SalvoSpread()
+    return Vector(
+        (math.random() - 0.5) * 2 * SALVO_SPREAD_XY,
+        (math.random() - 0.5) * 2 * SALVO_SPREAD_XY,
+        (math.random() - 0.5) * 2 * SALVO_SPREAD_Z
+    )
 end
 
 -- ============================================================
@@ -225,8 +278,6 @@ function ENT:Init()
     self._missileCount       = 0
     self._mgBurstActive      = false
     self._mgBurstEndT        = 0
-    -- Always start on MG; missile is always the follow-up
-    self._weaponMode         = WMODE_MG
     self._gekkoRunning       = false
     self._gekkoLastEnemyDist = nil
     self._gekkoLastPos       = self:GetPos()
@@ -236,6 +287,7 @@ function ENT:Init()
     self._crushHitTimes      = {}
     self._bloodSplatPulse    = 0
     self._gibCooldownT       = 0
+    self._lastWeaponChoice   = ""   -- debug only
 
     self:SetNWBool("GekkoMGFiring",   false)
     self:SetNWInt("GekkoJumpDust",    0)
@@ -302,9 +354,6 @@ end
 
 -- ============================================================
 --  Damage override
---  • Head zone: top 35% of bbox = 1/3 damage
---  • Blood splat: 1-in-40 random OR single hit >= 900
---  • Gib chunks: delegated to gib_system.lua
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0, 0, 0))
@@ -329,7 +378,6 @@ function ENT:OnTakeDamage(dmginfo)
         dmginfo:ScaleDamage(1 / 3)
     end
 
-    -- Blood splat
     local rawDmg  = dmginfo:GetDamage()
     local doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1)
                  or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
@@ -339,7 +387,6 @@ function ENT:OnTakeDamage(dmginfo)
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
     end
 
-    -- Gib chunks (defined in gib_system.lua)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
 
     dmginfo:SetDamagePosition(self:GetPos())
@@ -377,7 +424,7 @@ function ENT:OnThink()
             src  = "none"
         end
         print(string.format(
-            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d  src=%s  spd=%d  jump=%s  crouch=%s  VJ_Crouch=%s  ceil=%s  wmode=%s  mgActive=%s",
+            "[GekkoDBG] vel=%.1f  seq=%s  run=%s  dist=%d(%s)  spd=%d  jump=%s  crouch=%s  mgActive=%s  lastWpn=%s",
             self:GetNWFloat("GekkoSpeed", 0),
             tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning),
@@ -385,19 +432,18 @@ function ENT:OnThink()
             self.MoveSpeed or 0,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching),
-            tostring(self.VJ_IsBeingCrouched),
-            tostring(self._gekkoCeilingHit),
-            (self._weaponMode == WMODE_MG) and "MG" or "MISSILE",
-            tostring(self._mgBurstActive)
+            tostring(self._mgBurstActive),
+            tostring(self._lastWeaponChoice)
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
 end
 
 -- ============================================================
---  MG burst
---  Mode flip happens AFTER committing to fire, never before.
+--  Weapon functions
 -- ============================================================
+
+-- MG burst
 local function FireMGBurst(ent, enemy)
     if ent._mgBurstActive then
         print("[GekkoMG] Burst skipped — already active")
@@ -411,7 +457,6 @@ local function FireMGBurst(ent, enemy)
     ent._mgBurstActive = true
     ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
     ent:SetNWBool("GekkoMGFiring", true)
-    ent._weaponMode = WMODE_MISSILE   -- flip only after commit
 
     print(string.format("[GekkoMG] Burst | rounds=%d  spread=%.2f", mgRounds, mgSpread))
 
@@ -470,50 +515,59 @@ local function FireMGBurst(ent, enemy)
     return true
 end
 
--- ============================================================
---  Missile
---  Flips back to MG after firing so the cycle always continues.
--- ============================================================
+-- Single accurate missile
 local function FireMissile(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
-
     ent._missileCount = (ent._missileCount or 0) + 1
-    local missileAttIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    local misAtt = ent:GetAttachment(missileAttIdx)
-    local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    local dir    = (aimPos - src):GetNormalized()
+    local attIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    SpawnRocket(ent, attIdx, aimPos, nil)   -- nil spread = perfectly accurate
+    return true
+end
 
-    local rocket = ents.Create("obj_vj_rocket")
-    if IsValid(rocket) then
-        rocket:SetPos(src)
-        rocket:SetAngles(dir:Angle())
-        rocket:SetOwner(ent)
-        rocket:Spawn()
-        rocket:Activate()
-        local phys = rocket:GetPhysicsObject()
-        if IsValid(phys) then phys:SetVelocity(dir * 1200) end
-    end
+-- Double inaccurate salvo: two rockets, 0.8 s apart, independent wobble
+local function FireDoubleSalvo(ent, enemy)
+    -- Snapshot aim at the moment of firing; each rocket gets its own spread
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
 
-    local eff = EffectData()
-    eff:SetOrigin(src)
-    eff:SetNormal(dir)
-    util.Effect("MuzzleFlash", eff)
+    -- First rocket — fires immediately
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx1 = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    SpawnRocket(ent, attIdx1, aimPos, SalvoSpread())
 
-    ent._weaponMode = WMODE_MG   -- flip back so cycle continues
+    -- Second rocket — fires after SALVO_DELAY, re-checks enemy position
+    timer.Simple(SALVO_DELAY, function()
+        if not IsValid(ent) then return end
+        local curEnemy = GetActiveEnemy(ent)
+        local curAim   = IsValid(curEnemy)
+            and (curEnemy:GetPos() + Vector(0, 0, 40))
+            or  aimPos
+        ent._missileCount = (ent._missileCount or 0) + 1
+        local attIdx2 = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+        SpawnRocket(ent, attIdx2, curAim, SalvoSpread())
+    end)
+
     return true
 end
 
 -- ============================================================
---  Range attack entry point  (clean 3-line dispatcher)
+--  Range attack entry point
+--  Pure random roll every call — no fixed rotation, no state.
+--  Any weapon can repeat any number of times in a row.
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
 
-    if self._weaponMode == WMODE_MG then
+    local choice = RollWeapon()
+    self._lastWeaponChoice = choice
+    print("[GekkoWpn] Roll -> " .. choice)
+
+    if choice == "MG" then
         return FireMGBurst(self, enemy)
-    else
+    elseif choice == "MISSILE" then
         return FireMissile(self, enemy)
+    else
+        return FireDoubleSalvo(self, enemy)
     end
 end
 
