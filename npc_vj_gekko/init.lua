@@ -59,26 +59,26 @@ local GL_GRENADE_TYPES = {
 }
 
 -- ── Per-grenade-type launch tuning ──────────────────────────
--- bombin_gas_grenade : heaviest / longest range → keep close to old default
--- ent_gas_stun       : medium — nudge up slightly
--- ent_flashbang      : lightest casing → needs the most force to travel
---
--- loft_bias is added to launchDir.z before normalise (0 = flat, 0.5 = arced)
 local GL_TYPE_PARAMS = {
-    ["bombin_gas_grenade"] = { speed = 2200, loft = 0.28 },  -- smoke: tamed down from 2650
-    ["ent_gas_stun"]       = { speed = 2750, loft = 0.35 },  -- stun gas: more punch
-    ["ent_flashbang"]      = { speed = 3500, loft = 0.42 },  -- flashbang: much heavier loft+speed
+    ["bombin_gas_grenade"] = { speed = 2200, loft = 0.28 },
+    ["ent_gas_stun"]       = { speed = 2750, loft = 0.35 },
+    ["ent_flashbang"]      = { speed = 3500, loft = 0.42 },
 }
-local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }  -- fallback for unknown types
+local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }
 
--- ── Grenade smoke trail ──────────────────────────────────────
--- A timer ticks every GL_TRAIL_INTERVAL seconds while the grenade is airborne
--- (above GL_TRAIL_GROUND_Z units off the ground) and emits a single white
--- SmokeEffect puff at the grenade's current position.
-local GL_TRAIL_INTERVAL  = 0.08   -- seconds between puffs  (lower = denser trail)
-local GL_TRAIL_SCALE     = 0.22   -- EffectData scale (small, whispy)
-local GL_TRAIL_GROUND_Z  = 18     -- stop trail when this close to ground
-local GL_TRAIL_MAX_LIFE  = 8.0    -- hard-cap: remove timer after this many seconds
+-- ── Grenade sprite trail ─────────────────────────────────────
+-- Uses env_spritetrail parented to each grenade.
+-- "lifetime" = seconds of path history kept visible → this IS trail length.
+-- startwidth/endwidth taper the ribbon from thick-at-grenade to a fine tip.
+local GL_TRAIL_SPRITE    = "trails/smoke.vmt"
+local GL_TRAIL_LIFETIME  = 1.8    -- seconds of arc visible at once (raise for longer trail)
+local GL_TRAIL_STARTW    = 8      -- ribbon width at the grenade end (units)
+local GL_TRAIL_ENDW      = 1      -- ribbon width at the tail tip
+local GL_TRAIL_COLOR     = "235 235 235"  -- near-white
+local GL_TRAIL_ALPHA     = 200    -- 0-255
+-- Cleanup: remove the trail entity this many seconds after the grenade lands/dies.
+-- Gives the ribbon time to naturally fade out rather than popping.
+local GL_TRAIL_LINGER    = GL_TRAIL_LIFETIME + 0.5
 
 -- Grenade launcher spark / vapor effects
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
@@ -212,48 +212,43 @@ local function GLVaporAtAttachment(ent, shotIndex)
 end
 
 -- ============================================================
---  Grenade smoke trail
---  Attaches a repeating timer to a freshly spawned grenade that
---  emits a small white SmokeEffect puff at the grenade's position
---  every GL_TRAIL_INTERVAL seconds while it is airborne.
---  The timer is removed as soon as the grenade lands or is removed.
+--  Grenade sprite trail
+--
+--  Spawns an env_spritetrail parented to the grenade so the
+--  ribbon follows the full arc automatically.  When the grenade
+--  is removed (detonation / map cleanup) the trail entity is
+--  un-parented and left to fade out naturally over GL_TRAIL_LINGER
+--  seconds before being removed.
 -- ============================================================
-local _trailCounter = 0
 local function AttachGrenadeTrail(gren)
     if not IsValid(gren) then return end
 
-    _trailCounter = _trailCounter + 1
-    local timerName = "GekkoGrenTrail_" .. _trailCounter
-    local deadlineT = CurTime() + GL_TRAIL_MAX_LIFE
+    local trail = ents.Create("env_spritetrail")
+    if not IsValid(trail) then return end
 
-    timer.Create(timerName, GL_TRAIL_INTERVAL, 0, function()
-        -- Stop if the grenade is gone or has been on the ground long enough.
-        if not IsValid(gren) or CurTime() > deadlineT then
-            timer.Remove(timerName)
-            return
-        end
+    trail:SetPos(gren:GetPos())
+    trail:SetParent(gren)
 
-        -- Proximity-to-ground check via downward trace.
-        local pos = gren:GetPos()
-        local tr  = util.TraceLine({
-            start  = pos,
-            endpos = pos + Vector(0, 0, -(GL_TRAIL_GROUND_Z + 4)),
-            filter = gren,
-            mask   = MASK_SOLID_BRUSHONLY,
-        })
-        if tr.Hit then
-            -- Grenade has landed — remove trail and stop.
-            timer.Remove(timerName)
-            return
-        end
+    trail:SetKeyValue("lifetime",    tostring(GL_TRAIL_LIFETIME))
+    trail:SetKeyValue("startwidth",  tostring(GL_TRAIL_STARTW))
+    trail:SetKeyValue("endwidth",    tostring(GL_TRAIL_ENDW))
+    trail:SetKeyValue("spritename",  GL_TRAIL_SPRITE)
+    trail:SetKeyValue("rendercolor", GL_TRAIL_COLOR)
+    trail:SetKeyValue("renderamt",   tostring(GL_TRAIL_ALPHA))
+    trail:SetKeyValue("rendermode",  "10")  -- kRenderWorldGlow — soft additive, blends nicely
+    trail:SetKeyValue("renderorder", "0")
 
-        -- Emit a small white smoke puff.
-        local e = EffectData()
-        e:SetOrigin(pos)
-        e:SetNormal(Vector(0, 0, 1))
-        e:SetScale(GL_TRAIL_SCALE)
-        e:SetMagnitude(0.5)
-        util.Effect("SmokeEffect", e, true, true)
+    trail:Spawn()
+    trail:Activate()
+
+    -- When the grenade goes away, un-parent and schedule cleanup so the
+    -- ribbon has time to dissolve rather than vanishing instantly.
+    gren:CallOnRemove("GekkoTrailCleanup", function()
+        if not IsValid(trail) then return end
+        trail:SetParent()   -- detach so it stays in world while fading
+        timer.Simple(GL_TRAIL_LINGER, function()
+            if IsValid(trail) then trail:Remove() end
+        end)
     end)
 end
 
@@ -694,13 +689,6 @@ end
 
 -- ============================================================
 --  Weapon: grenade launcher (M32-style)
---
---  Per-grenade-type physics tuning via GL_TYPE_PARAMS:
---    bombin_gas_grenade  — heavy smoke round, tamed range
---    ent_gas_stun        — medium stun canister, moderate extra force
---    ent_flashbang       — light casing, much higher speed + loft
---
---  Each grenade also receives a white smoke trail via AttachGrenadeTrail.
 -- ============================================================
 local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
@@ -761,7 +749,6 @@ local function FireGrenadeLauncher(ent, enemy)
                     ))
                 end
 
-                -- Attach a white smoke trail that follows the grenade until landing.
                 AttachGrenadeTrail(gren)
             end
         end)
