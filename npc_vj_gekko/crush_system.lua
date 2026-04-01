@@ -59,10 +59,10 @@ end
 --  1. WALK CRUSH
 -- ============================================================
 local WALK_CRUSH_DIST     = 96
-local WALK_CRUSH_WIDTH    = 52
-local WALK_CRUSH_DAMAGE   = 35
+local WALK_CRUSH_WIDTH    = 50
+local WALK_CRUSH_DAMAGE   = 25
 local WALK_CRUSH_SPEED    = 30
-local WALK_CRUSH_COOLDOWN = 0.4
+local WALK_CRUSH_COOLDOWN = 1.0
 local WALK_CRUSH_IMPULSE  = 9000
 
 function ENT:GeckoCrush_Think()
@@ -109,8 +109,8 @@ end
 --  Inverse-square: max=60 at dist=0, min=2 at dist=radius(220)
 -- ============================================================
 local LAUNCH_RADIUS     = 220
-local LAUNCH_DAMAGE_MAX = 60
-local LAUNCH_DAMAGE_MIN = 2
+local LAUNCH_DAMAGE_MAX = 40
+local LAUNCH_DAMAGE_MIN = 1
 local LAUNCH_IMPULSE    = 18000
 
 function ENT:GeckoCrush_LaunchBlast()
@@ -139,8 +139,8 @@ end
 --  so physics impulse leakage cannot bounce it into the skybox.
 -- ============================================================
 local LAND_RADIUS     = 300
-local LAND_DAMAGE_MAX = 80
-local LAND_DAMAGE_MIN = 2
+local LAND_DAMAGE_MAX = 60
+local LAND_DAMAGE_MIN = 1
 local LAND_IMPULSE    = 22000
 
 function ENT:GeckoCrush_LandBlast()

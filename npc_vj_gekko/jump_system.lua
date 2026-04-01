@@ -8,7 +8,7 @@ local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
 local JUMP_FORCE_MIN      = 200
-local JUMP_FORCE_MAX      = 1300
+local JUMP_FORCE_MAX      = 1000
 local JUMP_FORWARD_FORCE  = 300
 local JUMP_LAND_LOCKOUT   = 1.4
 local JUMP_COOLDOWN_MIN   = 8.0
