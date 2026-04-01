@@ -60,22 +60,22 @@ local GL_GRENADE_TYPES = {
 }
 
 -- Grenade launcher spark effect
--- Three attachment slots cycle per shot: MG barrel -> missile-L -> missile-R
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
-local GL_SPARK_SCALE     = 0.5   -- ManhackSparks magnitude multiplier
-local GL_SPARK_MAGNITUDE = 4     -- base spark count (scaled by GL_SPARK_SCALE)
-local GL_SPARK_RADIUS    = 10    -- effect radius
+local GL_SPARK_SCALE     = 0.5
+local GL_SPARK_MAGNITUDE = 4
+local GL_SPARK_RADIUS    = 10
 
 -- Grenade launcher vapor/smoke effect
--- SmokeEffect   = thin white wisp at the muzzle (powder burn)
--- BlackSmoke     = one denser puff per shot for visual weight
-local GL_VAPOR_EFFECT   = "SmokeEffect"   -- light vapor wisp
-local GL_SMOKE_EFFECT   = "BlackSmoke"    -- denser smoke puff
-local GL_VAPOR_SCALE    = 0.6             -- keep it subtle
+local GL_VAPOR_EFFECT   = "SmokeEffect"
+local GL_SMOKE_EFFECT   = "BlackSmoke"
+local GL_VAPOR_SCALE    = 0.6
 local GL_SMOKE_SCALE    = 0.4
-local GL_SMOKE_EVERY    = 2               -- fire BlackSmoke every N shots (not every)
+local GL_SMOKE_EVERY    = 2
 
 -- Top-attack missile
+-- Launch position is raised well above the NPC so the initial
+-- 108 450 u/s kick clears the NPC hull before collision tests run.
+local TOPMISSILE_LAUNCH_Z   = 300   -- units above NPC origin
 local TOPMISSILE_MIN_DIST   = 1200
 local TOPMISSILE_SOUND_WARN = "npc/strider/fire.wav"
 
@@ -151,8 +151,6 @@ local function SalvoSpread()
     )
 end
 
--- Fires a small ManhackSparks burst from an attachment, at half scale.
--- attIdx cycles through GL_SPARK_ATT_CYCLE per grenade shot.
 local function GLSparkAtAttachment(ent, shotIndex)
     local cycle  = GL_SPARK_ATT_CYCLE
     local attIdx = cycle[((shotIndex - 1) % #cycle) + 1]
@@ -170,13 +168,6 @@ local function GLSparkAtAttachment(ent, shotIndex)
     util.Effect("ManhackSparks", e)
 end
 
--- ============================================================
---  GL vapor + smoke effect
---  Fires a thin SmokeEffect wisp every shot and a denser
---  BlackSmoke puff every GL_SMOKE_EVERY shots.
---  Uses the same attachment cycle as the spark so the effects
---  share a muzzle origin without extra lookups.
--- ============================================================
 local function GLVaporAtAttachment(ent, shotIndex)
     local cycle  = GL_SPARK_ATT_CYCLE
     local attIdx = cycle[((shotIndex - 1) % #cycle) + 1]
@@ -184,9 +175,8 @@ local function GLVaporAtAttachment(ent, shotIndex)
     if not attData then return end
 
     local fwd    = attData.Ang:Forward()
-    local origin = attData.Pos + fwd * 6   -- slightly ahead of the barrel
+    local origin = attData.Pos + fwd * 6
 
-    -- Light vapor wisp (every shot)
     local ev = EffectData()
     ev:SetOrigin(origin)
     ev:SetNormal(fwd)
@@ -194,7 +184,6 @@ local function GLVaporAtAttachment(ent, shotIndex)
     ev:SetMagnitude(1)
     util.Effect(GL_VAPOR_EFFECT, ev)
 
-    -- Denser smoke puff (every GL_SMOKE_EVERY shots)
     if shotIndex % GL_SMOKE_EVERY == 0 then
         local es = EffectData()
         es:SetOrigin(origin + Vector(0, 0, 8))
@@ -383,7 +372,7 @@ function ENT:Init()
     self._bloodSplatPulse    = 0
     self._gibCooldownT       = 0
     self._lastWeaponChoice   = ""
-    self._glSparkCounter     = 0   -- tracks which attachment to spark next
+    self._glSparkCounter     = 0
 
     self:SetNWBool("GekkoMGFiring",   false)
     self:SetNWInt("GekkoJumpDust",    0)
@@ -642,11 +631,6 @@ end
 
 -- ============================================================
 --  Weapon: grenade launcher (M32-style)
---
---  Each shot:
---    1. Cycles ManhackSparks (scale 0.5) across three attachments
---    2. Fires a SmokeEffect vapor wisp at the same attachment
---    3. Every GL_SMOKE_EVERY shots also fires a BlackSmoke puff
 -- ============================================================
 local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
@@ -656,13 +640,10 @@ local function FireGrenadeLauncher(ent, enemy)
     local right   = ent:GetRight()
     local origin  = ent:GetPos() + Vector(0, 0, GL_LAUNCH_Z)
 
-    -- Reset spark counter at the start of each grenade event so the
-    -- cycle always begins at ATT_MACHINEGUN for the first shot.
     ent._glSparkCounter = 0
 
     print(string.format("[GekkoGL] Firing %d x %s", count, grenadeType))
 
-    -- Sound sequence
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
     timer.Simple(GL_FIDGET_LEAD, function()
         if not IsValid(ent) then return end
@@ -674,20 +655,15 @@ local function FireGrenadeLauncher(ent, enemy)
         ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
     end)
 
-    -- Grenade spawns + per-shot spark + vapor/smoke
     for i = 0, count - 1 do
-        local shotNumber = i + 1   -- 1-based index for the cycle
+        local shotNumber = i + 1
         local delay      = GL_FIDGET_LEAD + i * GL_INTERVAL
         timer.Simple(delay, function()
             if not IsValid(ent) then return end
 
-            -- Spark: cycles MG -> MissL -> MissR -> MG ...
             GLSparkAtAttachment(ent, shotNumber)
-
-            -- Vapor + smoke at the same attachment
             GLVaporAtAttachment(ent, shotNumber)
 
-            -- Grenade projectile
             local scatter   = forward * (math.Rand(300, 700))
                             + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
             local spawnPos  = origin + scatter * 0.05
@@ -721,6 +697,10 @@ end
 
 -- ============================================================
 --  Weapon: top-attack terror missile  (5th weapon)
+--
+--  Launch position is raised TOPMISSILE_LAUNCH_Z units above
+--  the NPC so the initial velocity kick clears the NPC hull
+--  entirely before any collision tests are evaluated.
 -- ============================================================
 local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -746,8 +726,8 @@ local function FireTopMissile(ent, enemy)
 
     ent:EmitSound(TOPMISSILE_SOUND_WARN, 90, math.random(90, 110), 1)
 
-    local launchAtt = ent:GetAttachment(ATT_MISSILE_R)
-    local launchPos = launchAtt and launchAtt.Pos or (ent:GetPos() + Vector(0, 0, 180))
+    -- Spawn well above the NPC so the kick clears the hull
+    local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
 
     local missile = ents.Create("sent_npc_topmissile")
     if not IsValid(missile) then
@@ -769,12 +749,13 @@ local function FireTopMissile(ent, enemy)
     missile.Target = enemy:GetPos() + Vector(0, 0, 40)
 
     missile:SetPos(launchPos)
+    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))  -- point straight up
     missile:Spawn()
     missile:Activate()
 
     print(string.format(
-        "[GekkoTM] Launched | dist=%.0f  target=%s",
-        dist, tostring(missile.Target)
+        "[GekkoTM] Launched | dist=%.0f  launchZ=+%d  target=%s",
+        dist, TOPMISSILE_LAUNCH_Z, tostring(missile.Target)
     ))
     return true
 end
