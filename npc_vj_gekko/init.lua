@@ -19,20 +19,20 @@ local ATT_MISSILE_R  = 10
 local ANIM_WALK_SPEED    = 184
 local ANIM_RUN_SPEED     = 20
 
-local RUN_ENGAGE_DIST    = 2000
+local RUN_ENGAGE_DIST    = 2300
 local RUN_DISENGAGE_DIST = 1600
 
 local MG_ROUNDS_MIN = 9
 local MG_ROUNDS_MAX = 36
-local MG_INTERVAL   = 0.149
+local MG_INTERVAL   = 0.15
 local MG_DAMAGE     = 20
 local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 40   -- MG burst
-local WWEIGHT_MISSILE_SINGLE = 35   -- single accurate rocket
-local WWEIGHT_MISSILE_DOUBLE = 25   -- double inaccurate salvo
+local WWEIGHT_MG             = 75   -- MG burst
+local WWEIGHT_MISSILE_SINGLE = 20   -- single accurate rocket
+local WWEIGHT_MISSILE_DOUBLE = 5   -- double inaccurate salvo
 
 -- Double-salvo inaccuracy: random offset added to the aim point (world units)
 local SALVO_SPREAD_XY = 220   -- horizontal wobble per rocket

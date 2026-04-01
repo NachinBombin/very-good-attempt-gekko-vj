@@ -17,18 +17,18 @@
 -- ────────────────────────────────────────────────────────────
 --  Tuning
 -- ────────────────────────────────────────────────────────────
-local GIB_DAMAGE_THRESHOLD = 18   -- minimum single-hit damage to trigger
+local GIB_DAMAGE_THRESHOLD = 80   -- minimum single-hit damage to trigger
 local GIB_CHANCE           = 0.55  -- probability per qualifying hit (0-1)
 local GIB_COUNT_MIN        = 1
-local GIB_COUNT_MAX        = 3
+local GIB_COUNT_MAX        = 9
 local GIB_LIFETIME         = 8.0   -- seconds before auto-remove
 local GIB_SPEED_MIN        = 260
-local GIB_SPEED_MAX        = 700
+local GIB_SPEED_MAX        = 900
 local GIB_UP_MIN           = 80
 local GIB_UP_MAX            = 340
 local GIB_SPIN_SCALE       = 200   -- random angular velocity magnitude
 local GIB_MASS             = 18    -- kg — heavy enough to feel metallic
-local GIB_COOLDOWN         = 0.22  -- seconds between gib events (spam guard)
+local GIB_COOLDOWN         = 4.0  -- seconds between gib events (spam guard)
 
 -- Spark constants
 local SPARK_EFFECT         = "ElectricSpark"  -- bright electric/welding sparks
@@ -62,9 +62,9 @@ local function SpawnGibSparks(pos, normal)
         local e = EffectData()
         e:SetOrigin(pos)
         e:SetNormal(normal or Vector(0, 0, 1))
-        e:SetMagnitude(math.Rand(4, 12))
-        e:SetScale(math.Rand(1, 3))
-        e:SetRadius(math.random(16, 48))
+        e:SetMagnitude(math.Rand(0.5, 1))
+        e:SetScale(math.Rand(0.3, 1))
+        e:SetRadius(math.random(1, 5))
         util.Effect(SPARK_EFFECT, e)
     end
 
@@ -72,9 +72,9 @@ local function SpawnGibSparks(pos, normal)
     local e2 = EffectData()
     e2:SetOrigin(pos)
     e2:SetNormal(normal or Vector(0, 0, 1))
-    e2:SetMagnitude(math.Rand(8, 20))
-    e2:SetScale(math.Rand(2, 5))
-    e2:SetRadius(math.random(24, 64))
+    e2:SetMagnitude(math.Rand(0.3, 1))
+    e2:SetScale(math.Rand(0.4, 1))
+    e2:SetRadius(math.random(5, 12))
     util.Effect(SPARK_EXTRA, e2)
 end
 
