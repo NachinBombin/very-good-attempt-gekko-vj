@@ -31,11 +31,11 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 45   -- reduced from 55 to make room for TOPMISSILE
+local WWEIGHT_MG             = 45
 local WWEIGHT_MISSILE_SINGLE = 15
 local WWEIGHT_MISSILE_DOUBLE = 10
 local WWEIGHT_GRENADE        = 20
-local WWEIGHT_TOPMISSILE     = 10   -- 5th weapon
+local WWEIGHT_TOPMISSILE     = 10
 
 -- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
@@ -43,25 +43,23 @@ local SALVO_SPREAD_Z  = 80
 local SALVO_DELAY     = 0.8
 
 -- Grenade launcher
-local GL_COUNT_MIN      = 4
-local GL_COUNT_MAX      = 8
-local GL_INTERVAL       = 0.35   -- seconds between each grenade
-local GL_SPREAD_XY      = 350    -- random forward scatter (world units)
-local GL_SPREAD_Y       = 250    -- lateral scatter
-local GL_LAUNCH_Z       = 180    -- launch height above Gekko origin
-local GL_LAUNCH_SPEED   = 650    -- initial velocity magnitude
-local GL_SOUND_FIDGET   = "mac_bo2_m32/fidget.wav"
-local GL_SOUND_FIRE     = "mac_bo2_m32/fire.wav"
-local GL_SOUND_INSERT   = "mac_bo2_m32/insert.wav"
-local GL_FIDGET_LEAD    = 0.5    -- fidget plays this many seconds before fire
-local GL_GRENADE_TYPES  = {
+local GL_COUNT_MIN    = 4
+local GL_COUNT_MAX    = 8
+local GL_INTERVAL     = 0.35
+local GL_SPREAD_Y     = 250
+local GL_LAUNCH_Z     = 180
+local GL_LAUNCH_SPEED = 650
+local GL_SOUND_FIDGET = "mac_bo2_m32/fidget.wav"
+local GL_SOUND_FIRE   = "mac_bo2_m32/fire.wav"
+local GL_SOUND_INSERT = "mac_bo2_m32/insert.wav"
+local GL_FIDGET_LEAD  = 0.5
+local GL_GRENADE_TYPES = {
     "bombin_gas_grenade",
     "ent_gas_stun",
     "ent_flashbang",
 }
 
 -- Top-attack missile
--- Below this distance the arc cannot form; the roll is re-tried once.
 local TOPMISSILE_MIN_DIST   = 1200
 local TOPMISSILE_SOUND_WARN = "npc/strider/fire.wav"
 
@@ -69,7 +67,6 @@ local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 
 local HEAD_Z_FRACTION = 0.65
 
--- Blood splat
 local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 
@@ -90,7 +87,7 @@ local function SafeResetSequence(ent, seq)
     end
 end
 
--- Weapon roll — returns one of: "MG", "MISSILE", "SALVO", "GRENADE", "TOPMISSILE"
+-- Weapon roll
 local function RollWeapon()
     local r = math.random(1, 100)
     if r <= WWEIGHT_MG then
@@ -366,7 +363,7 @@ function ENT:Init()
         ))
     end)
 
-    print("[GekkoNPC] Init() complete — deferred activate queued")
+    print("[GekkoNPC] Init() complete -- deferred activate queued")
 end
 
 -- ============================================================
@@ -472,7 +469,7 @@ end
 -- ============================================================
 local function FireMGBurst(ent, enemy)
     if ent._mgBurstActive then
-        print("[GekkoMG] Burst skipped — already active")
+        print("[GekkoMG] Burst skipped -- already active")
         return false
     end
 
@@ -603,11 +600,11 @@ local function FireGrenadeLauncher(ent, enemy)
         timer.Simple(delay, function()
             if not IsValid(ent) then return end
 
-            local scatter = forward * (math.Rand(300, 700))
-                          + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
+            local scatter   = forward * (math.Rand(300, 700))
+                            + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
             local spawnPos  = origin + scatter * 0.05
-            local launchDir = (scatter):GetNormalized()
-            launchDir.z = launchDir.z + 0.35
+            local launchDir = scatter:GetNormalized()
+            launchDir.z     = launchDir.z + 0.35
             launchDir:Normalize()
 
             local gren = ents.Create(grenadeType)
@@ -636,13 +633,21 @@ end
 
 -- ============================================================
 --  Weapon: top-attack terror missile  (5th weapon)
+--
+--  Passes only two fields to the missile:
+--    Owner  = the NPC entity (for damage attribution)
+--    Target = a frozen Vector of the enemy's position at fire time
+--             (+ 40 z to aim at body centre)
+--
+--  The missile is a static-arc projectile -- it does NOT track
+--  a moving entity.  Do NOT pass TargetEntity.
 -- ============================================================
 local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
 
     if dist < TOPMISSILE_MIN_DIST then
         print(string.format(
-            "[GekkoTM] Too close (%.0f < %d) — re-rolling",
+            "[GekkoTM] Too close (%.0f < %d) -- re-rolling",
             dist, TOPMISSILE_MIN_DIST
         ))
         local reroll
@@ -663,11 +668,10 @@ local function FireTopMissile(ent, enemy)
 
     local launchAtt = ent:GetAttachment(ATT_MISSILE_R)
     local launchPos = launchAtt and launchAtt.Pos or (ent:GetPos() + Vector(0, 0, 180))
-    local launchAng = ent:GetAngles()
 
     local missile = ents.Create("sent_npc_topmissile")
     if not IsValid(missile) then
-        print("[GekkoTM] ERROR: sent_npc_topmissile could not be created — re-rolling")
+        print("[GekkoTM] ERROR: sent_npc_topmissile failed to create -- re-rolling")
         local reroll
         repeat reroll = RollWeapon() until reroll ~= "TOPMISSILE"
         if reroll == "MG" then
@@ -681,22 +685,17 @@ local function FireTopMissile(ent, enemy)
         end
     end
 
-    -- Set all three fields BEFORE Spawn() so Initialize() can read them.
-    -- Target       = position snapshot used for 3-phase static arc.
-    -- TargetEntity = live entity reference used for moving-target lead
-    --               and terminal-dive lock-on (Javelin pattern).
-    missile.Owner        = ent
-    missile.Target       = enemy:GetPos() + Vector(0, 0, 40)
-    missile.TargetEntity = enemy
+    -- Only Owner and Target.  No TargetEntity -- missile is static-arc only.
+    missile.Owner  = ent
+    missile.Target = enemy:GetPos() + Vector(0, 0, 40)
 
     missile:SetPos(launchPos)
-    missile:SetAngles(launchAng)
     missile:Spawn()
     missile:Activate()
 
     print(string.format(
-        "[GekkoTM] Launched | dist=%.0f  target=%s  entity=%s",
-        dist, tostring(missile.Target), tostring(enemy)
+        "[GekkoTM] Launched | dist=%.0f  target=%s",
+        dist, tostring(missile.Target)
     ))
     return true
 end
