@@ -32,12 +32,12 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 40
-local WWEIGHT_MISSILE_SINGLE = 13
-local WWEIGHT_MISSILE_DOUBLE = 9
-local WWEIGHT_GRENADE        = 18
+local WWEIGHT_MG             = 50
+local WWEIGHT_MISSILE_SINGLE = 20
+local WWEIGHT_MISSILE_DOUBLE = 5
+local WWEIGHT_GRENADE        = 10
 local WWEIGHT_TOPMISSILE     = 10
-local WWEIGHT_TRACKMISSILE   = 10
+local WWEIGHT_TRACKMISSILE   = 5
 
 -- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
@@ -62,7 +62,7 @@ local GL_GRENADE_TYPES = {
 local GL_TYPE_PARAMS = {
     ["bombin_gas_grenade"] = { speed = 2200, loft = 0.28 },
     ["ent_gas_stun"]       = { speed = 2750, loft = 0.35 },
-    ["ent_flashbang"]      = { speed = 3500, loft = 0.42 },
+    ["ent_flashbang"]      = { speed = 6500, loft = 0.42 },
 }
 local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }
 
