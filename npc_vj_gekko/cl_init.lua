@@ -17,11 +17,7 @@ local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
 -- ============================================================
---  CRUSH HIT — net receiver
---
---  Sound  : max volume (110), low pitch (80) so it sounds heavy
---  Shake  : two stacked calls — a sharp jolt + a long rumble
---  Visual : ManhackSparks burst at the hit point
+--  CRUSH HIT
 -- ============================================================
 local CRUSH_IMPACT_SOUNDS = {
     "physics/body/body_medium_impact_hard1.wav",
@@ -38,15 +34,11 @@ net.Receive("GekkoCrushHit", function()
     local hitPos   = net.ReadVector()
     local gekkoPos = net.ReadVector()
 
-    -- Heavy, loud impact — vol 110 (max), pitch 80 (low/meaty)
     sound.Play(
         CRUSH_IMPACT_SOUNDS[math.random(#CRUSH_IMPACT_SOUNDS)],
-        hitPos,
-        110,
-        80
+        hitPos, 110, 80
     )
 
-    -- Visual jolt: sparks burst at hit location
     local e = EffectData()
     e:SetOrigin(hitPos + Vector(0, 0, 20))
     e:SetNormal(Vector(0, 0, 1))
@@ -55,17 +47,132 @@ net.Receive("GekkoCrushHit", function()
     e:SetRadius(40)
     util.Effect("ManhackSparks", e, false)
 
-    -- Double-stacked screen shake
     local ply = LocalPlayer()
     if IsValid(ply) then
         local dist  = ply:GetPos():Distance(gekkoPos)
         local alpha = 1 - math.Clamp(dist / CRUSH_SHAKE_RADIUS, 0, 1)
         if alpha > 0 then
-            -- Sharp jolt (high freq, short)
             util.ScreenShake(gekkoPos, 45 * alpha, 28, 0.20, CRUSH_SHAKE_RADIUS)
-            -- Lingering rumble (low freq, longer)
             util.ScreenShake(gekkoPos, 20 * alpha,  8, 0.45, CRUSH_SHAKE_RADIUS)
         end
+    end
+end)
+
+-- ============================================================
+--  SONAR LOCK — visual + sound
+--
+--  Three concentric refract-wave pulses radiate from screen
+--  centre, mimicking the physical sensation of a high-energy
+--  sonar array resonating through the player's retinas.
+--
+--  Design constraints:
+--    • NO screen shake — purely optical distortion
+--    • Minimal color: a hairline cool-grey tint at peak, gone
+--      before the third pulse finishes
+--    • Total duration  : ~1.9 s
+--    • Three pulses staggered by SONAR_PULSE_INTERVAL
+--    • Sound plays at LocalPlayer():GetPos() so it is
+--      perceived as originating inside the player's own skull
+-- ============================================================
+local SONAR_SOUND         = "mac_bo2_m32/Sonar intercept.wav"
+local SONAR_DURATION      = 1.9      -- total effect duration (s)
+local SONAR_PULSE_COUNT   = 3
+local SONAR_PULSE_INTERVAL= 0.38     -- seconds between pulses
+local SONAR_PEAK_ALPHA    = 28       -- 0-255: max refract alpha (very faint)
+local SONAR_TINT_ALPHA    = 10       -- 0-255: max full-screen tint alpha (barely visible)
+local SONAR_TINT_R        = 190      -- \  cool grey-blue hue:
+local SONAR_TINT_G        = 210      --  > at SONAR_TINT_ALPHA=10 this is nearly invisible
+local SONAR_TINT_B        = 230      -- /
+
+local matHeatWave = Material("sprites/heat_shimmer")
+
+-- State
+local sonar_startTime = nil   -- CurTime() when effect was triggered
+local sonar_active    = false
+
+-- Net receiver
+net.Receive("GekkoSonarLock", function()
+    -- Sound at the player's own origin — sonar intercepting the body
+    local ply = LocalPlayer()
+    if IsValid(ply) then
+        sound.Play(SONAR_SOUND, ply:GetPos(), 75, 100)
+    end
+    sonar_startTime = CurTime()
+    sonar_active    = true
+end)
+
+-- ============================================================
+--  HUDPaint  — draws the sonar effect each frame while active
+-- ============================================================
+hook.Add("HUDPaint", "GekkoSonarEffect", function()
+    if not sonar_active then return end
+
+    local now     = CurTime()
+    local elapsed = now - sonar_startTime
+
+    if elapsed >= SONAR_DURATION then
+        sonar_active = false
+        return
+    end
+
+    local sw, sh = ScrW(), ScrH()
+    local cx, cy = sw * 0.5, sh * 0.5
+
+    -- Global fade: the whole effect dims out over its lifetime
+    local globalFade = 1 - math.Clamp(elapsed / SONAR_DURATION, 0, 1)
+
+    -- ── Full-screen tint (extremely faint colour wash) ──────
+    -- Peaks at the very start, gone by ~60% through the effect.
+    local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.6))
+    local tintA    = math.floor(SONAR_TINT_ALPHA * tintFade * globalFade)
+    if tintA > 0 then
+        surface.SetDrawColor(SONAR_TINT_R, SONAR_TINT_G, SONAR_TINT_B, tintA)
+        surface.DrawRect(0, 0, sw, sh)
+    end
+
+    -- ── Per-pulse refract rings ──────────────────────────────
+    render.UpdateRefractTexture()
+    surface.SetMaterial(matHeatWave)
+
+    for i = 0, SONAR_PULSE_COUNT - 1 do
+        local pulseStart = i * SONAR_PULSE_INTERVAL
+        local pulseAge   = elapsed - pulseStart
+        if pulseAge < 0 then continue end  -- not started yet
+
+        -- Each pulse lives for one interval + a short tail
+        local pulseDuration = SONAR_PULSE_INTERVAL + 0.25
+        local t = math.Clamp(pulseAge / pulseDuration, 0, 1)
+        if t >= 1 then continue end  -- already finished
+
+        -- Alpha: quick rise to peak, smooth exponential decay
+        --   rise: 0 -> 1 over first 15% of pulse life
+        --   fall: 1 -> 0 over remaining 85%
+        local riseEnd = 0.15
+        local pAlpha
+        if t < riseEnd then
+            pAlpha = t / riseEnd
+        else
+            pAlpha = 1 - ((t - riseEnd) / (1 - riseEnd))
+        end
+        pAlpha = pAlpha * pAlpha  -- ease-in-out squared
+        local finalAlpha = math.floor(SONAR_PEAK_ALPHA * pAlpha * globalFade)
+        if finalAlpha <= 0 then continue end
+
+        -- Ring size: expands outward from centre
+        -- At t=0: ~10% of screen half-diagonal
+        -- At t=1: ~90% of screen half-diagonal
+        local halfDiag = math.sqrt(cx*cx + cy*cy)
+        local ringSize = halfDiag * (0.1 + t * 0.8) * 2
+
+        -- Draw as a square refract quad centred on screen,
+        -- rotated slightly per pulse for asymmetric feel.
+        local rotation = i * 15  -- degrees offset per ring
+        surface.SetDrawColor(255, 255, 255, finalAlpha)
+        surface.DrawTexturedRectRotated(
+            cx, cy,
+            ringSize, ringSize,
+            rotation
+        )
     end
 end)
 
@@ -174,7 +281,7 @@ local function GekkoFootShake(ent)
 end
 
 -- ============================================================
---  HEAD DRIVER  (b_spine4)  — YAW + PITCH
+--  HEAD DRIVER
 -- ============================================================
 local HEAD_LIMIT       =  50
 local HEAD_PITCH_UP    = -60
@@ -196,21 +303,21 @@ local function GekkoUpdateHead(ent, dt)
         local boneMatrix = ent:GetBoneMatrix(bone)
         local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
         local toEnemy    = (enemy:GetPos() + Vector(0, 0, 40) - pos):Angle()
-        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,     HEAD_LIMIT)
-        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP,   HEAD_PITCH_DOWN)
+        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,    HEAD_LIMIT)
+        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP,  HEAD_PITCH_DOWN)
     end
 
     local maxStep   = HEAD_SPEED * dt
     local yawDiff   = math.NormalizeAngle(targetYaw - ent._headYaw)
-    ent._headYaw    = math.Clamp(ent._headYaw   + math.Clamp(yawDiff,               -maxStep, maxStep), -HEAD_LIMIT,    HEAD_LIMIT)
+    ent._headYaw    = math.Clamp(ent._headYaw   + math.Clamp(yawDiff,   -maxStep, maxStep), -HEAD_LIMIT,   HEAD_LIMIT)
     local pitchDiff = targetPitch - ent._headPitch
-    ent._headPitch  = math.Clamp(ent._headPitch + math.Clamp(pitchDiff,             -maxStep, maxStep),  HEAD_PITCH_UP,  HEAD_PITCH_DOWN)
+    ent._headPitch  = math.Clamp(ent._headPitch + math.Clamp(pitchDiff, -maxStep, maxStep),  HEAD_PITCH_UP, HEAD_PITCH_DOWN)
 
     ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, ent._headPitch), false)
 end
 
 -- ============================================================
---  JUMP DUST  (ThumperDust: Origin, Scale, Entity)
+--  JUMP DUST
 -- ============================================================
 local ATT_MACHINEGUN = 3
 
@@ -229,7 +336,7 @@ local function GekkoDoJumpDust(ent)
 end
 
 -- ============================================================
---  LAND DUST  (ThumperDust: Origin, Scale, Entity)
+--  LAND DUST
 -- ============================================================
 local function GekkoDoLandDust(ent)
     local pulse = ent:GetNWInt("GekkoLandDust", 0)
@@ -267,7 +374,6 @@ local function GekkoDoMGFX(ent)
 
     if not ent._nextShellT or now >= ent._nextShellT then
         ent._nextShellT = now + SHELL_INTERVAL
-
         local e = EffectData()
         e:SetEntity(ent)
         e:SetOrigin(pos)
@@ -277,7 +383,6 @@ local function GekkoDoMGFX(ent)
 
     if not ent._nextSparkT or now >= ent._nextSparkT then
         ent._nextSparkT = now + math.Rand(1.5, 3.5)
-
         local fwd = ang:Forward()
         local e = EffectData()
         e:SetOrigin(pos + fwd * 8)
@@ -293,10 +398,8 @@ end
 
 -- ============================================================
 --  BLOOD SPLATTER
---  BLOOD_SIZE: master scale multiplier — tune this one value.
---    1.0 = original  |  0.35 = current (noticeably smaller than Gekko)
 -- ============================================================
-local BLOOD_SIZE  = 0.35
+local BLOOD_SIZE   = 0.35
 local BLOOD_DECAL  = "Blood"
 local BLOOD_DECAL2 = "YellowBlood"
 
@@ -353,9 +456,7 @@ local function BloodVariant_Geyser(origin)
         dir:Normalize()
         SpawnBloodBlob(
             origin + Vector(0, 0, math.Rand(20, 120) * s),
-            dir,
-            math.Rand(800, 2200),   -- speed scaled inside SpawnBloodBlob
-            math.Rand(8, 22)
+            dir, math.Rand(800, 2200), math.Rand(8, 22)
         )
     end
     for _ = 1, math.random(4, 8) do
@@ -394,8 +495,7 @@ local function BloodVariant_BurstCloud(origin)
         SpawnBloodBlob(
             origin + Vector(0, 0, math.Rand(30, 160) * s),
             RandBiasedDir(Vector(0, 0, 0.4), 0),
-            math.Rand(600, 2800),
-            math.Rand(10, 30)
+            math.Rand(600, 2800), math.Rand(10, 30)
         )
     end
     for _ = 1, math.random(8, 16) do
@@ -418,8 +518,7 @@ local function BloodVariant_ArcShower(origin, forwardDir)
         SpawnBloodBlob(
             origin + Vector(0, 0, math.Rand(60, 180) * s),
             RandBiasedDir(forwardDir + Vector(0, 0, 0.5), 0.55),
-            math.Rand(1000, 3000),
-            math.Rand(8, 24)
+            math.Rand(1000, 3000), math.Rand(8, 24)
         )
     end
     for _ = 1, math.random(4, 10) do
@@ -440,9 +539,7 @@ local function BloodVariant_GroundPool(origin)
         dir:Normalize()
         SpawnBloodBlob(
             origin + Vector(0, 0, math.Rand(5, 40) * s),
-            dir,
-            math.Rand(600, 2000),
-            math.Rand(14, 36)
+            dir, math.Rand(600, 2000), math.Rand(14, 36)
         )
     end
     for _ = 1, math.random(5, 10) do
@@ -506,10 +603,7 @@ function ENT:Draw()
     local jumpState = self:GetGekkoJumpState()
     local landing   = (jumpState == JUMP_LAND)
 
-    if not landing then
-        GekkoUpdateHead(self, dt)
-    end
-
+    if not landing then GekkoUpdateHead(self, dt) end
     if not landing then
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
@@ -517,9 +611,7 @@ function ENT:Draw()
 
     local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
-    if t < stompEnd and grounded then
-        GekkoStompLegs(self)
-    end
+    if t < stompEnd and grounded then GekkoStompLegs(self) end
 
     self:DrawModel()
 end

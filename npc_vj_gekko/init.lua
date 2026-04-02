@@ -2,6 +2,7 @@
 --  npc_vj_gekko / init.lua
 --  + 5th weapon : Top-Attack Terror Missile   (sent_npc_topmissile)
 --  + 6th weapon : Active-Track Ballistic Missile (sent_npc_trackmissile)
+--  + Sonar Lock : net message to targeted player on TRACKMISSILE fire
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -10,6 +11,11 @@ include("crush_system.lua")
 include("jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
+
+-- ============================================================
+--  Net message pool
+-- ============================================================
+util.AddNetworkString("GekkoSonarLock")
 
 -- ============================================================
 --  Constants
@@ -86,7 +92,7 @@ local GL_SMOKE_EVERY     = 2
 
 -- Shared missile constants
 local TOPMISSILE_LAUNCH_Z  = 300
-local MISSILE_MIN_DIST     = 1200   -- used by both missile weapons
+local MISSILE_MIN_DIST     = 1200
 local MISSILE_SOUND_WARN   = "buttons/button17.wav"
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
@@ -109,7 +115,7 @@ local function SafeResetSequence(ent, seq)
     if seq and seq ~= -1 then ent:ResetSequence(seq) end
 end
 
--- Weapon roll (weights must sum to 100)
+-- Weapon roll
 local function RollWeapon()
     local r = math.random(1, 100)
     local cum = 0
@@ -216,28 +222,28 @@ local function AttachGrenadeTrail(gren)
     end)
 end
 
--- ============================================================
---  Shared missile launch helper
---  Used by both FireTopMissile and FireTrackMissile to avoid
---  duplicate re-roll logic.
--- ============================================================
 local function RerollNotMissile(ent, enemy, exclude)
     local reroll
     repeat reroll = RollWeapon() until reroll ~= exclude
     print("[GekkoMissile] Re-roll -> " .. reroll)
-    if reroll == "MG" then
-        return "MG"
-    elseif reroll == "MISSILE" then
-        return "MISSILE"
-    elseif reroll == "SALVO" then
-        return "SALVO"
-    elseif reroll == "TOPMISSILE" then
-        return "TOPMISSILE"
-    elseif reroll == "TRACKMISSILE" then
-        return "TRACKMISSILE"
-    else
-        return "GRENADE"
-    end
+    if reroll == "MG" then return "MG"
+    elseif reroll == "MISSILE" then return "MISSILE"
+    elseif reroll == "SALVO" then return "SALVO"
+    elseif reroll == "TOPMISSILE" then return "TOPMISSILE"
+    elseif reroll == "TRACKMISSILE" then return "TRACKMISSILE"
+    else return "GRENADE" end
+end
+
+-- ============================================================
+--  Sonar Lock notification
+--  Sends a net message to the targeted player (if it IS a player)
+--  so their client can play the visual + sound effect.
+-- ============================================================
+local function SendSonarLock(enemy)
+    if not IsValid(enemy) then return end
+    if not enemy:IsPlayer() then return end
+    net.Start("GekkoSonarLock")
+    net.Send(enemy)
 end
 
 -- ============================================================
@@ -676,6 +682,10 @@ local function FireTrackMissile(ent, enemy)
         elseif alt == "TOPMISSILE" then return FireTopMissile(ent, enemy)
         else return FireGrenadeLauncher(ent, enemy) end
     end
+
+    -- Sonar lock notification — targeted player feels the ping
+    SendSonarLock(enemy)
+
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
     local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
     local missile = ents.Create("sent_npc_trackmissile")
@@ -685,7 +695,7 @@ local function FireTrackMissile(ent, enemy)
     end
     missile.Owner    = ent
     missile.Target   = enemy:GetPos() + Vector(0, 0, 40)
-    missile.TrackEnt = enemy   -- live entity reference for active tracking
+    missile.TrackEnt = enemy
     missile:SetPos(launchPos)
     missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
     missile:Spawn()
