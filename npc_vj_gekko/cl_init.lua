@@ -61,38 +61,38 @@ end)
 -- ============================================================
 --  SONAR LOCK — visual + sound
 --
---  Three concentric refract-wave pulses radiate from screen
---  centre, mimicking the physical sensation of a high-energy
---  sonar array resonating through the player's retinas.
+--  Pure surface.* ring outlines — no render.* calls, no
+--  material sampling.  Safe inside HUDPaint.
 --
---  Design constraints:
---    • NO screen shake — purely optical distortion
---    • Minimal color: a hairline cool-grey tint at peak, gone
---      before the third pulse finishes
---    • Total duration  : ~1.9 s
---    • Three pulses staggered by SONAR_PULSE_INTERVAL
---    • Sound plays at LocalPlayer():GetPos() so it is
---      perceived as originating inside the player's own skull
+--  Three rings expand from screen centre and fade out.
+--  Colour: very faint cool-grey.  No fill — outline only.
+--  Total duration : ~1.9 s
+--  Sound plays at LocalPlayer():GetPos() (inside the body).
 -- ============================================================
-local SONAR_SOUND         = "mac_bo2_m32/Sonar intercept.wav"
-local SONAR_DURATION      = 1.9      -- total effect duration (s)
-local SONAR_PULSE_COUNT   = 3
-local SONAR_PULSE_INTERVAL= 0.38     -- seconds between pulses
-local SONAR_PEAK_ALPHA    = 28       -- 0-255: max refract alpha (very faint)
-local SONAR_TINT_ALPHA    = 10       -- 0-255: max full-screen tint alpha (barely visible)
-local SONAR_TINT_R        = 190      -- \  cool grey-blue hue:
-local SONAR_TINT_G        = 210      --  > at SONAR_TINT_ALPHA=10 this is nearly invisible
-local SONAR_TINT_B        = 230      -- /
+local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
+local SONAR_DURATION       = 1.9
+local SONAR_PULSE_COUNT    = 3
+local SONAR_PULSE_INTERVAL = 0.38
 
-local matHeatWave = Material("sprites/heat_shimmer")
+-- ring appearance
+local SONAR_RING_THICKNESS = 2      -- px stroke width
+local SONAR_PEAK_ALPHA     = 55     -- 0-255 max alpha for ring outlines
+local SONAR_TINT_ALPHA     = 8      -- 0-255 max alpha for full-screen tint
+
+-- colour: very faint cool grey-blue
+local SONAR_R = 200
+local SONAR_G = 215
+local SONAR_B = 235
+
+-- white circle sprite — guaranteed to exist in every GMod install
+local matRing = Material("vgui/white")
 
 -- State
-local sonar_startTime = nil   -- CurTime() when effect was triggered
+local sonar_startTime = nil
 local sonar_active    = false
 
--- Net receiver
+-- ── Net receiver ─────────────────────────────────────────────
 net.Receive("GekkoSonarLock", function()
-    -- Sound at the player's own origin — sonar intercepting the body
     local ply = LocalPlayer()
     if IsValid(ply) then
         sound.Play(SONAR_SOUND, ply:GetPos(), 75, 100)
@@ -101,9 +101,40 @@ net.Receive("GekkoSonarLock", function()
     sonar_active    = true
 end)
 
--- ============================================================
---  HUDPaint  — draws the sonar effect each frame while active
--- ============================================================
+-- ── Helper: draw a hollow circle using many short line segments
+--    cx,cy  = centre in screen pixels
+--    radius = circle radius
+--    thick  = line thickness (px)
+--    r,g,b,a= colour
+local function DrawRingOutline(cx, cy, radius, thick, r, g, b, a)
+    if radius <= 0 or a <= 0 then return end
+    local steps = math.max(32, math.floor(radius * 0.35))
+    local prev_x = cx + radius
+    local prev_y = cy
+    for i = 1, steps do
+        local ang   = (i / steps) * math.pi * 2
+        local nx    = cx + math.cos(ang) * radius
+        local ny    = cy + math.sin(ang) * radius
+        -- draw a small filled rect bridging prev->next (approximates a stroke)
+        local mx    = (prev_x + nx) * 0.5
+        local my    = (prev_y + ny) * 0.5
+        local dx    = nx - prev_x
+        local dy    = ny - prev_y
+        local len   = math.sqrt(dx*dx + dy*dy)
+        if len > 0 then
+            surface.SetDrawColor(r, g, b, a)
+            surface.DrawTexturedRectRotated(
+                mx, my,
+                len + 1, thick,
+                math.deg(math.atan2(dy, dx))
+            )
+        end
+        prev_x = nx
+        prev_y = ny
+    end
+end
+
+-- ── HUDPaint ─────────────────────────────────────────────────
 hook.Add("HUDPaint", "GekkoSonarEffect", function()
     if not sonar_active then return end
 
@@ -118,61 +149,48 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
     local sw, sh = ScrW(), ScrH()
     local cx, cy = sw * 0.5, sh * 0.5
 
-    -- Global fade: the whole effect dims out over its lifetime
+    -- global fade over full lifetime
     local globalFade = 1 - math.Clamp(elapsed / SONAR_DURATION, 0, 1)
 
-    -- ── Full-screen tint (extremely faint colour wash) ──────
-    -- Peaks at the very start, gone by ~60% through the effect.
-    local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.6))
+    -- ── very faint full-screen tint ──────────────────────────
+    local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.5))
     local tintA    = math.floor(SONAR_TINT_ALPHA * tintFade * globalFade)
     if tintA > 0 then
-        surface.SetDrawColor(SONAR_TINT_R, SONAR_TINT_G, SONAR_TINT_B, tintA)
+        surface.SetDrawColor(SONAR_R, SONAR_G, SONAR_B, tintA)
         surface.DrawRect(0, 0, sw, sh)
     end
 
-    -- ── Per-pulse refract rings ──────────────────────────────
-    render.UpdateRefractTexture()
-    surface.SetMaterial(matHeatWave)
+    -- ── ring pulses ──────────────────────────────────────────
+    surface.SetMaterial(matRing)
+
+    local maxRadius = math.sqrt(cx*cx + cy*cy) * 1.05  -- just past screen corner
 
     for i = 0, SONAR_PULSE_COUNT - 1 do
-        local pulseStart = i * SONAR_PULSE_INTERVAL
-        local pulseAge   = elapsed - pulseStart
-        if pulseAge < 0 then continue end  -- not started yet
+        local pulseStart    = i * SONAR_PULSE_INTERVAL
+        local pulseAge      = elapsed - pulseStart
+        if pulseAge < 0 then continue end
 
-        -- Each pulse lives for one interval + a short tail
-        local pulseDuration = SONAR_PULSE_INTERVAL + 0.25
+        local pulseDuration = SONAR_PULSE_INTERVAL + 0.30
         local t = math.Clamp(pulseAge / pulseDuration, 0, 1)
-        if t >= 1 then continue end  -- already finished
+        if t >= 1 then continue end
 
-        -- Alpha: quick rise to peak, smooth exponential decay
-        --   rise: 0 -> 1 over first 15% of pulse life
-        --   fall: 1 -> 0 over remaining 85%
-        local riseEnd = 0.15
+        -- alpha: sharp rise then smooth fall
+        local riseEnd = 0.12
         local pAlpha
         if t < riseEnd then
             pAlpha = t / riseEnd
         else
             pAlpha = 1 - ((t - riseEnd) / (1 - riseEnd))
         end
-        pAlpha = pAlpha * pAlpha  -- ease-in-out squared
+        pAlpha = pAlpha * pAlpha  -- ease-in squared
+
         local finalAlpha = math.floor(SONAR_PEAK_ALPHA * pAlpha * globalFade)
         if finalAlpha <= 0 then continue end
 
-        -- Ring size: expands outward from centre
-        -- At t=0: ~10% of screen half-diagonal
-        -- At t=1: ~90% of screen half-diagonal
-        local halfDiag = math.sqrt(cx*cx + cy*cy)
-        local ringSize = halfDiag * (0.1 + t * 0.8) * 2
+        -- expand from 5% to 100% of max radius
+        local radius = maxRadius * (0.05 + t * 0.95)
 
-        -- Draw as a square refract quad centred on screen,
-        -- rotated slightly per pulse for asymmetric feel.
-        local rotation = i * 15  -- degrees offset per ring
-        surface.SetDrawColor(255, 255, 255, finalAlpha)
-        surface.DrawTexturedRectRotated(
-            cx, cy,
-            ringSize, ringSize,
-            rotation
-        )
+        DrawRingOutline(cx, cy, radius, SONAR_RING_THICKNESS, SONAR_R, SONAR_G, SONAR_B, finalAlpha)
     end
 end)
 
