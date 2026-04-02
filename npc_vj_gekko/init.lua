@@ -72,13 +72,28 @@ local GL_TYPE_PARAMS = {
 }
 local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }
 
-local GL_TRAIL_SPRITE   = "trails/smoke.vmt"
-local GL_TRAIL_LIFETIME = 1.8
-local GL_TRAIL_STARTW   = 8
-local GL_TRAIL_ENDW     = 1
-local GL_TRAIL_COLOR    = "235 235 235"
-local GL_TRAIL_ALPHA    = 200
-local GL_TRAIL_LINGER   = GL_TRAIL_LIFETIME + 0.5
+-- ============================================================
+--  Grenade sprite trail constants
+--
+--  util.SpriteTrail is the correct GMod-native API for sprite
+--  trails. It is called server-side, automatically networked
+--  to every client, and uses a material path that is
+--  guaranteed to exist in every GMod installation.
+--
+--  Signature:
+--    util.SpriteTrail( entity, attachIndex, color, additive,
+--                      startSize, endSize, lifetime,
+--                      textureRes, material )
+--
+--  attachIndex 0  = entity origin.
+--  additive    false = normal alpha-blend (smoky look).
+--  textureRes  = 1 / startSize  (standard convention).
+-- ============================================================
+local GL_TRAIL_MATERIAL  = "trails/smoke"   -- NO .vmt extension
+local GL_TRAIL_LIFETIME  = 1.8              -- seconds of arc kept visible
+local GL_TRAIL_STARTSIZE = 8               -- ribbon width at the grenade head
+local GL_TRAIL_ENDSIZE   = 1               -- ribbon width at the tail tip
+local GL_TRAIL_COLOR     = Color(235, 235, 235, 200)
 
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
 local GL_SPARK_SCALE     = 0.5
@@ -132,7 +147,6 @@ local function SpawnRocket(ent, attIdx, aimPos, spread)
     local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
     local target = aimPos + (spread or Vector(0, 0, 0))
     local dir    = (target - src):GetNormalized()
-
     local rocket = ents.Create("obj_vj_rocket")
     if IsValid(rocket) then
         rocket:SetPos(src)
@@ -143,7 +157,6 @@ local function SpawnRocket(ent, attIdx, aimPos, spread)
         local phys = rocket:GetPhysicsObject()
         if IsValid(phys) then phys:SetVelocity(dir * 1200) end
     end
-
     local eff = EffectData()
     eff:SetOrigin(src)
     eff:SetNormal(dir)
@@ -197,29 +210,33 @@ local function GLVaporAtAttachment(ent, shotIndex)
     end
 end
 
+-- ============================================================
+--  AttachGrenadeTrail
+--
+--  Uses util.SpriteTrail instead of env_spritetrail because:
+--    1. env_spritetrail requires a valid .vmt on disk;
+--       "trails/smoke.vmt" is NOT a standard GMod material
+--       and silently produces an invisible trail.
+--    2. util.SpriteTrail calls the engine's C++ SpriteTrail
+--       factory directly, accepts the bare material name
+--       (no extension), and networks the trail to all
+--       clients automatically with no extra work.
+--    3. The trail lifetime is tied to the entity — when the
+--       grenade is removed the trail fades on its own.
+-- ============================================================
 local function AttachGrenadeTrail(gren)
     if not IsValid(gren) then return end
-    local trail = ents.Create("env_spritetrail")
-    if not IsValid(trail) then return end
-    trail:SetPos(gren:GetPos())
-    trail:SetParent(gren)
-    trail:SetKeyValue("lifetime",    tostring(GL_TRAIL_LIFETIME))
-    trail:SetKeyValue("startwidth",  tostring(GL_TRAIL_STARTW))
-    trail:SetKeyValue("endwidth",    tostring(GL_TRAIL_ENDW))
-    trail:SetKeyValue("spritename",  GL_TRAIL_SPRITE)
-    trail:SetKeyValue("rendercolor", GL_TRAIL_COLOR)
-    trail:SetKeyValue("renderamt",   tostring(GL_TRAIL_ALPHA))
-    trail:SetKeyValue("rendermode",  "10")
-    trail:SetKeyValue("renderorder", "0")
-    trail:Spawn()
-    trail:Activate()
-    gren:CallOnRemove("GekkoTrailCleanup", function()
-        if not IsValid(trail) then return end
-        trail:SetParent()
-        timer.Simple(GL_TRAIL_LINGER, function()
-            if IsValid(trail) then trail:Remove() end
-        end)
-    end)
+    util.SpriteTrail(
+        gren,
+        0,                              -- attachment 0 = entity origin
+        GL_TRAIL_COLOR,
+        false,                          -- additive = false → translucent/smoky
+        GL_TRAIL_STARTSIZE,
+        GL_TRAIL_ENDSIZE,
+        GL_TRAIL_LIFETIME,
+        1 / GL_TRAIL_STARTSIZE,         -- textureRes (standard convention)
+        GL_TRAIL_MATERIAL
+    )
 end
 
 local function RerollNotMissile(ent, enemy, exclude)
@@ -236,8 +253,6 @@ end
 
 -- ============================================================
 --  Sonar Lock notification
---  Sends a net message to the targeted player (if it IS a player)
---  so their client can play the visual + sound effect.
 -- ============================================================
 local function SendSonarLock(enemy)
     if not IsValid(enemy) then return end
@@ -682,10 +697,7 @@ local function FireTrackMissile(ent, enemy)
         elseif alt == "TOPMISSILE" then return FireTopMissile(ent, enemy)
         else return FireGrenadeLauncher(ent, enemy) end
     end
-
-    -- Sonar lock notification — targeted player feels the ping
     SendSonarLock(enemy)
-
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
     local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
     local missile = ents.Create("sent_npc_trackmissile")
@@ -700,8 +712,7 @@ local function FireTrackMissile(ent, enemy)
     missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
     missile:Spawn()
     missile:Activate()
-    print(string.format("[GekkoTRK] Launched | dist=%.0f  tracking=%s",
-        dist, tostring(enemy)))
+    print(string.format("[GekkoTRK] Launched | dist=%.0f  tracking=%s", dist, tostring(enemy)))
     return true
 end
 
