@@ -59,39 +59,24 @@ net.Receive("GekkoCrushHit", function()
 end)
 
 -- ============================================================
---  SONAR LOCK — visual + sound
---
---  Pure surface.* ring outlines — no render.* calls, no
---  material sampling.  Safe inside HUDPaint.
---
---  Three rings expand from screen centre and fade out.
---  Colour: very faint cool-grey.  No fill — outline only.
---  Total duration : ~1.9 s
---  Sound plays at LocalPlayer():GetPos() (inside the body).
+--  SONAR LOCK  (DEBUG: exaggerated so we can confirm it fires)
 -- ============================================================
 local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
-local SONAR_DURATION       = 1.9
+local SONAR_DURATION       = 3.0       -- longer so it's easy to spot
 local SONAR_PULSE_COUNT    = 3
-local SONAR_PULSE_INTERVAL = 0.38
+local SONAR_PULSE_INTERVAL = 0.6
 
--- ring appearance
-local SONAR_RING_THICKNESS = 2      -- px stroke width
-local SONAR_PEAK_ALPHA     = 55     -- 0-255 max alpha for ring outlines
-local SONAR_TINT_ALPHA     = 8      -- 0-255 max alpha for full-screen tint
+local SONAR_RING_THICKNESS = 12        -- very thick stroke
+local SONAR_PEAK_ALPHA     = 220       -- near-opaque
+local SONAR_TINT_ALPHA     = 80        -- obvious tint
 
--- colour: very faint cool grey-blue
-local SONAR_R = 200
-local SONAR_G = 215
-local SONAR_B = 235
+local SONAR_R = 0
+local SONAR_G = 200
+local SONAR_B = 255                    -- bright cyan, impossible to miss
 
--- white circle sprite — guaranteed to exist in every GMod install
-local matRing = Material("vgui/white")
-
--- State
 local sonar_startTime = nil
 local sonar_active    = false
 
--- ── Net receiver ─────────────────────────────────────────────
 net.Receive("GekkoSonarLock", function()
     local ply = LocalPlayer()
     if IsValid(ply) then
@@ -99,34 +84,31 @@ net.Receive("GekkoSonarLock", function()
     end
     sonar_startTime = CurTime()
     sonar_active    = true
+    print("[GekkoSonar] TRIGGERED  t=" .. tostring(sonar_startTime))
 end)
 
--- ── Helper: draw a hollow circle using many short line segments
---    cx,cy  = centre in screen pixels
---    radius = circle radius
---    thick  = line thickness (px)
---    r,g,b,a= colour
+-- Hollow circle via short rotated segments
 local function DrawRingOutline(cx, cy, radius, thick, r, g, b, a)
     if radius <= 0 or a <= 0 then return end
-    local steps = math.max(32, math.floor(radius * 0.35))
+    local steps  = math.max(48, math.floor(radius * 0.4))
     local prev_x = cx + radius
     local prev_y = cy
     for i = 1, steps do
-        local ang   = (i / steps) * math.pi * 2
-        local nx    = cx + math.cos(ang) * radius
-        local ny    = cy + math.sin(ang) * radius
-        -- draw a small filled rect bridging prev->next (approximates a stroke)
-        local mx    = (prev_x + nx) * 0.5
-        local my    = (prev_y + ny) * 0.5
-        local dx    = nx - prev_x
-        local dy    = ny - prev_y
-        local len   = math.sqrt(dx*dx + dy*dy)
+        local ang = (i / steps) * math.pi * 2
+        local nx  = cx + math.cos(ang) * radius
+        local ny  = cy + math.sin(ang) * radius
+        local mx  = (prev_x + nx) * 0.5
+        local my  = (prev_y + ny) * 0.5
+        local dx  = nx - prev_x
+        local dy  = ny - prev_y
+        local len = math.sqrt(dx*dx + dy*dy)
         if len > 0 then
             surface.SetDrawColor(r, g, b, a)
-            surface.DrawTexturedRectRotated(
-                mx, my,
-                len + 1, thick,
-                math.deg(math.atan2(dy, dx))
+            surface.DrawRect(
+                math.floor(mx - len * 0.5),
+                math.floor(my - thick * 0.5),
+                math.ceil(len + 1),
+                thick
             )
         end
         prev_x = nx
@@ -134,7 +116,6 @@ local function DrawRingOutline(cx, cy, radius, thick, r, g, b, a)
     end
 end
 
--- ── HUDPaint ─────────────────────────────────────────────────
 hook.Add("HUDPaint", "GekkoSonarEffect", function()
     if not sonar_active then return end
 
@@ -143,38 +124,33 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
 
     if elapsed >= SONAR_DURATION then
         sonar_active = false
+        print("[GekkoSonar] effect ended")
         return
     end
 
     local sw, sh = ScrW(), ScrH()
     local cx, cy = sw * 0.5, sh * 0.5
-
-    -- global fade over full lifetime
     local globalFade = 1 - math.Clamp(elapsed / SONAR_DURATION, 0, 1)
 
-    -- ── very faint full-screen tint ──────────────────────────
-    local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.5))
+    -- obvious full-screen tint
+    local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.4))
     local tintA    = math.floor(SONAR_TINT_ALPHA * tintFade * globalFade)
     if tintA > 0 then
         surface.SetDrawColor(SONAR_R, SONAR_G, SONAR_B, tintA)
         surface.DrawRect(0, 0, sw, sh)
     end
 
-    -- ── ring pulses ──────────────────────────────────────────
-    surface.SetMaterial(matRing)
-
-    local maxRadius = math.sqrt(cx*cx + cy*cy) * 1.05  -- just past screen corner
+    local maxRadius = math.sqrt(cx*cx + cy*cy) * 1.1
 
     for i = 0, SONAR_PULSE_COUNT - 1 do
         local pulseStart    = i * SONAR_PULSE_INTERVAL
         local pulseAge      = elapsed - pulseStart
         if pulseAge < 0 then continue end
 
-        local pulseDuration = SONAR_PULSE_INTERVAL + 0.30
+        local pulseDuration = SONAR_PULSE_INTERVAL + 0.5
         local t = math.Clamp(pulseAge / pulseDuration, 0, 1)
         if t >= 1 then continue end
 
-        -- alpha: sharp rise then smooth fall
         local riseEnd = 0.12
         local pAlpha
         if t < riseEnd then
@@ -182,15 +158,14 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
         else
             pAlpha = 1 - ((t - riseEnd) / (1 - riseEnd))
         end
-        pAlpha = pAlpha * pAlpha  -- ease-in squared
+        pAlpha = pAlpha * pAlpha
 
         local finalAlpha = math.floor(SONAR_PEAK_ALPHA * pAlpha * globalFade)
         if finalAlpha <= 0 then continue end
 
-        -- expand from 5% to 100% of max radius
         local radius = maxRadius * (0.05 + t * 0.95)
-
-        DrawRingOutline(cx, cy, radius, SONAR_RING_THICKNESS, SONAR_R, SONAR_G, SONAR_B, finalAlpha)
+        DrawRingOutline(cx, cy, radius, SONAR_RING_THICKNESS,
+            SONAR_R, SONAR_G, SONAR_B, finalAlpha)
     end
 end)
 
