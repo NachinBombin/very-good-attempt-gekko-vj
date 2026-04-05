@@ -3,14 +3,16 @@
 --
 --  Three independent crush / blast systems:
 --
---  1. Walk Crush   — front hull sweep while walking/running.
---                    On every damage event:
---                      * Always fires the KICK (GekkoKickPulse)
---                      * 30% chance also fires the HEADBUTT
---                        (GekkoHeadbuttPulse) — no speed gate,
---                        same distance/cooldown as walk crush.
---  2. Launch Blast — sphere damage at jump takeoff
---  3. Land Blast   — sphere damage + knockup on landing
+--  1. Walk Crush   -- front hull sweep while walking/running.
+--                     Fires KICK OR HEADBUTT, never both:
+--                       * 30% chance -> HEADBUTT (GekkoHeadbuttPulse)
+--                           No speed gate.  No minimum range.
+--                           Uses its own wider sphere check so the
+--                           player can be literally on top of the Gekko.
+--                       * 70% chance -> KICK (GekkoKickPulse)
+--                           Speed gate + hull sweep as before.
+--  2. Launch Blast -- sphere damage at jump takeoff
+--  3. Land Blast   -- sphere damage + knockup on landing
 -- ============================================================
 
 if SERVER then
@@ -19,13 +21,11 @@ end
 
 -- ============================================================
 --  Shared helper: apply damage + physics impulse to a single entity.
---  attacker is ALWAYS excluded from both damage and impulse.
 -- ============================================================
 local function CrushDamageEnt(attacker, target, dmg, impulseVec)
     if not IsValid(target)        then return end
-    if target == attacker         then return end  -- never self-damage
+    if target == attacker         then return end
 
-    -- Skip pure physics objects that are world-static (mass == 0)
     local phys = target:GetPhysicsObject()
     if not target:IsNPC() and not target:IsPlayer() then
         if not IsValid(phys) or phys:GetMass() <= 0 then return end
@@ -52,7 +52,6 @@ end
 
 -- ============================================================
 --  Inverse-square damage falloff
---  dmg(0) = dmgMax  |  dmg(radius) = dmgMin
 -- ============================================================
 local function BlastDamage(dmgMax, dmgMin, dist, radius)
     local k  = (dmgMax / dmgMin) - 1
@@ -66,75 +65,116 @@ end
 local WALK_CRUSH_DIST      = 96
 local WALK_CRUSH_WIDTH     = 50
 local WALK_CRUSH_DAMAGE    = 25
-local WALK_CRUSH_SPEED     = 30
+local WALK_CRUSH_SPEED     = 30    -- minimum speed for the KICK path
 local WALK_CRUSH_COOLDOWN  = 1.0
 local WALK_CRUSH_IMPULSE   = 9000
 
-local HEADBUTT_CHANCE      = 0.30   -- 30 % per cooldown window
+-- Headbutt: 30% chance, no speed gate, radius covers point-blank range.
+-- When headbutt wins the coin-flip the kick is suppressed entirely.
+local HEADBUTT_CHANCE      = 0.30
+local HEADBUTT_RADIUS      = 96    -- same reach as hull sweep
+local HEADBUTT_DAMAGE      = 20
+local HEADBUTT_IMPULSE     = 7000
 
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
 
-    local speed = self:GetNWFloat("GekkoSpeed", 0)
-    if speed < WALK_CRUSH_SPEED then return end
+    local now = CurTime()
+    if not self._crushHitTimes then self._crushHitTimes = {} end
 
-    local now   = CurTime()
+    -- ---- Shared cooldown check: find closest valid target -------
+    -- We need one target to gate the cooldown against.  We look for
+    -- the closest NPC/Player within headbutt radius first (no speed
+    -- gate), then fall back to the hull-sweep for the kick path.
+
+    local speed = self:GetNWFloat("GekkoSpeed", 0)
     local pos   = self:GetPos() + Vector(0, 0, 80)
     local fwd   = self:GetForward()
-    local sweep = pos + fwd * WALK_CRUSH_DIST
-    local half  = Vector(WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH)
 
-    local tr = util.TraceHull({
-        start  = pos,
-        endpos = sweep,
-        mins   = -half,
-        maxs   =  half,
-        filter = self,
-        mask   = MASK_SHOT_HULL,
-    })
-
-    local hit = tr.Entity
-    if not IsValid(hit) then return end
-    if not hit:IsNPC() and not hit:IsPlayer() then return end
-
-    if not self._crushHitTimes then self._crushHitTimes = {} end
-    local lastHit = self._crushHitTimes[hit] or 0
-    if now - lastHit < WALK_CRUSH_COOLDOWN then return end
-    self._crushHitTimes[hit] = now
-
-    local toTarget = (hit:GetPos() - self:GetPos()):GetNormalized()
-    local dot      = math.Clamp(fwd:Dot(toTarget), 0.5, 1.0)
-    local dmg      = WALK_CRUSH_DAMAGE * dot
-    local impulse  = (fwd + Vector(0, 0, 0.3)):GetNormalized() * WALK_CRUSH_IMPULSE
-    CrushDamageEnt(self, hit, dmg, impulse)
-
-    -- ---- Kick pulse (always) --------------------------------
-    -- Client reads the CHANGE in value (pulse counter), not the
-    -- value itself. Wraps 1..254 so it never rests at 0.
-    local kickPrev = self:GetNWInt("GekkoKickPulse", 0)
-    local kickNext = (kickPrev % 254) + 1
-    self:SetNWInt("GekkoKickPulse", kickNext)
-
-    -- ---- Headbutt pulse (30 % chance) -----------------------
-    -- Same pulse-counter pattern as kick.  The client drives the
-    -- smooth b_spine3 / b_pelvis animation for 2 s.
-    local didHeadbutt = false
-    if math.random() < HEADBUTT_CHANCE then
-        local hbPrev = self:GetNWInt("GekkoHeadbuttPulse", 0)
-        local hbNext = (hbPrev % 254) + 1
-        self:SetNWInt("GekkoHeadbuttPulse", hbNext)
-        didHeadbutt = true
+    -- Find closest NPC/player within headbutt sphere (no speed req)
+    local hbTarget = nil
+    local hbDistSq = math.huge
+    for _, ent in ipairs(ents.FindInSphere(pos, HEADBUTT_RADIUS)) do
+        if ent == self then continue end
+        if not ent:IsNPC() and not ent:IsPlayer() then continue end
+        local dsq = pos:DistToSqr(ent:GetPos())
+        if dsq < hbDistSq then
+            hbDistSq = dsq
+            hbTarget = ent
+        end
     end
 
-    print(string.format(
-        "[GekkoCrush] Walk hit: %s  dmg=%.1f  dot=%.2f  kickPulse=%d  headbutt=%s",
-        hit:GetClass(), dmg, dot, kickNext, tostring(didHeadbutt)
-    ))
+    -- Hull sweep for kick (speed-gated)
+    local kickTarget = nil
+    if speed >= WALK_CRUSH_SPEED then
+        local sweep = pos + fwd * WALK_CRUSH_DIST
+        local half  = Vector(WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH)
+        local tr = util.TraceHull({
+            start  = pos,
+            endpos = sweep,
+            mins   = -half,
+            maxs   =  half,
+            filter = self,
+            mask   = MASK_SHOT_HULL,
+        })
+        local hit = tr.Entity
+        if IsValid(hit) and (hit:IsNPC() or hit:IsPlayer()) then
+            kickTarget = hit
+        end
+    end
+
+    -- Nothing in range at all
+    if not hbTarget and not kickTarget then return end
+
+    -- ---- Coin flip: headbutt OR kick (never both) ---------------
+    local doHeadbutt = (math.random() < HEADBUTT_CHANCE)
+
+    if doHeadbutt then
+        -- Headbutt path -- requires hbTarget (no speed gate)
+        if not IsValid(hbTarget) then return end
+
+        local lastHit = self._crushHitTimes[hbTarget] or 0
+        if now - lastHit < WALK_CRUSH_COOLDOWN then return end
+        self._crushHitTimes[hbTarget] = now
+
+        local impulse = (fwd + Vector(0, 0, 0.3)):GetNormalized() * HEADBUTT_IMPULSE
+        CrushDamageEnt(self, hbTarget, HEADBUTT_DAMAGE, impulse)
+
+        local hbPrev = self:GetNWInt("GekkoHeadbuttPulse", 0)
+        self:SetNWInt("GekkoHeadbuttPulse", (hbPrev % 254) + 1)
+
+        print(string.format(
+            "[GekkoCrush] HEADBUTT  target=%s  hbPulse=%d",
+            hbTarget:GetClass(), (self:GetNWInt("GekkoHeadbuttPulse", 0))
+        ))
+
+    else
+        -- Kick path -- requires kickTarget + speed gate
+        if not IsValid(kickTarget) then return end
+
+        local lastHit = self._crushHitTimes[kickTarget] or 0
+        if now - lastHit < WALK_CRUSH_COOLDOWN then return end
+        self._crushHitTimes[kickTarget] = now
+
+        local toTarget = (kickTarget:GetPos() - self:GetPos()):GetNormalized()
+        local dot      = math.Clamp(fwd:Dot(toTarget), 0.5, 1.0)
+        local dmg      = WALK_CRUSH_DAMAGE * dot
+        local impulse  = (fwd + Vector(0, 0, 0.3)):GetNormalized() * WALK_CRUSH_IMPULSE
+        CrushDamageEnt(self, kickTarget, dmg, impulse)
+
+        local kickPrev = self:GetNWInt("GekkoKickPulse", 0)
+        local kickNext = (kickPrev % 254) + 1
+        self:SetNWInt("GekkoKickPulse", kickNext)
+
+        print(string.format(
+            "[GekkoCrush] KICK  target=%s  dmg=%.1f  dot=%.2f  kickPulse=%d",
+            kickTarget:GetClass(), dmg, dot, kickNext
+        ))
+    end
 end
 
 -- ============================================================
 --  2. LAUNCH BLAST
---  Inverse-square: max=60 at dist=0, min=2 at dist=radius(220)
 -- ============================================================
 local LAUNCH_RADIUS     = 220
 local LAUNCH_DAMAGE_MAX = 40
@@ -161,10 +201,6 @@ end
 
 -- ============================================================
 --  3. LAND BLAST
---  Inverse-square: max=80 at dist=0, min=2 at dist=radius(300)
---
---  After firing, we re-zero the Gekko's velocity one tick later
---  so physics impulse leakage cannot bounce it into the skybox.
 -- ============================================================
 local LAND_RADIUS     = 300
 local LAND_DAMAGE_MAX = 60

@@ -36,31 +36,28 @@ local KICK_BONE_RESET = Angle(0,   0, 0)
 -- ============================================================
 --  HEADBUTT ANIMATION
 --
---  Driven by NWInt "GekkoHeadbuttPulse" (30% roll in crush_system).
+--  Driven by NWInt "GekkoHeadbuttPulse" (30% roll in crush_system,
+--  mutually exclusive with kick).
 --
 --  Two bones, two different manipulation types:
 --    b_spine3   -> ManipulateBoneAngles   X = -60  (head dips down)
---    b_pedestal -> ManipulateBonePosition X = +70, Z = -45  (knees/body forward-down)
+--    b_pedestal -> ManipulateBonePosition X = +70, Z = -45
 --
---  Timeline (HB_DURATION = 2 s):
+--  Timeline (HB_DURATION = 0.8 s):
 --    0.0 -> HB_PEAK  : smoothstep rise  0 -> 1
 --    HB_PEAK -> 1.0  : smoothstep fall  1 -> 0
 --
---  Both bones are explicitly reset to zero after the window so no
---  stale pose persists.
+--  Both bones are explicitly reset to zero after the window.
 -- ============================================================
-local HB_DURATION   = 2.0   -- total seconds
-local HB_PEAK       = 0.4   -- normalised peak time (40 % in)
+local HB_DURATION        = 0.8   -- total seconds
+local HB_PEAK            = 0.4   -- normalised peak time (40 % in)
 
--- b_spine3 angle target
 local HB_SPINE3_ANG_X    = -60
-
--- b_pedestal position targets
 local HB_PEDESTAL_POS_X  =  70
 local HB_PEDESTAL_POS_Z  = -45
 
-local HB_SPINE3_BONE    = "b_spine3"
-local HB_PEDESTAL_BONE  = "b_pedestal"
+local HB_SPINE3_BONE     = "b_spine3"
+local HB_PEDESTAL_BONE   = "b_pedestal"
 
 -- smoothstep: t in [0,1] -> smooth [0,1], zero velocity at both ends
 local function Smoothstep(t)
@@ -655,23 +652,18 @@ end
 --  b_spine3   -> ManipulateBoneAngles   X = -60
 --  b_pedestal -> ManipulateBonePosition X = +70, Z = -45
 --
---  Smoothstep envelope over HB_DURATION (2 s):
---    rise phase  (0 -> HB_PEAK)      : envelope 0 -> 1
---    fall phase  (HB_PEAK -> end)    : envelope 1 -> 0
---
+--  Smoothstep envelope over HB_DURATION (0.8 s).
 --  Both bones are explicitly zeroed/reset after the window.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
-    -- lazy init
     if ent._hbInited == nil then
-        ent._hbInited       = true
-        ent._hbSpineIdx     = ent:LookupBone(HB_SPINE3_BONE)   or -1
-        ent._hbPedestalIdx  = ent:LookupBone(HB_PEDESTAL_BONE) or -1
-        ent._hbStartTime    = -9999
-        ent._hbPulseLast    = ent:GetNWInt("GekkoHeadbuttPulse", 0)
+        ent._hbInited      = true
+        ent._hbSpineIdx    = ent:LookupBone(HB_SPINE3_BONE)   or -1
+        ent._hbPedestalIdx = ent:LookupBone(HB_PEDESTAL_BONE) or -1
+        ent._hbStartTime   = -9999
+        ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     end
 
-    -- detect new pulse
     local pulse = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
@@ -681,7 +673,6 @@ local function GekkoDoHeadbuttBone(ent)
 
     local elapsed = CurTime() - ent._hbStartTime
 
-    -- outside window: hard reset both bones
     if elapsed >= HB_DURATION or elapsed < 0 then
         if ent._hbSpineIdx    >= 0 then
             ent:ManipulateBoneAngles(ent._hbSpineIdx, Angle(0, 0, 0), false)
@@ -692,7 +683,6 @@ local function GekkoDoHeadbuttBone(ent)
         return
     end
 
-    -- compute smoothstep envelope
     local t = elapsed / HB_DURATION
     local env
     if t < HB_PEAK then
@@ -701,13 +691,10 @@ local function GekkoDoHeadbuttBone(ent)
         env = Smoothstep(1 - (t - HB_PEAK) / (1 - HB_PEAK))
     end
 
-    -- apply b_spine3 angle
     if ent._hbSpineIdx >= 0 then
         ent:ManipulateBoneAngles(ent._hbSpineIdx,
             Angle(HB_SPINE3_ANG_X * env, 0, 0), false)
     end
-
-    -- apply b_pedestal position
     if ent._hbPedestalIdx >= 0 then
         ent:ManipulateBonePosition(ent._hbPedestalIdx,
             Vector(HB_PEDESTAL_POS_X * env, 0, HB_PEDESTAL_POS_Z * env), false)
