@@ -25,14 +25,15 @@ local JUMP_LAND    = 3
 --  On each new pulse the kick window is extended by
 --  KICK_WINDOW seconds (matching WALK_CRUSH_COOLDOWN = 1.0).
 --  While the window is active, b_r_upperleg is held at +112
---  degrees on the X axis, producing the axe-kick pose.
+--  degrees on the X axis, producing the axe-kick pose layered
+--  over the c_walk sequence forced by the crouch system.
 --  When the window expires the bone is explicitly reset to 0
 --  every Draw() tick so no stale pose is left behind.
 -- ============================================================
-local KICK_WINDOW        = 1.0   -- seconds; must match WALK_CRUSH_COOLDOWN
-local KICK_BONE_NAME     = "b_r_upperleg"
-local KICK_BONE_ANGLE    = Angle(112, 0, 0)
-local KICK_BONE_RESET    = Angle(0,   0, 0)
+local KICK_WINDOW     = 1.0          -- seconds; must match WALK_CRUSH_COOLDOWN
+local KICK_BONE_NAME  = "b_r_upperleg"
+local KICK_BONE_ANGLE = Angle(112, 0, 0)
+local KICK_BONE_RESET = Angle(0,   0, 0)
 
 -- ============================================================
 --  CRUSH HIT
@@ -77,7 +78,7 @@ net.Receive("GekkoCrushHit", function()
 end)
 
 -- ============================================================
---  SONAR LOCK  (DEBUG: exaggerated so we can confirm it fires)
+--  SONAR LOCK
 -- ============================================================
 local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
 local SONAR_DURATION       = 3.0
@@ -186,7 +187,8 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
 end)
 
 -- ============================================================
---  STOMP LEG DRIVER
+--  STOMP LEG DRIVER  (currently inactive — GekkoStompEnd is
+--  never set by server code; kept for future use)
 -- ============================================================
 local function GekkoStompLegs(ent)
     local t      = CurTime()
@@ -589,19 +591,24 @@ end
 --  KICK BONE DRIVER
 --
 --  Called from Draw() after SetupBones() so ManipulateBoneAngles
---  is guaranteed to take effect on this render frame.
---  Reads GekkoKickPulse (NWInt) set by crush_system.lua on every
---  walk-crush damage event.  Each new pulse value extends the
---  kick window by KICK_WINDOW seconds.  While the window is open
---  b_r_upperleg is held at +112 X degrees.  When it expires the
---  bone is explicitly zeroed every frame so no stale pose lingers.
+--  takes effect on this render frame.
+--
+--  Reads GekkoKickPulse (NWInt) incremented by crush_system.lua
+--  on every walk-crush damage event.  Each new pulse value
+--  extends the kick window by KICK_WINDOW seconds.  While the
+--  window is open b_r_upperleg is held at +112 X degrees.
+--  When it expires the bone is explicitly zeroed every frame
+--  so no stale pose lingers.
+--
+--  This function runs LAST in Draw(), after all other bone
+--  drivers, so it always wins the final write on b_r_upperleg.
 -- ============================================================
 local function GekkoDoKickBone(ent)
-    -- Lazy-cache the bone index once per entity instance.
+    -- Lazy-cache bone index and state once per entity instance.
     if ent._kickBoneIdx == nil then
-        ent._kickBoneIdx      = ent:LookupBone(KICK_BONE_NAME) or -1
-        ent._kickEndTime      = 0
-        ent._kickPulseLast    = ent:GetNWInt("GekkoKickPulse", 0)
+        ent._kickBoneIdx   = ent:LookupBone(KICK_BONE_NAME) or -1
+        ent._kickEndTime   = 0
+        ent._kickPulseLast = ent:GetNWInt("GekkoKickPulse", 0)
     end
 
     -- Detect a new pulse from the server.
@@ -659,8 +666,8 @@ function ENT:Draw()
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then GekkoStompLegs(self) end
 
-    -- Kick bone override — runs after all other bone drivers so it
-    -- always wins the final ManipulateBoneAngles call on b_r_upperleg.
+    -- Kick bone override — runs last so it always wins the final
+    -- ManipulateBoneAngles call on b_r_upperleg.
     GekkoDoKickBone(self)
 
     self:DrawModel()
