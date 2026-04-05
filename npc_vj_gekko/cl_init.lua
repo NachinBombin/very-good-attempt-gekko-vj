@@ -29,7 +29,7 @@ local KICK_BONE_ANGLE = Angle(112, 0, 0)
 local KICK_BONE_RESET = Angle(0,   0, 0)
 
 -- ============================================================
---  HEADBUTT ANIMATION  (b_spine3 + b_pelvis)
+--  HEADBUTT ANIMATION  (b_spine3 + b_pedestal)
 --
 --  Driven by NWInt "GekkoHeadbuttPulse" incremented on the 30%
 --  headbutt roll in crush_system.lua.
@@ -38,20 +38,20 @@ local KICK_BONE_RESET = Angle(0,   0, 0)
 --    0.0 → HB_PEAK   : ease-in  from 0 to target angles
 --    HB_PEAK → 1.0   : ease-out from target back to 0
 --
---  b_spine3  target X = -60  (head/upper spine dips forward)
---  b_pelvis  target X = +70  (knees / lower body thrusts forward)
+--  b_spine3   target X = -60  (head/upper spine dips forward)
+--  b_pedestal target X = +70  (knees / lower body thrusts forward)
 --
 --  Uses a smoothstep curve so the motion accelerates in and
 --  decelerates out — no jarring snaps at either end.
 -- ============================================================
-local HB_DURATION      = 2.0   -- total animation seconds
-local HB_PEAK          = 0.4   -- normalised time of peak pose (40 % in)
+local HB_DURATION       = 2.0   -- total animation seconds
+local HB_PEAK           = 0.4   -- normalised time of peak pose (40 % in)
 
-local HB_SPINE3_TARGET = -60   -- X degrees, upper body bows forward
-local HB_PELVIS_TARGET =  70   -- X degrees, lower body drives forward
+local HB_SPINE3_TARGET  = -60   -- X degrees, upper body bows forward
+local HB_PEDESTAL_TARGET =  70  -- X degrees, lower body drives forward
 
-local HB_SPINE3_BONE   = "b_spine3"
-local HB_PELVIS_BONE   = "b_pelvis"
+local HB_SPINE3_BONE    = "b_spine3"
+local HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- smoothstep: maps t∈[0,1] → smooth [0,1] with zero derivatives at ends
 local function Smoothstep(t)
@@ -642,7 +642,7 @@ local function GekkoDoKickBone(ent)
 end
 
 -- ============================================================
---  HEADBUTT BONE DRIVER  (b_spine3 + b_pelvis)
+--  HEADBUTT BONE DRIVER  (b_spine3 + b_pedestal)
 --
 --  Reads GekkoHeadbuttPulse (set by crush_system 30% chance).
 --  On each new pulse: records hb_startTime = CurTime().
@@ -655,21 +655,15 @@ end
 --
 --  When the animation finishes both bones are explicitly zeroed
 --  each frame so no stale pose persists.
---
---  NOTE: b_pelvis is also written by GekkoStompLegs when active.
---  The headbutt driver runs after kick in Draw(), so during a
---  rare stomp+headbutt overlap the headbutt wins on b_pelvis.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
-    -- Lazy init per entity instance
     if ent._hbSpineBone == nil then
-        ent._hbSpineBone   = ent:LookupBone(HB_SPINE3_BONE) or -1
-        ent._hbPelvisBone  = ent:LookupBone(HB_PELVIS_BONE) or -1
-        ent._hbStartTime   = -9999
-        ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
+        ent._hbSpineBone    = ent:LookupBone(HB_SPINE3_BONE)   or -1
+        ent._hbPedestalBone = ent:LookupBone(HB_PEDESTAL_BONE) or -1
+        ent._hbStartTime    = -9999
+        ent._hbPulseLast    = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     end
 
-    -- Detect new pulse
     local pulse = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
@@ -679,23 +673,18 @@ local function GekkoDoHeadbuttBone(ent)
 
     local elapsed = CurTime() - ent._hbStartTime
 
-    -- Outside the animation window: zero both bones and exit
     if elapsed >= HB_DURATION or elapsed < 0 then
-        if ent._hbSpineBone  and ent._hbSpineBone  >= 0 then
-            ent:ManipulateBoneAngles(ent._hbSpineBone,  Angle(0, 0, 0), false)
+        if ent._hbSpineBone    and ent._hbSpineBone    >= 0 then
+            ent:ManipulateBoneAngles(ent._hbSpineBone,    Angle(0, 0, 0), false)
         end
-        if ent._hbPelvisBone and ent._hbPelvisBone >= 0 then
-            ent:ManipulateBoneAngles(ent._hbPelvisBone, Angle(0, 0, 0), false)
+        if ent._hbPedestalBone and ent._hbPedestalBone >= 0 then
+            ent:ManipulateBoneAngles(ent._hbPedestalBone, Angle(0, 0, 0), false)
         end
         return
     end
 
-    -- Compute envelope: normalised time t in [0, 1]
     local t = elapsed / HB_DURATION
 
-    -- Two-phase smoothstep:
-    --   Phase A (t < HB_PEAK)  : map t from [0, HB_PEAK]  → smoothstep [0,1]
-    --   Phase B (t >= HB_PEAK) : map t from [HB_PEAK, 1]  → smoothstep [1,0]
     local envelope
     if t < HB_PEAK then
         envelope = Smoothstep(t / HB_PEAK)
@@ -703,14 +692,14 @@ local function GekkoDoHeadbuttBone(ent)
         envelope = Smoothstep(1 - (t - HB_PEAK) / (1 - HB_PEAK))
     end
 
-    local spineAng  = Angle(HB_SPINE3_TARGET * envelope, 0, 0)
-    local pelvisAng = Angle(HB_PELVIS_TARGET * envelope, 0, 0)
+    local spineAng    = Angle(HB_SPINE3_TARGET   * envelope, 0, 0)
+    local pedestalAng = Angle(HB_PEDESTAL_TARGET * envelope, 0, 0)
 
-    if ent._hbSpineBone  and ent._hbSpineBone  >= 0 then
-        ent:ManipulateBoneAngles(ent._hbSpineBone,  spineAng,  false)
+    if ent._hbSpineBone    and ent._hbSpineBone    >= 0 then
+        ent:ManipulateBoneAngles(ent._hbSpineBone,    spineAng,    false)
     end
-    if ent._hbPelvisBone and ent._hbPelvisBone >= 0 then
-        ent:ManipulateBoneAngles(ent._hbPelvisBone, pelvisAng, false)
+    if ent._hbPedestalBone and ent._hbPedestalBone >= 0 then
+        ent:ManipulateBoneAngles(ent._hbPedestalBone, pedestalAng, false)
     end
 end
 
@@ -729,10 +718,10 @@ end
 --
 --  Bone driver call order matters — later calls win on shared
 --  bones.  Order:
---    1. GekkoUpdateHead    (b_spine4)
---    2. GekkoStompLegs     (leg bones + b_pelvis when stomp active)
---    3. GekkoDoKickBone    (b_r_upperleg)
---    4. GekkoDoHeadbuttBone(b_spine3 + b_pelvis)  ← last, wins b_pelvis
+--    1. GekkoUpdateHead     (b_spine4)
+--    2. GekkoStompLegs      (leg bones + b_pelvis when stomp active)
+--    3. GekkoDoKickBone     (b_r_upperleg)
+--    4. GekkoDoHeadbuttBone (b_spine3 + b_pedestal)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -758,8 +747,6 @@ function ENT:Draw()
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then GekkoStompLegs(self) end
 
-    -- Bone overrides — each runs after the previous so later
-    -- drivers win on any shared bone.
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
 
