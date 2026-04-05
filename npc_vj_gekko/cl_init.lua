@@ -23,6 +23,7 @@ local JUMP_LAND    = 3
 
 -- ============================================================
 --  KICK ANIMATION  (b_r_upperleg)
+--  Sole owner of b_r_upperleg. No other driver touches this bone.
 -- ============================================================
 local KICK_WINDOW     = 1.0
 local KICK_BONE_NAME  = "b_r_upperleg"
@@ -41,13 +42,6 @@ local HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- ============================================================
 --  360 FRONT KICK  (b_pelvis)
---
---  Axis: Angle(-pitch, 0, 0)  -- negative pitch on pelvis root
---  drives a forward somersault (head tips forward first).
---  Positive pitch tipped backward; roll was a barrel roll.
---
---  IMPORTANT: when inactive this driver writes NOTHING.
---  Source restores the bone to its animation pose automatically.
 -- ============================================================
 local FK360_DURATION = 0.8
 local FK360_RAMP     = 0.15
@@ -59,13 +53,12 @@ local function Smoothstep(t)
 end
 
 -- ============================================================
---  SPIN KICK  (b_Pedestal yaw + b_r_upperleg)
+--  SPIN KICK  (b_Pedestal yaw ONLY)
+--  Does NOT touch b_r_upperleg — that bone belongs to kick.
 -- ============================================================
 local SK_DURATION      = 1.0
 local SK_RAMP          = 0.15
 local SK_PEDESTAL_BONE = "b_Pedestal"
-local SK_LEG_BONE      = "b_r_upperleg"
-local SK_LEG_ANGLE_X   = 120
 
 -- ============================================================
 --  CRUSH HIT
@@ -199,31 +192,6 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
             SONAR_R, SONAR_G, SONAR_B, finalAlpha)
     end
 end)
-
--- ============================================================
---  STOMP LEG DRIVER
--- ============================================================
-local function GekkoStompLegs(ent)
-    local t      = CurTime()
-    local freq   = 14
-    local amp    = 55
-    local phaseR = t * freq
-    local phaseL = t * freq + math.pi
-    SetBoneAng(ent, "b_r_thigh",      Angle(math.sin(phaseR)         * amp,        0, 0))
-    SetBoneAng(ent, "b_r_upperleg",   Angle(math.sin(phaseR + 0.4)   * amp * 0.7,  0, 0))
-    SetBoneAng(ent, "b_r_calf",       Angle(math.sin(phaseR + 0.9)   * amp * 0.5,  0, 0))
-    SetBoneAng(ent, "b_r_foot",       Angle(math.sin(phaseR + 1.2)   * -amp * 0.4, 0, 0))
-    SetBoneAng(ent, "b_r_toe",        Angle(math.sin(phaseR + 1.5)   * -amp * 0.3, 0, 0))
-    SetBoneAng(ent, "b_l_thigh",      Angle(math.sin(phaseL)         * amp,        0, 0))
-    SetBoneAng(ent, "b_l_upperleg",   Angle(math.sin(phaseL + 0.4)   * amp * 0.7,  0, 0))
-    SetBoneAng(ent, "b_l_calf",       Angle(math.sin(phaseL + 0.9)   * amp * 0.5,  0, 0))
-    SetBoneAng(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
-    SetBoneAng(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
-    local slam = math.abs(math.sin(t * freq * 0.5)) * 12
-    SetBoneAng(ent, "b_pelvis",       Angle(slam, 0, 0))
-    SetBoneAng(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
-    SetBoneAng(ent, "b_l_hippiston1", Angle(math.sin(phaseL) * amp * 0.4, 0, 0))
-end
 
 -- ============================================================
 --  FOOTSTEP SYNC
@@ -570,7 +538,7 @@ end
 
 -- ============================================================
 --  KICK BONE DRIVER  (b_r_upperleg)
---  Writes ONLY during the active window. Inactive = no write.
+--  SOLE owner of b_r_upperleg. Writes ONLY during active window.
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -585,7 +553,6 @@ local function GekkoDoKickBone(ent)
     end
     local boneIdx = ent._kickBoneIdx
     if not boneIdx or boneIdx < 0 then return end
-    -- Only write during the active window; do nothing when expired.
     if CurTime() < ent._kickEndTime then
         ent:ManipulateBoneAngles(boneIdx, KICK_BONE_ANGLE, false)
     end
@@ -593,7 +560,7 @@ end
 
 -- ============================================================
 --  HEADBUTT BONE DRIVER
---  Writes ONLY during the active window. Inactive = no write.
+--  Writes ONLY during active window.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
     if ent._hbInited == nil then
@@ -607,10 +574,8 @@ local function GekkoDoHeadbuttBone(ent)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
         ent._hbStartTime = CurTime()
-        print(string.format("[GekkoHeadbutt] pulse=%d", pulse))
     end
     local elapsed = CurTime() - ent._hbStartTime
-    -- Expired: write nothing, let Source restore animation pose.
     if elapsed >= HB_DURATION or elapsed < 0 then return end
     local t = elapsed / HB_DURATION
     local env
@@ -630,14 +595,13 @@ local function GekkoDoHeadbuttBone(ent)
 end
 
 -- ============================================================
---  SPIN KICK BONE DRIVER
---  Writes ONLY during the active window. Inactive = no write.
+--  SPIN KICK BONE DRIVER  (b_Pedestal yaw ONLY)
+--  Writes ONLY during active window.
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
         ent._skInited      = true
         ent._skPedestalIdx = ent:LookupBone(SK_PEDESTAL_BONE) or -1
-        ent._skLegIdx      = ent:LookupBone(SK_LEG_BONE)      or -1
         ent._skStartTime   = -9999
         ent._skPulseLast   = ent:GetNWInt("GekkoSpinKickPulse", 0)
         ent._skYaw         = 0
@@ -649,10 +613,8 @@ local function GekkoDoSpinKickBone(ent)
         ent._skStartTime = CurTime()
         ent._skYaw       = 0
         ent._skLastT     = CurTime()
-        print(string.format("[GekkoSpinKick] pulse=%d", pulse))
     end
     local elapsed = CurTime() - ent._skStartTime
-    -- Expired: write nothing.
     if elapsed >= SK_DURATION or elapsed < 0 then
         ent._skYaw = 0
         return
@@ -674,20 +636,13 @@ local function GekkoDoSpinKickBone(ent)
     if ent._skPedestalIdx >= 0 then
         ent:ManipulateBoneAngles(ent._skPedestalIdx, Angle(0, ent._skYaw, 0), false)
     end
-    if ent._skLegIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._skLegIdx, Angle(SK_LEG_ANGLE_X, 0, 0), false)
-    end
 end
 
 -- ============================================================
 --  360 FRONT KICK BONE DRIVER  (b_pelvis)
---
---  Axis under test: Angle(-r, 0, 0)  (negative pitch)
---  If this flips backward, try Angle(r, 0, 0).
---  If it spins again, the flip bone is NOT b_pelvis on this rig
---  and we need to target b_spine1 or b_spine2 instead.
---
---  Writes ONLY during the active window. Inactive = no write.
+--  Writes ONLY during active window.
+--  Axis: Angle(-r, 0, 0) = negative pitch = forward somersault.
+--  Change to Angle(r, 0, 0) if it flips backward instead.
 -- ============================================================
 local function GekkoDoFrontKick360Bone(ent)
     if ent._fk360Inited == nil then
@@ -709,7 +664,6 @@ local function GekkoDoFrontKick360Bone(ent)
     local boneIdx = ent._fk360BoneIdx
     if not boneIdx or boneIdx < 0 then return end
     local elapsed = CurTime() - ent._fk360StartTime
-    -- Expired: write nothing, let Source restore pose.
     if elapsed >= FK360_DURATION or elapsed < 0 then
         ent._fk360Rot = 0
         return
@@ -728,8 +682,6 @@ local function GekkoDoFrontKick360Bone(ent)
     local dt  = math.Clamp(now - ent._fk360LastT, 0, 0.05)
     ent._fk360LastT = now
     ent._fk360Rot = ent._fk360Rot + peakSpeed * env * dt
-    -- Negative pitch = forward somersault on pelvis root.
-    -- Change to Angle(ent._fk360Rot, 0, 0) if it flips backward.
     ent:ManipulateBoneAngles(boneIdx, Angle(-ent._fk360Rot, 0, 0), false)
 end
 
@@ -746,18 +698,12 @@ end
 -- ============================================================
 --  DRAW
 --
---  Rule: every driver writes ONLY when its attack is active.
---  Inactive drivers return immediately without touching bones.
---  Source restores the animation pose naturally when no
---  ManipulateBoneAngles call is made for a bone.
---
---  Call order (later wins on shared bones):
---    1. GekkoUpdateHead         -> b_spine4
---    2. GekkoStompLegs          -> leg bones + b_pelvis (stomp)
---    3. GekkoDoKickBone         -> b_r_upperleg (active only)
---    4. GekkoDoHeadbuttBone     -> b_spine3, b_pedestal (active only)
---    5. GekkoDoSpinKickBone     -> b_Pedestal, b_r_upperleg (active only)
---    6. GekkoDoFrontKick360Bone -> b_pelvis (active only, LAST)
+--  Bone ownership (no driver writes a bone another owns):
+--    GekkoUpdateHead         -> b_spine4
+--    GekkoDoKickBone         -> b_r_upperleg (active only)
+--    GekkoDoHeadbuttBone     -> b_spine3, b_pedestal (active only)
+--    GekkoDoSpinKickBone     -> b_Pedestal yaw (active only)
+--    GekkoDoFrontKick360Bone -> b_pelvis (active only, LAST)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -774,12 +720,9 @@ function ENT:Draw()
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
     end
-    local grounded = (jumpState == JUMP_NONE)
-    local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
-    if t < stompEnd and grounded then GekkoStompLegs(self) end
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
     GekkoDoSpinKickBone(self)
-    GekkoDoFrontKick360Bone(self)  -- LAST: b_pelvis, active only
+    GekkoDoFrontKick360Bone(self)
     self:DrawModel()
 end
