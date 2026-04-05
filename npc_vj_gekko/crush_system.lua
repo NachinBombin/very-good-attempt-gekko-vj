@@ -5,19 +5,26 @@
 --
 --     Gate order (evaluated every Think tick):
 --
---       a) Distance gate:
---            Simple Kick is excluded if target is within KICK_MIN_DIST.
+--       a) Find nearest enemy in CRUSH_RADIUS sphere.
 --
---       b) Speed gate:
---            Simple Kick is excluded if Gekko speed < KICK_SPEED.
+--       b) Shared cooldown per target (CRUSH_COOLDOWN).
 --
---       c) Position / cone check:
---            If the target is OUTSIDE the forward cone (dot < CONE_DOT)
---            -> force 360 YAW KICK (only valid out-of-cone choice).
---            If the target is INSIDE the cone
---            -> roll among all currently eligible attacks.
+--       c) Distance gate:
+--            Simple Kick excluded if target is within KICK_MIN_DIST.
 --
---     One shared cooldown per target (CRUSH_COOLDOWN).
+--       d) Speed gate:
+--            Simple Kick excluded if Gekko speed < KICK_SPEED.
+--
+--       e) Cone check (dot = fwd · toTarget vs CONE_DOT):
+--
+--            OUTSIDE cone  →  force SPIN KICK (yaw body rotation,
+--                              valid from any direction).
+--
+--            INSIDE cone   →  weighted roll among eligible attacks:
+--                              FK360 (pitch/forward flip)
+--                              HEADBUTT
+--                              SPINKICK
+--                              KICK  (only if dist + speed gates pass)
 --
 --  2. Launch Blast -- sphere damage at jump takeoff
 --  3. Land Blast   -- sphere damage + knockup on landing
@@ -69,18 +76,17 @@ end
 --  1. WALK CRUSH
 -- ============================================================
 local CRUSH_RADIUS   = 96      -- detection sphere radius
-local CRUSH_WIDTH    = 50      -- hull half-extents for forward sweeps
 local CRUSH_COOLDOWN = 1.2     -- seconds between hits on same target
 
--- Forward cone threshold (dot product).  0.5 ≈ 60° half-angle.
+-- Cone threshold (dot product).  0.5 ≈ 60° half-angle.
 local CONE_DOT       = 0.5
 
--- 360 Yaw Kick  (out-of-cone forced choice, also in-cone pool)
+-- FK360  (pitch / forward flip — in-cone only)
 local FK360_DAMAGE   = 30
 local FK360_IMPULSE  = 10000
-local FK360_WEIGHT   = 2       -- relative weight in in-cone roll
+local FK360_WEIGHT   = 2
 
--- Headbutt  (in-cone only)
+-- Headbutt  (pitch lunge — in-cone only)
 local HB_DAMAGE      = 20
 local HB_IMPULSE     = 7000
 local HB_WEIGHT      = 2
@@ -92,12 +98,12 @@ local KICK_WEIGHT    = 2
 local KICK_MIN_DIST  = 48      -- too close: kick excluded
 local KICK_SPEED     = 30      -- too slow:  kick excluded
 
--- Spin Kick  (in-cone only)
+-- Spin Kick  (yaw body rotation — valid in-cone AND forced out-of-cone)
 local SK_DAMAGE      = 35
 local SK_IMPULSE     = 11000
 local SK_WEIGHT      = 2
 
--- Sphere scan: closest enemy NPC/player within radius, or nil.
+-- Sphere scan: closest enemy NPC/player within radius, or nil + dist.
 local function SphereNearest(self, pos, radius)
     local best, bestSq = nil, math.huge
     for _, ent in ipairs(ents.FindInSphere(pos, radius)) do
@@ -106,7 +112,7 @@ local function SphereNearest(self, pos, radius)
         local dsq = pos:DistToSqr(ent:GetPos())
         if dsq < bestSq then bestSq = dsq; best = ent end
     end
-    return best, math.sqrt(bestSq == math.huge and 0 or bestSq)
+    return best, (bestSq < math.huge and math.sqrt(bestSq) or 0)
 end
 
 function ENT:GeckoCrush_Think()
@@ -119,20 +125,20 @@ function ENT:GeckoCrush_Think()
 
     if not self._crushCooldowns then self._crushCooldowns = {} end
 
-    -- 1. Find the nearest target in range
+    -- 1. Find nearest target
     local target, dist = SphereNearest(self, pos, CRUSH_RADIUS)
     if not IsValid(target) then return end
 
-    -- 2. Shared cooldown check
+    -- 2. Shared cooldown
     local lastHit = self._crushCooldowns[target] or 0
     if now - lastHit < CRUSH_COOLDOWN then return end
 
-    -- 3. Gate: is target inside the forward cone?
+    -- 3. Cone check
     local toTarget = (target:GetPos() - self:GetPos()):GetNormalized()
     local dot      = fwd:Dot(toTarget)
     local inCone   = (dot >= CONE_DOT)
 
-    -- 4. Gate: is simple kick eligible?
+    -- 4. Simple kick eligibility (in-cone + distance + speed)
     local kickOk = inCone
                    and (dist > KICK_MIN_DIST)
                    and (speed >= KICK_SPEED)
@@ -143,12 +149,13 @@ function ENT:GeckoCrush_Think()
     local attack
 
     if not inCone then
-        -- Target is outside the forward cone: only 360 yaw kick
-        attack = "FK360"
+        -- Target is outside the forward cone.
+        -- SpinKick is a full yaw-body rotation — works from any angle.
+        attack = "SPINKICK"
     else
-        -- Build weighted pool from eligible in-cone attacks
+        -- Build weighted pool from eligible in-cone attacks.
         local pool = {}
-        pool[#pool+1] = { name="FK360",   w=FK360_WEIGHT }
+        pool[#pool+1] = { name="FK360",    w=FK360_WEIGHT }
         pool[#pool+1] = { name="HEADBUTT", w=HB_WEIGHT    }
         pool[#pool+1] = { name="SPINKICK", w=SK_WEIGHT    }
         if kickOk then
@@ -177,7 +184,7 @@ function ENT:GeckoCrush_Think()
         CrushDamageEnt(self, target, FK360_DAMAGE, impulse)
         local next = (self:GetNWInt("GekkoFrontKick360Pulse", 0) % 254) + 1
         self:SetNWInt("GekkoFrontKick360Pulse", next)
-        print(string.format("[GekkoCrush] FK360  target=%s  dot=%.2f  pulse=%d",
+        print(string.format("[GekkoCrush] FK360(pitch)  target=%s  dot=%.2f  pulse=%d",
             target:GetClass(), dot, next))
 
     elseif attack == "HEADBUTT" then
@@ -197,14 +204,14 @@ function ENT:GeckoCrush_Think()
         print(string.format("[GekkoCrush] KICK  target=%s  dist=%.0f  spd=%.0f  dmg=%.1f  pulse=%d",
             target:GetClass(), dist, speed, dmg, next))
 
-    else -- SPINKICK
+    else -- SPINKICK (yaw) — in-cone roll OR forced out-of-cone
         local dir     = (target:GetPos() - self:GetPos()):GetNormalized()
         local impulse = (dir + Vector(0, 0, 0.4)):GetNormalized() * SK_IMPULSE
         CrushDamageEnt(self, target, SK_DAMAGE, impulse)
         local next = (self:GetNWInt("GekkoSpinKickPulse", 0) % 254) + 1
         self:SetNWInt("GekkoSpinKickPulse", next)
-        print(string.format("[GekkoCrush] SPINKICK  target=%s  pulse=%d",
-            target:GetClass(), next))
+        print(string.format("[GekkoCrush] SPINKICK(yaw)  target=%s  inCone=%s  dot=%.2f  pulse=%d",
+            target:GetClass(), tostring(inCone), dot, next))
     end
 end
 

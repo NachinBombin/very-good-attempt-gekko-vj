@@ -145,18 +145,15 @@ local function GekkoDoKickBone(ent)
     local idx    = ent._kickBoneIdx
 
     if active then
-        -- Claim the bone for the window duration
         BoneClaim(KICK_BONE, DRIVER_KICK, ent._kickEndTime)
         ent._kickWasActive = true
         SetBoneAngIdx(ent, idx, KICK_ANG_ON)
 
     elseif ent._kickWasActive then
-        -- Release: reset once, then silence
         ent._kickWasActive = false
         _boneOwner[KICK_BONE] = nil
         SetBoneAngIdx(ent, idx, KICK_ANG_OFF)
     end
-    -- idle: write nothing
 end
 
 -- ============================================================
@@ -218,9 +215,11 @@ local function GekkoDoHeadbuttBone(ent)
 end
 
 -- ============================================================
---  DRIVER: FRONT KICK 360  (b_pelvis angle pitch — forward flip)
+--  DRIVER: FRONT KICK 360  (b_pelvis pitch — forward flip/somersault)
 --
---  Uses the virtual key "b_pelvis_ang" for the ownership table
+--  FK360 is a PITCH rotation: the Gekko tucks forward over the target.
+--  Server only selects this when the target is inside the forward cone.
+--  Uses virtual key "b_pelvis_ang" for the ownership table
 --  to distinguish from b_pelvis position (used by SpinKick).
 -- ============================================================
 local DRIVER_FK360    = "fk360"
@@ -256,7 +255,6 @@ local function GekkoDoFrontKick360Bone(ent)
         -- SpinKick has higher priority — if it owns b_pelvis_ang, yield
         if BoneOwned(FK360_OWNER_KEY, DRIVER_FK360) == false and
            not BoneExpired(FK360_OWNER_KEY) then
-            -- someone else owns it (SpinKick); do not write
             return
         end
 
@@ -291,17 +289,19 @@ local function GekkoDoFrontKick360Bone(ent)
 end
 
 -- ============================================================
---  DRIVER: SPIN KICK  (4th kick — highest bone priority)
+--  DRIVER: SPIN KICK  (YAW body rotation — works from any direction)
+--
+--  SpinKick is a full YAW rotation of the body.  The server selects
+--  this attack both inside the cone (weighted roll) AND forces it
+--  when the target is outside the forward cone, since it's the only
+--  attack that makes spatial sense without facing the target.
 --
 --  Bones owned exclusively during window:
 --    b_Pedestal     → angle Y (yaw spin)
---    b_pelvis_ang   → angle (pitch — body tips forward into spin)
+--    b_pelvis_ang   → angle   (pitch — body tips forward into spin)
 --    b_pelvis_pos   → position Z (body drops)
 --    b_r_hippiston1 → angle Z
 --    b_r_upperleg   → angle X
---
---  This driver claims all five slots at the start of the window.
---  Every other driver sees these slots as owned and skips them.
 -- ============================================================
 local DRIVER_SK        = "spinkick"
 local SK_DURATION      = 0.9
@@ -319,11 +319,10 @@ local SK_OWN_PELVIS_POS= "b_pelvis_pos"
 local SK_OWN_HIPPISTON = "b_r_hippiston1"
 local SK_OWN_UPPERLEG  = "b_r_upperleg"
 
--- Pose parameters — tuned from working test
-local SK_PELVIS_DROP   = -50    -- position Z
-local SK_PELVIS_PITCH  = 45     -- angle P (tips body forward into flip)
-local SK_HIPPISTON_Z   = -22    -- angle roll
-local SK_UPPERLEG_X    = 120    -- angle pitch (leg raised)
+local SK_PELVIS_DROP   = -50
+local SK_PELVIS_PITCH  = 45
+local SK_HIPPISTON_Z   = -22
+local SK_UPPERLEG_X    = 120
 
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
@@ -352,7 +351,6 @@ local function GekkoDoSpinKickBone(ent)
     local active  = (elapsed >= 0 and elapsed < SK_DURATION)
 
     if active then
-        -- Claim all bones for the full window duration
         local expiry = ent._skStartTime + SK_DURATION
         BoneClaim(SK_OWN_PED,        DRIVER_SK, expiry)
         BoneClaim(SK_OWN_PELVIS_ANG, DRIVER_SK, expiry)
@@ -361,7 +359,6 @@ local function GekkoDoSpinKickBone(ent)
         BoneClaim(SK_OWN_UPPERLEG,   DRIVER_SK, expiry)
         ent._skWasActive = true
 
-        -- Ramp envelope
         local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)
         local t = elapsed / SK_DURATION
         local env
@@ -378,19 +375,13 @@ local function GekkoDoSpinKickBone(ent)
         ent._skLastT = now
         ent._skYaw   = ent._skYaw + peakSpeed * env * dt
 
-        -- b_Pedestal: yaw spin
         SetBoneAngIdx(ent, ent._skPedIdx, Angle(0, ent._skYaw, 0))
-
-        -- b_pelvis: drop body down + tip it forward into the spin
         SetBonePosIdx(ent, ent._skPelvisIdx, Vector(0, 0, SK_PELVIS_DROP))
         SetBoneAngIdx(ent, ent._skPelvisIdx, Angle(SK_PELVIS_PITCH * env, 0, 0))
-
-        -- Leg pose
         SetBoneAngIdx(ent, ent._skHippistonIdx, Angle(0, 0, SK_HIPPISTON_Z))
         SetBoneAngIdx(ent, ent._skUpperlegIdx,  Angle(SK_UPPERLEG_X, 0, 0))
 
     elseif ent._skWasActive then
-        -- Release all bones once, then silence
         ent._skWasActive = false
         ent._skYaw       = 0
         _boneOwner[SK_OWN_PED]        = nil
@@ -405,7 +396,6 @@ local function GekkoDoSpinKickBone(ent)
         SetBoneAngIdx(ent, ent._skHippistonIdx,  Angle(0, 0, 0))
         SetBoneAngIdx(ent, ent._skUpperlegIdx,   Angle(0, 0, 0))
     end
-    -- idle: write nothing
 end
 
 -- ============================================================
@@ -745,14 +735,18 @@ end
 --  DRAW
 --
 --  Driver execution order (highest bone priority first):
---    1. GekkoDoSpinKickBone      — claims all its bones first
---    2. GekkoDoFrontKick360Bone  — yields to SpinKick on b_pelvis_ang
---    3. GekkoDoHeadbuttBone      — b_spine3, b_pedestal pos
---    4. GekkoDoKickBone          — b_r_upperleg
+--    1. GekkoDoSpinKickBone      — YAW rotation (b_Pedestal yaw,
+--                                  b_pelvis drop+pitch, leg pose).
+--                                  Forced by server when target is
+--                                  outside the forward cone.
+--                                  Claims all its bones first.
+--    2. GekkoDoFrontKick360Bone  — PITCH rotation (forward flip).
+--                                  In-cone only. Yields b_pelvis_ang
+--                                  to SpinKick if both fire together.
+--    3. GekkoDoHeadbuttBone      — b_spine3 pitch, b_pedestal pos
+--    4. GekkoDoKickBone          — b_r_upperleg (simple leg kick)
 --    5. GekkoStompLegs           — all leg bones, skips owned ones
 --    6. GekkoUpdateHead          — b_spine4 (never contested)
---
---  No driver writes a bone that another driver owns on this frame.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
