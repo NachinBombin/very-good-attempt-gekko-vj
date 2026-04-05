@@ -17,6 +17,24 @@ local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
 -- ============================================================
+--  KICK ANIMATION
+--
+--  Driven by NWInt "GekkoKickPulse" set in crush_system.lua
+--  every time a walk-crush damage event fires.
+--
+--  On each new pulse the kick window is extended by
+--  KICK_WINDOW seconds (matching WALK_CRUSH_COOLDOWN = 1.0).
+--  While the window is active, b_r_upperleg is held at +112
+--  degrees on the X axis, producing the axe-kick pose.
+--  When the window expires the bone is explicitly reset to 0
+--  every Draw() tick so no stale pose is left behind.
+-- ============================================================
+local KICK_WINDOW        = 1.0   -- seconds; must match WALK_CRUSH_COOLDOWN
+local KICK_BONE_NAME     = "b_r_upperleg"
+local KICK_BONE_ANGLE    = Angle(112, 0, 0)
+local KICK_BONE_RESET    = Angle(0,   0, 0)
+
+-- ============================================================
 --  CRUSH HIT
 -- ============================================================
 local CRUSH_IMPACT_SOUNDS = {
@@ -62,17 +80,17 @@ end)
 --  SONAR LOCK  (DEBUG: exaggerated so we can confirm it fires)
 -- ============================================================
 local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
-local SONAR_DURATION       = 3.0       -- longer so it's easy to spot
+local SONAR_DURATION       = 3.0
 local SONAR_PULSE_COUNT    = 3
 local SONAR_PULSE_INTERVAL = 0.6
 
-local SONAR_RING_THICKNESS = 12        -- very thick stroke
-local SONAR_PEAK_ALPHA     = 220       -- near-opaque
-local SONAR_TINT_ALPHA     = 80        -- obvious tint
+local SONAR_RING_THICKNESS = 12
+local SONAR_PEAK_ALPHA     = 220
+local SONAR_TINT_ALPHA     = 80
 
 local SONAR_R = 0
 local SONAR_G = 200
-local SONAR_B = 255                    -- bright cyan, impossible to miss
+local SONAR_B = 255
 
 local sonar_startTime = nil
 local sonar_active    = false
@@ -87,7 +105,6 @@ net.Receive("GekkoSonarLock", function()
     print("[GekkoSonar] TRIGGERED  t=" .. tostring(sonar_startTime))
 end)
 
--- Hollow circle via short rotated segments
 local function DrawRingOutline(cx, cy, radius, thick, r, g, b, a)
     if radius <= 0 or a <= 0 then return end
     local steps  = math.max(48, math.floor(radius * 0.4))
@@ -132,7 +149,6 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
     local cx, cy = sw * 0.5, sh * 0.5
     local globalFade = 1 - math.Clamp(elapsed / SONAR_DURATION, 0, 1)
 
-    -- obvious full-screen tint
     local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.4))
     local tintA    = math.floor(SONAR_TINT_ALPHA * tintFade * globalFade)
     if tintA > 0 then
@@ -570,6 +586,43 @@ local function GekkoDoBloodSplat(ent)
 end
 
 -- ============================================================
+--  KICK BONE DRIVER
+--
+--  Called from Draw() after SetupBones() so ManipulateBoneAngles
+--  is guaranteed to take effect on this render frame.
+--  Reads GekkoKickPulse (NWInt) set by crush_system.lua on every
+--  walk-crush damage event.  Each new pulse value extends the
+--  kick window by KICK_WINDOW seconds.  While the window is open
+--  b_r_upperleg is held at +112 X degrees.  When it expires the
+--  bone is explicitly zeroed every frame so no stale pose lingers.
+-- ============================================================
+local function GekkoDoKickBone(ent)
+    -- Lazy-cache the bone index once per entity instance.
+    if ent._kickBoneIdx == nil then
+        ent._kickBoneIdx      = ent:LookupBone(KICK_BONE_NAME) or -1
+        ent._kickEndTime      = 0
+        ent._kickPulseLast    = ent:GetNWInt("GekkoKickPulse", 0)
+    end
+
+    -- Detect a new pulse from the server.
+    local pulse = ent:GetNWInt("GekkoKickPulse", 0)
+    if pulse ~= ent._kickPulseLast then
+        ent._kickPulseLast = pulse
+        -- Extend (or start) the window; never shorten it.
+        ent._kickEndTime = math.max(ent._kickEndTime, CurTime() + KICK_WINDOW)
+    end
+
+    local boneIdx = ent._kickBoneIdx
+    if not boneIdx or boneIdx < 0 then return end
+
+    if CurTime() < ent._kickEndTime then
+        ent:ManipulateBoneAngles(boneIdx, KICK_BONE_ANGLE, false)
+    else
+        ent:ManipulateBoneAngles(boneIdx, KICK_BONE_RESET, false)
+    end
+end
+
+-- ============================================================
 --  THINK
 -- ============================================================
 function ENT:Think()
@@ -605,6 +658,10 @@ function ENT:Draw()
     local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then GekkoStompLegs(self) end
+
+    -- Kick bone override — runs after all other bone drivers so it
+    -- always wins the final ManipulateBoneAngles call on b_r_upperleg.
+    GekkoDoKickBone(self)
 
     self:DrawModel()
 end

@@ -6,6 +6,9 @@
 --  1. Walk Crush   — front hull sweep while walking/running
 --  2. Launch Blast — sphere damage at jump takeoff
 --  3. Land Blast   — sphere damage + knockup on landing
+--
+--  Walk Crush also increments NWInt "GekkoKickPulse" on every
+--  damage event so cl_init.lua can drive the kick bone animation.
 -- ============================================================
 
 if SERVER then
@@ -101,7 +104,15 @@ function ENT:GeckoCrush_Think()
     local impulse  = (fwd + Vector(0, 0, 0.3)):GetNormalized() * WALK_CRUSH_IMPULSE
     CrushDamageEnt(self, hit, dmg, impulse)
 
-    print(string.format("[GekkoCrush] Walk hit: %s  dmg=%.1f  dot=%.2f", hit:GetClass(), dmg, dot))
+    -- Signal clientside kick animation for the duration of the crush cooldown.
+    -- The client reads the CHANGE in value (pulse counter), not the value itself.
+    -- Wraps 1..254 so the value never rests at 0 (the uninitialised default).
+    local prev = self:GetNWInt("GekkoKickPulse", 0)
+    local next = (prev % 254) + 1
+    self:SetNWInt("GekkoKickPulse", next)
+
+    print(string.format("[GekkoCrush] Walk hit: %s  dmg=%.1f  dot=%.2f  kickPulse=%d",
+        hit:GetClass(), dmg, dot, next))
 end
 
 -- ============================================================
@@ -117,7 +128,7 @@ function ENT:GeckoCrush_LaunchBlast()
     local origin = self:GetPos() + Vector(0, 0, 40)
 
     for _, ent in ipairs(ents.FindInSphere(origin, LAUNCH_RADIUS)) do
-        if ent == self then continue end  -- explicit self-skip before anything else
+        if ent == self then continue end
         if not ent:IsNPC() and not ent:IsPlayer() and not IsValid(ent:GetPhysicsObject()) then continue end
 
         local dist    = ent:GetPos():Distance(origin)
@@ -145,10 +156,10 @@ local LAND_IMPULSE    = 22000
 
 function ENT:GeckoCrush_LandBlast()
     local origin = self:GetPos() + Vector(0, 0, 20)
-    local self_ref = self  -- upvalue for timer closure
+    local self_ref = self
 
     for _, ent in ipairs(ents.FindInSphere(origin, LAND_RADIUS)) do
-        if ent == self then continue end  -- explicit self-skip
+        if ent == self then continue end
         if not ent:IsNPC() and not ent:IsPlayer() and not IsValid(ent:GetPhysicsObject()) then continue end
 
         local dist    = ent:GetPos():Distance(origin)
@@ -158,12 +169,9 @@ function ENT:GeckoCrush_LandBlast()
         CrushDamageEnt(self, ent, dmg, impulse)
     end
 
-    -- Safety net: physics solver may still impart velocity on the Gekko
-    -- from objects it just blasted. Re-zero one tick later.
     timer.Simple(0, function()
         if not IsValid(self_ref) then return end
         local vel = self_ref:GetVelocity()
-        -- Only intervene if something crazy happened (z > 50 means it got launched)
         if vel.z > 50 then
             self_ref:SetVelocity(Vector(0, 0, 0))
             print("[GekkoCrush] LandBlast velocity correction fired (velZ was " .. math.Round(vel.z) .. ")")
