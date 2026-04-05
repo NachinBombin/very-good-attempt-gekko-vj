@@ -3,22 +3,27 @@
 --
 --  Three independent crush / blast systems:
 --
---  1. Walk Crush   -- fires exactly ONE of three attacks per
+--  1. Walk Crush   -- fires exactly ONE of four attacks per
 --                     cooldown window (mutually exclusive):
 --
---                       * 360 FRONT KICK  (40% chance)
+--                       * 360 FRONT KICK  (30% chance)
 --                           GekkoFrontKick360Pulse
 --                           Forward hull sweep, same as kick.
 --                           No speed gate.  Forward arc only.
 --
---                       * HEADBUTT         (30% chance)
+--                       * HEADBUTT         (25% chance)
 --                           GekkoHeadbuttPulse
 --                           96 u sphere.  No speed gate.
 --                           No minimum range.
 --
---                       * KICK             (30% chance)
+--                       * KICK             (25% chance)
 --                           GekkoKickPulse
 --                           Forward hull sweep.  Speed gate >= 30.
+--
+--                       * SPIN KICK        (20% chance)
+--                           GekkoSpinKickPulse
+--                           96 u sphere AoE (full 360 body spin).
+--                           No speed gate.
 --
 --                     Fall-through: if chosen attack has no valid
 --                     target, cascades to the next tier.
@@ -74,24 +79,30 @@ end
 -- ============================================================
 --  1. WALK CRUSH
 -- ============================================================
-local CRUSH_RADIUS       = 96     -- shared reach for all three attacks
+local CRUSH_RADIUS       = 96     -- shared reach for all attacks
 local CRUSH_WIDTH        = 50     -- hull half-extents for sweep attacks
 local CRUSH_COOLDOWN     = 1.0
 
 -- 360 Front Kick (forward hull sweep, no speed gate)
-local FK360_CHANCE       = 0.40
+local FK360_CHANCE       = 0.30
 local FK360_DAMAGE       = 30
 local FK360_IMPULSE      = 10000
 
 -- Headbutt (sphere, no speed gate, no min range)
-local HEADBUTT_CHANCE    = 0.30
+local HEADBUTT_CHANCE    = 0.25
 local HEADBUTT_DAMAGE    = 20
 local HEADBUTT_IMPULSE   = 7000
 
 -- Kick (forward hull sweep, speed-gated)
+local KICK_CHANCE        = 0.25
 local KICK_DAMAGE        = 25
 local KICK_SPEED         = 30
 local KICK_IMPULSE       = 9000
+
+-- Spin Kick (sphere AoE, full 360 body spin, no speed gate)
+local SK_CHANCE          = 0.20
+local SK_DAMAGE          = 35
+local SK_IMPULSE         = 11000
 
 -- Shared forward hull sweep: returns first NPC/player hit, or nil.
 local function HullSweepForward(self, pos, fwd)
@@ -111,6 +122,22 @@ local function HullSweepForward(self, pos, fwd)
     return nil
 end
 
+-- Shared sphere scan: returns closest NPC/player in CRUSH_RADIUS, or nil.
+local function SphereNearest(self, pos)
+    local best   = nil
+    local bestSq = math.huge
+    for _, ent in ipairs(ents.FindInSphere(pos, CRUSH_RADIUS)) do
+        if ent == self then continue end
+        if not ent:IsNPC() and not ent:IsPlayer() then continue end
+        local dsq = pos:DistToSqr(ent:GetPos())
+        if dsq < bestSq then
+            bestSq = dsq
+            best   = ent
+        end
+    end
+    return best
+end
+
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
 
@@ -128,18 +155,8 @@ function ENT:GeckoCrush_Think()
     -- 360 Front Kick: forward hull sweep, no speed gate
     local fk360Target = HullSweepForward(self, pos, fwd)
 
-    -- Headbutt: closest NPC/player in sphere, no speed gate
-    local hbTarget    = nil
-    local hbDistSq    = math.huge
-    for _, ent in ipairs(ents.FindInSphere(pos, CRUSH_RADIUS)) do
-        if ent == self then continue end
-        if not ent:IsNPC() and not ent:IsPlayer() then continue end
-        local dsq = pos:DistToSqr(ent:GetPos())
-        if dsq < hbDistSq then
-            hbDistSq = dsq
-            hbTarget = ent
-        end
-    end
+    -- Headbutt: closest in sphere
+    local hbTarget = SphereNearest(self, pos)
 
     -- Kick: forward hull sweep, speed-gated
     local kickTarget = nil
@@ -147,23 +164,34 @@ function ENT:GeckoCrush_Think()
         kickTarget = HullSweepForward(self, pos, fwd)
     end
 
-    if not fk360Target and not hbTarget and not kickTarget then return end
+    -- Spin Kick: closest in sphere (same scan as headbutt, independent target)
+    local skTarget = SphereNearest(self, pos)
+
+    if not fk360Target and not hbTarget and not kickTarget and not skTarget then return end
 
     -- ----------------------------------------------------------------
-    --  3-way coin flip  (mutually exclusive)
-    --  [0, FK360_CHANCE)              -> 360 front kick
-    --  [FK360_CHANCE, FK360+HB)       -> headbutt
-    --  else                           -> kick
+    --  4-way weighted coin flip  (mutually exclusive)
+    --  [0,               FK360_CHANCE)                    -> 360 front kick
+    --  [FK360_CHANCE,    FK360+HB)                        -> headbutt
+    --  [FK360+HB,        FK360+HB+KICK)                   -> kick
+    --  [FK360+HB+KICK,   1.0)                             -> spin kick
     --  Fall-through if chosen attack has no target.
     -- ----------------------------------------------------------------
-    local roll       = math.random()
-    local doFk360    = (roll < FK360_CHANCE)
-    local doHeadbutt = (not doFk360) and (roll < FK360_CHANCE + HEADBUTT_CHANCE)
-    local doKick     = (not doFk360) and (not doHeadbutt)
+    local roll        = math.random()
+    local t1          = FK360_CHANCE
+    local t2          = t1 + HEADBUTT_CHANCE
+    local t3          = t2 + KICK_CHANCE
 
+    local doFk360    = (roll < t1)
+    local doHeadbutt = (not doFk360) and (roll < t2)
+    local doKick     = (not doFk360) and (not doHeadbutt) and (roll < t3)
+    local doSpinKick = (not doFk360) and (not doHeadbutt) and (not doKick)
+
+    -- Fall-through cascade
     if doFk360    and not IsValid(fk360Target) then doFk360 = false; doHeadbutt = true  end
     if doHeadbutt and not IsValid(hbTarget)    then doHeadbutt = false; doKick  = true  end
-    if doKick     and not IsValid(kickTarget)  then return end
+    if doKick     and not IsValid(kickTarget)  then doKick = false; doSpinKick  = true  end
+    if doSpinKick and not IsValid(skTarget)    then return end
 
     -- ----------------------------------------------------------------
     --  Execute
@@ -198,7 +226,7 @@ function ENT:GeckoCrush_Think()
         print(string.format("[GekkoCrush] HEADBUTT  target=%s  pulse=%d",
             target:GetClass(), self:GetNWInt("GekkoHeadbuttPulse", 0)))
 
-    else -- doKick
+    elseif doKick then
         local target  = kickTarget
         local lastHit = self._crushHitTimes[target] or 0
         if now - lastHit < CRUSH_COOLDOWN then return end
@@ -216,6 +244,24 @@ function ENT:GeckoCrush_Think()
 
         print(string.format("[GekkoCrush] KICK  target=%s  dmg=%.1f  dot=%.2f  pulse=%d",
             target:GetClass(), dmg, dot, next))
+
+    else -- doSpinKick
+        local target  = skTarget
+        local lastHit = self._crushHitTimes[target] or 0
+        if now - lastHit < CRUSH_COOLDOWN then return end
+        self._crushHitTimes[target] = now
+
+        -- Radial impulse away from gekko (fits the spinning body)
+        local dir     = (target:GetPos() - self:GetPos()):GetNormalized()
+        local impulse = (dir + Vector(0, 0, 0.4)):GetNormalized() * SK_IMPULSE
+        CrushDamageEnt(self, target, SK_DAMAGE, impulse)
+
+        local prev = self:GetNWInt("GekkoSpinKickPulse", 0)
+        local next = (prev % 254) + 1
+        self:SetNWInt("GekkoSpinKickPulse", next)
+
+        print(string.format("[GekkoCrush] SPINKICK  target=%s  dmg=%d  pulse=%d",
+            target:GetClass(), SK_DAMAGE, next))
     end
 end
 
