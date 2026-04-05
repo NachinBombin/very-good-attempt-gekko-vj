@@ -3,12 +3,14 @@
 --
 --  Three independent crush / blast systems:
 --
---  1. Walk Crush   — front hull sweep while walking/running
+--  1. Walk Crush   — front hull sweep while walking/running.
+--                    On every damage event:
+--                      * Always fires the KICK (GekkoKickPulse)
+--                      * 30% chance also fires the HEADBUTT
+--                        (GekkoHeadbuttPulse) — no speed gate,
+--                        same distance/cooldown as walk crush.
 --  2. Launch Blast — sphere damage at jump takeoff
 --  3. Land Blast   — sphere damage + knockup on landing
---
---  Walk Crush also increments NWInt "GekkoKickPulse" on every
---  damage event so cl_init.lua can drive the kick bone animation.
 -- ============================================================
 
 if SERVER then
@@ -61,12 +63,14 @@ end
 -- ============================================================
 --  1. WALK CRUSH
 -- ============================================================
-local WALK_CRUSH_DIST     = 96
-local WALK_CRUSH_WIDTH    = 50
-local WALK_CRUSH_DAMAGE   = 25
-local WALK_CRUSH_SPEED    = 30
-local WALK_CRUSH_COOLDOWN = 1.0
-local WALK_CRUSH_IMPULSE  = 9000
+local WALK_CRUSH_DIST      = 96
+local WALK_CRUSH_WIDTH     = 50
+local WALK_CRUSH_DAMAGE    = 25
+local WALK_CRUSH_SPEED     = 30
+local WALK_CRUSH_COOLDOWN  = 1.0
+local WALK_CRUSH_IMPULSE   = 9000
+
+local HEADBUTT_CHANCE      = 0.30   -- 30 % per cooldown window
 
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
@@ -104,15 +108,28 @@ function ENT:GeckoCrush_Think()
     local impulse  = (fwd + Vector(0, 0, 0.3)):GetNormalized() * WALK_CRUSH_IMPULSE
     CrushDamageEnt(self, hit, dmg, impulse)
 
-    -- Signal clientside kick animation for the duration of the crush cooldown.
-    -- The client reads the CHANGE in value (pulse counter), not the value itself.
-    -- Wraps 1..254 so the value never rests at 0 (the uninitialised default).
-    local prev = self:GetNWInt("GekkoKickPulse", 0)
-    local next = (prev % 254) + 1
-    self:SetNWInt("GekkoKickPulse", next)
+    -- ---- Kick pulse (always) --------------------------------
+    -- Client reads the CHANGE in value (pulse counter), not the
+    -- value itself. Wraps 1..254 so it never rests at 0.
+    local kickPrev = self:GetNWInt("GekkoKickPulse", 0)
+    local kickNext = (kickPrev % 254) + 1
+    self:SetNWInt("GekkoKickPulse", kickNext)
 
-    print(string.format("[GekkoCrush] Walk hit: %s  dmg=%.1f  dot=%.2f  kickPulse=%d",
-        hit:GetClass(), dmg, dot, next))
+    -- ---- Headbutt pulse (30 % chance) -----------------------
+    -- Same pulse-counter pattern as kick.  The client drives the
+    -- smooth b_spine3 / b_pelvis animation for 2 s.
+    local didHeadbutt = false
+    if math.random() < HEADBUTT_CHANCE then
+        local hbPrev = self:GetNWInt("GekkoHeadbuttPulse", 0)
+        local hbNext = (hbPrev % 254) + 1
+        self:SetNWInt("GekkoHeadbuttPulse", hbNext)
+        didHeadbutt = true
+    end
+
+    print(string.format(
+        "[GekkoCrush] Walk hit: %s  dmg=%.1f  dot=%.2f  kickPulse=%d  headbutt=%s",
+        hit:GetClass(), dmg, dot, kickNext, tostring(didHeadbutt)
+    ))
 end
 
 -- ============================================================
