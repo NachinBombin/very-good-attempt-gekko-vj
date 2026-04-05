@@ -37,7 +37,7 @@ local KICK_BONE_RESET = Angle(0,   0, 0)
 --  Duration 0.8 s, peak at 0.4 s (smoothstep both ways).
 -- ============================================================
 local HB_DURATION       = 0.8
-local HB_PEAK           = 0.4   -- normalised (40 % into duration)
+local HB_PEAK           = 0.4
 
 local HB_SPINE3_ANG_X   = -60
 local HB_PEDESTAL_POS_X =  70
@@ -47,24 +47,48 @@ local HB_SPINE3_BONE    = "b_spine3"
 local HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- ============================================================
---  SPIN KICK ANIMATION  (b_pelvis only)
+--  FK360 ANIMATION  (b_pelvis yaw accumulation)
 --
---  A full 360-degree yaw rotation of b_pelvis over SK_DURATION.
---  The head / spine chain is left completely untouched so the
---  head-aim driver continues to work without interference.
+--  IMPORTANT: despite the variable name "_fk360Yaw" and the
+--  Angle(0, val, 0) call, the VISUAL result on this model is a
+--  forward 360 flip.  This is because b_pelvis's local Y axis
+--  maps to what appears as pitch in world space on the Gekko
+--  skeleton.  Do NOT change Angle(0, val, 0) to Angle(val,0,0)
+--  -- that will break it.  The formula is correct as-is.
 --
---  Timeline:
---    0  -> SK_RAMP  : ease-in from 0 -> full speed
---    SK_RAMP -> 1-SK_RAMP : constant full speed
---    1-SK_RAMP -> 1 : ease-out back to 0 (bone zeroed)
---
---  Yaw is accumulated in _skYaw so the bone always shows a
---  smooth continuous angle rather than jumping.
+--  Server gates this to front-cone targets only.
+--  NW signal: GekkoFrontKick360Pulse
 -- ============================================================
-local SK_DURATION  = 1.4   -- total seconds
-local SK_RAMP      = 0.15  -- fraction for ease-in and ease-out
-local SK_BONE      = "b_pelvis"
+local FK360_DURATION = 1.4
+local FK360_RAMP     = 0.15
+local FK360_BONE     = "b_pelvis"
 
+-- ============================================================
+--  SPINKICK ANIMATION  (b_Pedestal yaw + support bones)
+--
+--  A true 360-degree yaw rotation of the body driven through
+--  b_Pedestal (Y angle).  Companion poses held for the window:
+--    b_pelvis          position Z = -50  (body drops)
+--    b_r_hippiston1    angle Z   = -22
+--    b_r_upperleg      angle X   = +120
+--
+--  Server forces this attack when target is outside the forward
+--  cone (dot < 0.5).  Also available inside the cone at 20%.
+--  NW signal: GekkoSpinKickPulse
+-- ============================================================
+local SK_DURATION   = 1.4
+local SK_RAMP       = 0.15
+local SK_PED_BONE   = "b_Pedestal"
+local SK_PEL_BONE   = "b_pelvis"
+local SK_HIP_BONE   = "b_r_hippiston1"
+local SK_ULEG_BONE  = "b_r_upperleg"
+local SK_PEL_DROP   = -50
+local SK_HIP_Z      = -22
+local SK_ULEG_X     = 120
+
+-- ============================================================
+--  SMOOTHSTEP
+-- ============================================================
 local function Smoothstep(t)
     t = math.Clamp(t, 0, 1)
     return t * t * (3 - 2 * t)
@@ -655,7 +679,7 @@ end
 local function GekkoDoHeadbuttBone(ent)
     if ent._hbInited == nil then
         ent._hbInited      = true
-        ent._hbSpineIdx    = ent:LookupBone(HB_SPINE3_BONE)  or -1
+        ent._hbSpineIdx    = ent:LookupBone(HB_SPINE3_BONE)   or -1
         ent._hbPedestalIdx = ent:LookupBone(HB_PEDESTAL_BONE) or -1
         ent._hbStartTime   = -9999
         ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
@@ -699,29 +723,91 @@ local function GekkoDoHeadbuttBone(ent)
 end
 
 -- ============================================================
---  SPIN KICK BONE DRIVER  (b_pelvis yaw only)
+--  FK360 BONE DRIVER  (b_pelvis, Angle(0, val, 0))
 --
---  GekkoSpinKickPulse triggers a full 360-degree yaw rotation
---  of b_pelvis over SK_DURATION (1.4 s).
+--  This is the renamed working "SpinKick" driver.  The formula
+--  Angle(0, _fk360Yaw, 0) on b_pelvis produces a forward 360
+--  flip on this model due to b_pelvis local axis orientation.
+--  DO NOT change to Angle(val,0,0) -- that breaks the effect.
 --
---  Head/spine bones are NOT touched here — GekkoUpdateHead
---  continues to run and aim freely through the spin.
+--  Server gates this to front-cone targets (dot >= 0.5).
+--  NW signal: GekkoFrontKick360Pulse
+-- ============================================================
+local function GekkoDoFK360Bone(ent)
+    if ent._fk360Inited == nil then
+        ent._fk360Inited    = true
+        ent._fk360BoneIdx   = ent:LookupBone(FK360_BONE) or -1
+        ent._fk360StartTime = -9999
+        ent._fk360PulseLast = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
+        ent._fk360Yaw       = 0
+    end
+
+    local pulse = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
+    if pulse ~= ent._fk360PulseLast then
+        ent._fk360PulseLast = pulse
+        ent._fk360StartTime = CurTime()
+        ent._fk360Yaw       = 0
+        print(string.format("[GekkoFK360] pulse=%d", pulse))
+    end
+
+    local boneIdx = ent._fk360BoneIdx
+    if not boneIdx or boneIdx < 0 then return end
+
+    local elapsed = CurTime() - ent._fk360StartTime
+
+    if elapsed >= FK360_DURATION or elapsed < 0 then
+        ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
+        ent._fk360Yaw = 0
+        return
+    end
+
+    local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * FK360_DURATION)
+
+    local t = elapsed / FK360_DURATION
+    local env
+    if t < FK360_RAMP then
+        env = Smoothstep(t / FK360_RAMP)
+    elseif t > (1.0 - FK360_RAMP) then
+        env = Smoothstep((1.0 - t) / FK360_RAMP)
+    else
+        env = 1.0
+    end
+
+    local dt = math.Clamp(CurTime() - (ent._fk360LastT or CurTime()), 0, 0.05)
+    ent._fk360LastT = CurTime()
+
+    ent._fk360Yaw = ent._fk360Yaw + peakSpeed * env * dt
+
+    -- Angle(0, val, 0): the formula that produces the forward flip on this model.
+    ent:ManipulateBoneAngles(boneIdx, Angle(0, ent._fk360Yaw, 0), false)
+end
+
+-- ============================================================
+--  SPINKICK BONE DRIVER  (b_Pedestal yaw + support bones)
 --
---  The yaw is driven by accumulating angular velocity each
---  frame so it scales correctly with variable frame time:
---    - SK_RAMP (first 15% + last 15%) : ease-in / ease-out
---    - middle  (70%)                  : constant full speed
---  Total integral = 360 degrees exactly.
+--  True body yaw spin.  b_Pedestal Y angle accumulates 360 deg.
+--  Support bones are held at fixed offsets for the duration:
+--    b_pelvis       position Z = SK_PEL_DROP  (-50)
+--    b_r_hippiston1 angle Z    = SK_HIP_Z     (-22)
+--    b_r_upperleg   angle X    = SK_ULEG_X    (+120)
 --
---  After the window expires b_pelvis is hard-reset to (0,0,0).
+--  These bones do NOT interfere with FK360 (b_Pedestal is
+--  separate from b_pelvis angle).  GekkoStompLegs writes
+--  b_r_upperleg and b_pelvis too, but this driver runs AFTER
+--  stomp, so it wins during the window.
+--
+--  NW signal: GekkoSpinKickPulse
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
-        ent._skInited    = true
-        ent._skBoneIdx   = ent:LookupBone(SK_BONE) or -1
-        ent._skStartTime = -9999
-        ent._skPulseLast = ent:GetNWInt("GekkoSpinKickPulse", 0)
-        ent._skYaw       = 0
+        ent._skInited      = true
+        ent._skPedIdx      = ent:LookupBone(SK_PED_BONE)  or -1
+        ent._skPelIdx      = ent:LookupBone(SK_PEL_BONE)  or -1
+        ent._skHipIdx      = ent:LookupBone(SK_HIP_BONE)  or -1
+        ent._skUlegIdx     = ent:LookupBone(SK_ULEG_BONE) or -1
+        ent._skStartTime   = -9999
+        ent._skPulseLast   = ent:GetNWInt("GekkoSpinKickPulse", 0)
+        ent._skYaw         = 0
     end
 
     local pulse = ent:GetNWInt("GekkoSpinKickPulse", 0)
@@ -732,31 +818,19 @@ local function GekkoDoSpinKickBone(ent)
         print(string.format("[GekkoSpinKick] pulse=%d", pulse))
     end
 
-    local boneIdx = ent._skBoneIdx
-    if not boneIdx or boneIdx < 0 then return end
-
     local elapsed = CurTime() - ent._skStartTime
 
     if elapsed >= SK_DURATION or elapsed < 0 then
-        ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
+        -- Reset all support bones
+        if ent._skPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._skPedIdx,  Angle(0, 0, 0),    false) end
+        if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx, Vector(0, 0, 0),   false) end
+        if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,  Angle(0, 0, 0),    false) end
+        if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx, Angle(0, 0, 0),    false) end
         ent._skYaw = 0
         return
     end
 
-    -- Angular velocity envelope: smoothstep ramp-in, flat, smoothstep ramp-out.
-    -- We need the integral over [0,1] to equal 360 degrees.
-    --
-    -- envelope(t):
-    --   t in [0, SK_RAMP]        -> smoothstep(t / SK_RAMP)
-    --   t in [SK_RAMP, 1-SK_RAMP]-> 1.0  (constant)
-    --   t in [1-SK_RAMP, 1]      -> smoothstep((1-t) / SK_RAMP)
-    --
-    -- Integral of smoothstep on [0,1] = 0.5
-    -- Total integral = SK_RAMP*0.5 + (1-2*SK_RAMP)*1 + SK_RAMP*0.5
-    --                = 1 - SK_RAMP
-    -- So peak speed = 360 / ((1 - SK_RAMP) * SK_DURATION)  degrees/sec
-
-    local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)  -- deg/s
+    local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)
 
     local t = elapsed / SK_DURATION
     local env
@@ -773,7 +847,22 @@ local function GekkoDoSpinKickBone(ent)
 
     ent._skYaw = ent._skYaw + peakSpeed * env * dt
 
-    ent:ManipulateBoneAngles(boneIdx, Angle(0, ent._skYaw, 0), false)
+    -- b_Pedestal: full yaw spin
+    if ent._skPedIdx  >= 0 then
+        ent:ManipulateBoneAngles(ent._skPedIdx, Angle(0, ent._skYaw, 0), false)
+    end
+    -- b_pelvis: drop body down (position Z)
+    if ent._skPelIdx  >= 0 then
+        ent:ManipulateBonePosition(ent._skPelIdx, Vector(0, 0, SK_PEL_DROP), false)
+    end
+    -- b_r_hippiston1: angle Z
+    if ent._skHipIdx  >= 0 then
+        ent:ManipulateBoneAngles(ent._skHipIdx, Angle(0, 0, SK_HIP_Z), false)
+    end
+    -- b_r_upperleg: angle X
+    if ent._skUlegIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._skUlegIdx, Angle(SK_ULEG_X, 0, 0), false)
+    end
 end
 
 -- ============================================================
@@ -790,15 +879,20 @@ end
 --  DRAW
 --
 --  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead      -> b_spine4  (head aim)
---    2. GekkoStompLegs       -> leg bones, b_pelvis  (inactive)
+--    1. GekkoUpdateHead      -> b_spine4  (head aim, never contested)
+--    2. GekkoStompLegs       -> leg bones, b_pelvis angle (inactive)
 --    3. GekkoDoKickBone      -> b_r_upperleg
---    4. GekkoDoHeadbuttBone  -> b_spine3 (angle), b_pedestal (position)
---    5. GekkoDoSpinKickBone  -> b_pelvis (yaw only)
+--    4. GekkoDoHeadbuttBone  -> b_spine3 angle, b_pedestal position
+--    5. GekkoDoFK360Bone     -> b_pelvis Angle(0,val,0)  [front-cone]
+--    6. GekkoDoSpinKickBone  -> b_Pedestal yaw, b_pelvis pos Z,
+--                               b_r_hippiston1 Z, b_r_upperleg X
 --
---  GekkoDoSpinKickBone runs AFTER GekkoStompLegs so the spin
---  always wins on b_pelvis when active.  Head aim (b_spine4)
---  runs first and is never touched by the spin driver.
+--  SpinKick runs last so it wins over stomp on b_r_upperleg and
+--  b_pelvis position.  FK360 and SpinKick never share a bone:
+--    FK360    -> b_pelvis ANGLE (Angle slot)
+--    SpinKick -> b_Pedestal ANGLE + b_pelvis POSITION (Vector slot)
+--  ManipulateBoneAngles and ManipulateBonePosition are independent
+--  channels on the same bone, so there is no conflict.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -826,6 +920,7 @@ function ENT:Draw()
 
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
+    GekkoDoFK360Bone(self)
     GekkoDoSpinKickBone(self)
 
     self:DrawModel()
