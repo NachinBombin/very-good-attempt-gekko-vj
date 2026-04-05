@@ -45,10 +45,15 @@ local HB_SPINE3_BONE    = "b_spine3"
 local HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- ============================================================
---  360 FRONT KICK ANIMATION  (b_pelvis pitch — full front flip)
+--  360 FRONT KICK ANIMATION  (b_pelvis ROLL — full front flip)
 --
---  GekkoFrontKick360Pulse triggers a complete 360-degree pitch
+--  GekkoFrontKick360Pulse triggers a complete 360-degree ROLL
 --  rotation of b_pelvis over FK360_DURATION (0.8 s).
+--
+--  WHY ROLL: b_pelvis is the skeleton root. On this rig,
+--  Pitch(p,0,0) on the pelvis maps to a world-space yaw spin
+--  of the whole model. The forward somersault (head-over-heels)
+--  lives on the ROLL axis: Angle(0, 0, r).
 --
 --  Head / spine bones are NOT touched — GekkoUpdateHead
 --  continues to aim freely through the flip.
@@ -71,21 +76,19 @@ end
 --
 --  Two bones driven simultaneously:
 --    1. b_Pedestal  -- yaw (Y angle) accumulates 360 degrees
---                      over SK_DURATION (1.0 s). This spins
---                      the whole lower body horizontally.
+--                      over SK_DURATION (1.0 s).
 --    2. b_r_upperleg -- X angle held at +120 degrees for the
---                       full window (leg extended outward like
---                       a roundhouse kick), reset after.
+--                       full window (leg extended outward).
 --
 --  Head/spine untouched -- GekkoUpdateHead runs freely.
 --  Both bones hard-reset after the window expires.
 --  NOTE: b_pelvis is NOT touched by SpinKick.
 -- ============================================================
 local SK_DURATION      = 1.0
-local SK_RAMP          = 0.15        -- ease-in / ease-out fraction
+local SK_RAMP          = 0.15
 local SK_PEDESTAL_BONE = "b_Pedestal"
 local SK_LEG_BONE      = "b_r_upperleg"
-local SK_LEG_ANGLE_X   = 120         -- positive X = leg extended
+local SK_LEG_ANGLE_X   = 120
 
 -- ============================================================
 --  CRUSH HIT
@@ -743,8 +746,6 @@ local function GekkoDoSpinKickBone(ent)
     local elapsed = CurTime() - ent._skStartTime
 
     if elapsed >= SK_DURATION or elapsed < 0 then
-        -- Reset only the bones SpinKick owns: b_Pedestal and b_r_upperleg.
-        -- b_pelvis is NOT reset here — it belongs to GekkoDoFrontKick360Bone.
         if ent._skPedestalIdx >= 0 then
             ent:ManipulateBoneAngles(ent._skPedestalIdx, Angle(0, 0, 0), false)
         end
@@ -782,10 +783,14 @@ local function GekkoDoSpinKickBone(ent)
 end
 
 -- ============================================================
---  360 FRONT KICK BONE DRIVER  (b_pelvis PITCH — full front flip)
+--  360 FRONT KICK BONE DRIVER  (b_pelvis ROLL — full front flip)
 --
 --  Runs LAST in Draw() so nothing overwrites b_pelvis after it.
---  Head/spine untouched — GekkoUpdateHead runs freely.
+--
+--  AXIS: Angle(0, 0, roll) — Roll on the pelvis root produces
+--  the forward somersault (head-over-heels). Pitch(p,0,0) on
+--  this rig maps to a world-space yaw spin — wrong axis.
+--
 --  b_pelvis hard-reset to Angle(0,0,0) after window expires.
 -- ============================================================
 local function GekkoDoFrontKick360Bone(ent)
@@ -794,7 +799,7 @@ local function GekkoDoFrontKick360Bone(ent)
         ent._fk360BoneIdx   = ent:LookupBone(FK360_BONE) or -1
         ent._fk360StartTime = -9999
         ent._fk360PulseLast = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
-        ent._fk360Pitch     = 0
+        ent._fk360Roll      = 0   -- accumulates on ROLL axis
         ent._fk360LastT     = CurTime()
     end
 
@@ -802,7 +807,7 @@ local function GekkoDoFrontKick360Bone(ent)
     if pulse ~= ent._fk360PulseLast then
         ent._fk360PulseLast = pulse
         ent._fk360StartTime = CurTime()
-        ent._fk360Pitch     = 0
+        ent._fk360Roll      = 0
         ent._fk360LastT     = CurTime()
         print(string.format("[GekkoFrontKick360] pulse=%d", pulse))
     end
@@ -814,7 +819,7 @@ local function GekkoDoFrontKick360Bone(ent)
 
     if elapsed >= FK360_DURATION or elapsed < 0 then
         ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
-        ent._fk360Pitch = 0
+        ent._fk360Roll = 0
         return
     end
 
@@ -834,8 +839,10 @@ local function GekkoDoFrontKick360Bone(ent)
     local dt  = math.Clamp(now - ent._fk360LastT, 0, 0.05)
     ent._fk360LastT = now
 
-    ent._fk360Pitch = ent._fk360Pitch + peakSpeed * env * dt
-    ent:ManipulateBoneAngles(boneIdx, Angle(ent._fk360Pitch, 0, 0), false)
+    ent._fk360Roll = ent._fk360Roll + peakSpeed * env * dt
+
+    -- Roll axis: Angle(0, 0, r) — forward somersault on pelvis root
+    ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, ent._fk360Roll), false)
 end
 
 -- ============================================================
@@ -853,11 +860,11 @@ end
 --
 --  Bone driver call order (later wins on shared bones):
 --    1. GekkoUpdateHead         -> b_spine4  (head aim)
---    2. GekkoStompLegs          -> leg bones, b_pelvis (stomp only)
+--    2. GekkoStompLegs          -> leg bones, b_pelvis (stomp)
 --    3. GekkoDoKickBone         -> b_r_upperleg (X=112)
 --    4. GekkoDoHeadbuttBone     -> b_spine3 (angle), b_pedestal (pos)
 --    5. GekkoDoSpinKickBone     -> b_Pedestal (yaw), b_r_upperleg (X=120)
---    6. GekkoDoFrontKick360Bone -> b_pelvis (pitch) — LAST, wins over all
+--    6. GekkoDoFrontKick360Bone -> b_pelvis (ROLL) — LAST, wins over all
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -886,7 +893,7 @@ function ENT:Draw()
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
     GekkoDoSpinKickBone(self)
-    GekkoDoFrontKick360Bone(self)  -- LAST: owns b_pelvis pitch, nothing writes after this
+    GekkoDoFrontKick360Bone(self)  -- LAST: owns b_pelvis roll, nothing writes after this
 
     self:DrawModel()
 end
