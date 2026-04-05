@@ -67,6 +67,33 @@ local function Smoothstep(t)
 end
 
 -- ============================================================
+--  SPIN KICK ANIMATION  (4th kick)
+--
+--  GekkoSpinKickPulse triggers:
+--    b_Pedestal  — yaw (Y) spins 360 degrees over SK_DURATION
+--    b_pelvis    — position Z drops to -50 (held for duration)
+--    b_r_hippiston1 — angle Z fixed at -22
+--    b_r_upperleg   — angle X fixed at +120
+--
+--  Same ramp envelope as FK360.
+--  All four bones hard-reset to zero after the window.
+--  b_r_upperleg is owned exclusively by this driver during
+--  the window; GekkoDoKickBone resets it the next frame after
+--  the window expires (both reset to zero — no conflict).
+-- ============================================================
+local SK_DURATION = 0.9
+local SK_RAMP     = 0.12   -- fraction for ease-in and ease-out
+
+local SK_PEDESTAL_BONE   = "b_Pedestal"
+local SK_PELVIS_BONE     = "b_pelvis"
+local SK_HIPPISTON_BONE  = "b_r_hippiston1"
+local SK_UPPERLEG_BONE   = "b_r_upperleg"
+
+local SK_PELVIS_Z        = -50
+local SK_HIPPISTON_Z     = -22
+local SK_UPPERLEG_X      = 120
+
+-- ============================================================
 --  CRUSH HIT
 -- ============================================================
 local CRUSH_IMPACT_SOUNDS = {
@@ -757,6 +784,92 @@ local function GekkoDoFrontKick360Bone(ent)
 end
 
 -- ============================================================
+--  SPIN KICK BONE DRIVER  (4th kick — GekkoSpinKickPulse)
+--
+--  Bones driven (exclusive ownership during window):
+--    b_Pedestal     — yaw (Y) spins 360 deg over SK_DURATION
+--    b_pelvis       — position Z drops to SK_PELVIS_Z (-50),
+--                     held flat (no pitch/roll)
+--    b_r_hippiston1 — angle Z fixed at SK_HIPPISTON_Z (-22)
+--    b_r_upperleg   — angle X fixed at SK_UPPERLEG_X (+120)
+--
+--  All four bones hard-reset to zero when the window expires.
+--  GekkoDoKickBone also owns b_r_upperleg but runs BEFORE this
+--  driver in the Draw call order, so SpinKick wins during its
+--  window. Both reset to Angle(0,0,0) — no residual conflict.
+-- ============================================================
+local function GekkoDoSpinKickBone(ent)
+    if ent._skInited == nil then
+        ent._skInited       = true
+        ent._skPedestalIdx  = ent:LookupBone(SK_PEDESTAL_BONE)  or -1
+        ent._skPelvisIdx    = ent:LookupBone(SK_PELVIS_BONE)     or -1
+        ent._skHippistonIdx = ent:LookupBone(SK_HIPPISTON_BONE)  or -1
+        ent._skUpperlegIdx  = ent:LookupBone(SK_UPPERLEG_BONE)   or -1
+        ent._skStartTime    = -9999
+        ent._skPulseLast    = ent:GetNWInt("GekkoSpinKickPulse", 0)
+        ent._skYaw          = 0
+        ent._skLastT        = CurTime()
+    end
+
+    local pulse = ent:GetNWInt("GekkoSpinKickPulse", 0)
+    if pulse ~= ent._skPulseLast then
+        ent._skPulseLast = pulse
+        ent._skStartTime = CurTime()
+        ent._skYaw       = 0
+        ent._skLastT     = CurTime()
+        print(string.format("[GekkoSpinKick] pulse=%d", pulse))
+    end
+
+    local elapsed = CurTime() - ent._skStartTime
+
+    -- Window expired — hard reset all four bones and bail.
+    if elapsed >= SK_DURATION or elapsed < 0 then
+        if ent._skPedestalIdx  >= 0 then ent:ManipulateBoneAngles(ent._skPedestalIdx,  Angle(0, 0, 0), false) end
+        if ent._skPelvisIdx    >= 0 then ent:ManipulateBonePosition(ent._skPelvisIdx,   Vector(0, 0, 0), false) end
+        if ent._skHippistonIdx >= 0 then ent:ManipulateBoneAngles(ent._skHippistonIdx, Angle(0, 0, 0), false) end
+        if ent._skUpperlegIdx  >= 0 then ent:ManipulateBoneAngles(ent._skUpperlegIdx,  Angle(0, 0, 0), false) end
+        ent._skYaw = 0
+        return
+    end
+
+    -- Ramp envelope (same logic as FK360).
+    local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)  -- deg/s
+
+    local t = elapsed / SK_DURATION
+    local env
+    if t < SK_RAMP then
+        env = Smoothstep(t / SK_RAMP)
+    elseif t > (1.0 - SK_RAMP) then
+        env = Smoothstep((1.0 - t) / SK_RAMP)
+    else
+        env = 1.0
+    end
+
+    local now = CurTime()
+    local dt  = math.Clamp(now - ent._skLastT, 0, 0.05)
+    ent._skLastT = now
+
+    ent._skYaw = ent._skYaw + peakSpeed * env * dt
+
+    -- b_Pedestal: yaw spin
+    if ent._skPedestalIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._skPedestalIdx, Angle(0, ent._skYaw, 0), false)
+    end
+    -- b_pelvis: drop on Z (position, no angle change from this driver)
+    if ent._skPelvisIdx >= 0 then
+        ent:ManipulateBonePosition(ent._skPelvisIdx, Vector(0, 0, SK_PELVIS_Z), false)
+    end
+    -- b_r_hippiston1: fixed Z angle
+    if ent._skHippistonIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._skHippistonIdx, Angle(0, 0, SK_HIPPISTON_Z), false)
+    end
+    -- b_r_upperleg: fixed X angle (parent=33, bone 34)
+    if ent._skUpperlegIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._skUpperlegIdx, Angle(SK_UPPERLEG_X, 0, 0), false)
+    end
+end
+
+-- ============================================================
 --  THINK
 -- ============================================================
 function ENT:Think()
@@ -770,11 +883,14 @@ end
 --  DRAW
 --
 --  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead        -> b_spine4  (head aim, never overwritten)
---    2. GekkoStompLegs         -> leg bones, b_pelvis  (inactive)
---    3. GekkoDoKickBone        -> b_r_upperleg
---    4. GekkoDoHeadbuttBone    -> b_spine3 (angle), b_pedestal (position)
---    5. GekkoDoFrontKick360Bone-> b_pelvis (pitch) — wins over stomp
+--    1. GekkoUpdateHead         -> b_spine4  (head aim, never overwritten)
+--    2. GekkoStompLegs          -> leg bones, b_pelvis angle  (inactive)
+--    3. GekkoDoKickBone         -> b_r_upperleg
+--    4. GekkoDoHeadbuttBone     -> b_spine3 (angle), b_pedestal (position)
+--    5. GekkoDoFrontKick360Bone -> b_pelvis (pitch) — wins over stomp
+--    6. GekkoDoSpinKickBone     -> b_Pedestal (yaw), b_pelvis (pos Z),
+--                                  b_r_hippiston1 (Z angle),
+--                                  b_r_upperleg (X angle) — wins over #3
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -803,6 +919,7 @@ function ENT:Draw()
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
     GekkoDoFrontKick360Bone(self)
+    GekkoDoSpinKickBone(self)
 
     self:DrawModel()
 end
