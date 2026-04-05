@@ -66,30 +66,34 @@ local FK360_BONE     = "b_pelvis"
 -- ============================================================
 --  SPINKICK ANIMATION  (b_Pedestal yaw + support bones)
 --
---  Total duration: SK_DURATION = 0.8 s
---  Divided into 5 equal units of 0.16 s each:
+--  Total duration: SK_DURATION = 0.9 s
+--  Divided into 6 equal units of 0.15 s each:
 --
---    Unit 1  t 0.00-0.16   neutral    -- spin winds up, no crouch
---    Unit 2  t 0.16-0.32   neutral    -- still neutral
---    Unit 3  t 0.32-0.48   crouch IN  -- pelvis/hip/uleg ramp 0->peak (smoothstep)
---    Unit 4  t 0.48-0.64   hold       -- fully crouched, leg extended
---    Unit 5  t 0.64-0.80   stand UP   -- slow return to neutral (smoothstep)
+--    Unit 1  t 0.000-0.167   neutral    -- spin winds up, no crouch
+--    Unit 2  t 0.167-0.333   neutral    -- still neutral
+--    Unit 3  t 0.333-0.500   crouch IN  -- pelvis/hip ramp 0->peak (smoothstep)
+--    Unit 4  t 0.500-0.667   hold       -- fully crouched, leg extends to peak
+--    Unit 5  t 0.667-0.833   rise       -- leg stays raised (no change), crouch begins easing out
+--    Unit 6  t 0.833-1.000   rise cont  -- leg still raised, crouch continues back to 0
 --
---  Bone targets at full crouch:
---    b_pelvis       position Z = SK_PEL_DROP  (-50)
---    b_r_hippiston1 angle Z    = SK_HIP_Z     (-22)
---    b_r_upperleg   angle X    = SK_ULEG_X    (+120)
+--  Bone targets at full crouch / full leg raise:
+--    b_pelvis       position Z = SK_PEL_DROP  (-50)   [rises back to 0 over units 5-6]
+--    b_r_hippiston1 angle Z    = SK_HIP_Z     (-22)   [rises back to 0 over units 5-6]
+--    b_r_upperleg   angle X    = SK_ULEG_X    (+120)  [held from unit 4 through unit 6]
+--
+--  Yaw spin: 420 degrees (60 deg overshoot beyond 360), full duration.
 --
 --  NW signal: GekkoSpinKickPulse
 -- ============================================================
-local SK_DURATION = 0.8
+local SK_DURATION = 0.9
 
--- Phase boundaries (normalised 0-1)
-local SK_PHASE_CROUCH_START = 0.40   -- end of unit 2 / start of unit 3
-local SK_PHASE_HOLD_START   = 0.60   -- end of unit 3 / start of unit 4
-local SK_PHASE_RISE_START   = 0.80   -- end of unit 4 / start of unit 5  (= 1.0 - 0.20)
+-- Phase boundaries (normalised 0-1), 6 units of 1/6 each
+local SK_PHASE_CROUCH_START = 2 / 6   -- 0.333  start of unit 3
+local SK_PHASE_HOLD_START   = 3 / 6   -- 0.500  start of unit 4
+local SK_PHASE_RISE_START   = 4 / 6   -- 0.667  start of unit 5 (crouch rises, leg stays)
 
-local SK_RAMP       = 0.10           -- yaw spin ramp fraction (short, 10%)
+local SK_RAMP       = 0.10            -- yaw spin ramp fraction (short, 10%)
+local SK_YAW_TOTAL  = 420             -- degrees (360 + 60 overshoot communicates inertia)
 local SK_PED_BONE   = "b_Pedestal"
 local SK_PEL_BONE   = "b_pelvis"
 local SK_HIP_BONE   = "b_r_hippiston1"
@@ -424,6 +428,26 @@ local function GekkoDoLandDust(ent)
     if pulse == 0 then return end
     if pulse == ent._lastLandDustPulse then return end
     ent._lastLandDustPulse = pulse
+
+    local e = EffectData()
+    e:SetOrigin(ent:GetPos())
+    e:SetScale(math.random(80, 200))
+    e:SetEntity(ent)
+    util.Effect("ThumperDust", e, false)
+    util.Effect("ThumperDust", e, false)
+    util.Effect("ThumperDust", e, false)
+end
+
+-- ============================================================
+--  FK360 LAND DUST
+--  Fires ThumperDust when the Gekko lands after a front-flip 360.
+--  Server pulses GekkoFK360LandDust NW int on landing.
+-- ============================================================
+local function GekkoDoFK360LandDust(ent)
+    local pulse = ent:GetNWInt("GekkoFK360LandDust", 0)
+    if pulse == 0 then return end
+    if pulse == ent._lastFK360LandDustPulse then return end
+    ent._lastFK360LandDustPulse = pulse
 
     local e = EffectData()
     e:SetOrigin(ent:GetPos())
@@ -797,21 +821,21 @@ end
 -- ============================================================
 --  SPINKICK BONE DRIVER  (b_Pedestal yaw + phased support bones)
 --
---  Total duration: SK_DURATION = 0.8 s
---  5 equal units of 0.16 s, described by normalised t (0-1):
+--  Total duration: SK_DURATION = 0.9 s
+--  6 equal units of 0.15 s, described by normalised t (0-1):
 --
---    Unit 1  t 0.00 - 0.20   neutral   (no crouch, spin winds up)
---    Unit 2  t 0.20 - 0.40   neutral   (still no crouch)
---    Unit 3  t 0.40 - 0.60   CROUCH IN (support bones ramp 0 -> peak via smoothstep)
---    Unit 4  t 0.60 - 0.80   HOLD      (full crouch, leg fully extended, kick strikes)
---    Unit 5  t 0.80 - 1.00   STAND UP  (slow return via smoothstep, twice the range)
+--    Unit 1  t 0.000-0.167   neutral    (no crouch, spin winds up)
+--    Unit 2  t 0.167-0.333   neutral    (still no crouch)
+--    Unit 3  t 0.333-0.500   CROUCH IN  (pelvis/hip ramp 0->peak smoothstep)
+--    Unit 4  t 0.500-0.667   HOLD       (full crouch, b_r_upperleg reaches peak)
+--    Unit 5  t 0.667-0.833   RISE       (leg stays at peak, crouch begins easing out)
+--    Unit 6  t 0.833-1.000   RISE CONT  (leg still at peak, crouch finishes easing out)
 --
---  Support bone peaks:
---    b_pelvis       position Z = SK_PEL_DROP (-50)
---    b_r_hippiston1 angle Z    = SK_HIP_Z    (-22)
---    b_r_upperleg   angle X    = SK_ULEG_X   (+120)
+--  b_r_upperleg:   held at SK_ULEG_X from t=0.500 through t=1.000
+--  b_pelvis pos Z: rises from peak back to 0 over t=0.667 to t=1.000
+--  b_r_hippiston1: same envelope as b_pelvis
 --
---  b_Pedestal (yaw) runs independently for the full duration.
+--  b_Pedestal (yaw): 420 degrees total, full duration, short ramp.
 --  NW signal: GekkoSpinKickPulse
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
@@ -845,8 +869,8 @@ local function GekkoDoSpinKickBone(ent)
         return
     end
 
-    -- ---- yaw spin (full duration, short ramp) ----
-    local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)
+    -- ---- yaw spin (full duration, short ramp, 420 degrees total) ----
+    local peakSpeed = SK_YAW_TOTAL / ((1.0 - SK_RAMP) * SK_DURATION)
     local t = elapsed / SK_DURATION
     local yawEnv
     if t < SK_RAMP then
@@ -865,35 +889,43 @@ local function GekkoDoSpinKickBone(ent)
         ent:ManipulateBoneAngles(ent._skPedIdx, Angle(0, ent._skYaw, 0), false)
     end
 
-    -- ---- support bones: phased envelope ----
-    --  Units 1-2  (t < 0.40):  env = 0  (neutral)
-    --  Unit 3     (t 0.40-0.60): env ramps 0->1 (smoothstep)
-    --  Unit 4     (t 0.60-0.80): env = 1 (held at peak)
-    --  Unit 5     (t 0.80-1.00): env eases 1->0 (smoothstep, slow stand-up)
-    local supportEnv
+    -- ---- support bones: phased envelopes ----
+    --
+    --  CROUCH (b_pelvis pos Z, b_r_hippiston1 angle Z):
+    --    t < CROUCH_START (0.333):   0
+    --    t 0.333-0.500 (unit 3):     smoothstep ramp 0->1
+    --    t 0.500-0.667 (unit 4):     held at 1
+    --    t 0.667-1.000 (units 5-6):  smoothstep ease 1->0
+    --
+    --  LEG (b_r_upperleg angle X):
+    --    t < HOLD_START (0.500):     0
+    --    t >= 0.500:                 held at 1 through end of animation
+
+    -- Crouch envelope
+    local crouchEnv
     if t < SK_PHASE_CROUCH_START then
-        supportEnv = 0
+        crouchEnv = 0
     elseif t < SK_PHASE_HOLD_START then
-        -- Unit 3: ramp in
         local localT = (t - SK_PHASE_CROUCH_START) / (SK_PHASE_HOLD_START - SK_PHASE_CROUCH_START)
-        supportEnv = Smoothstep(localT)
+        crouchEnv = Smoothstep(localT)
     elseif t < SK_PHASE_RISE_START then
-        -- Unit 4: fully held
-        supportEnv = 1
+        crouchEnv = 1
     else
-        -- Unit 5: slow ease out
         local localT = (t - SK_PHASE_RISE_START) / (1.0 - SK_PHASE_RISE_START)
-        supportEnv = Smoothstep(1 - localT)
+        crouchEnv = Smoothstep(1 - localT)
     end
 
+    -- Leg envelope: held from unit 4 (t >= 0.500) to end
+    local legEnv = (t >= SK_PHASE_HOLD_START) and 1 or 0
+
     if ent._skPelIdx  >= 0 then
-        ent:ManipulateBonePosition(ent._skPelIdx,  Vector(0, 0, SK_PEL_DROP * supportEnv), false)
+        ent:ManipulateBonePosition(ent._skPelIdx,  Vector(0, 0, SK_PEL_DROP * crouchEnv), false)
     end
     if ent._skHipIdx  >= 0 then
-        ent:ManipulateBoneAngles(ent._skHipIdx,    Angle(0, 0, SK_HIP_Z  * supportEnv), false)
+        ent:ManipulateBoneAngles(ent._skHipIdx,    Angle(0, 0, SK_HIP_Z  * crouchEnv), false)
     end
     if ent._skUlegIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._skUlegIdx,   Angle(SK_ULEG_X * supportEnv, 0, 0), false)
+        ent:ManipulateBoneAngles(ent._skUlegIdx,   Angle(SK_ULEG_X * legEnv, 0, 0), false)
     end
 end
 
@@ -903,6 +935,7 @@ end
 function ENT:Think()
     GekkoDoJumpDust(self)
     GekkoDoLandDust(self)
+    GekkoDoFK360LandDust(self)
     GekkoDoMGFX(self)
     GekkoDoBloodSplat(self)
 end
