@@ -41,9 +41,9 @@ local MG_SPREAD_MAX = 2.0
 local WWEIGHT_MG             = 50
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
-local WWEIGHT_GRENADE        = 10
-local WWEIGHT_TOPMISSILE     = 10
-local WWEIGHT_TRACKMISSILE   = 5
+local WWEIGHT_GRENADE        = 11
+local WWEIGHT_TOPMISSILE     = 12
+local WWEIGHT_TRACKMISSILE   = 2
 
 -- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
@@ -611,14 +611,14 @@ local function FireGrenadeLauncher(ent, enemy)
     local right   = ent:GetRight()
     local origin  = ent:GetPos() + Vector(0, 0, GL_LAUNCH_Z)
     ent._glSparkCounter = 0
-    ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
+    ent:EmitSound(GL_SOUND_FIDGET, 95, 100, 1)
     timer.Simple(GL_FIDGET_LEAD, function()
         if not IsValid(ent) then return end
-        ent:EmitSound(GL_SOUND_FIRE, 80, 100, 1)
+        ent:EmitSound(GL_SOUND_FIRE, 120, 100, 1)
     end)
     timer.Simple(GL_FIDGET_LEAD + (count - 1) * GL_INTERVAL + 0.1, function()
         if not IsValid(ent) then return end
-        ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
+        ent:EmitSound(GL_SOUND_INSERT, 95, 100, 1)
     end)
     for i = 0, count - 1 do
         local shotNumber = i + 1
