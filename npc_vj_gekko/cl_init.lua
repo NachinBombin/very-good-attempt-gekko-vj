@@ -23,10 +23,6 @@ local JUMP_LAND    = 3
 
 -- ============================================================
 --  KICK ANIMATION  (b_r_upperleg)
---
---  Driven by NWInt "GekkoKickPulse" incremented every walk-crush.
---  Each pulse extends the hold window by KICK_WINDOW seconds.
---  Bone is explicitly zeroed when the window expires.
 -- ============================================================
 local KICK_WINDOW     = 1.0
 local KICK_BONE_NAME  = "b_r_upperleg"
@@ -36,30 +32,39 @@ local KICK_BONE_RESET = Angle(0,   0, 0)
 -- ============================================================
 --  HEADBUTT ANIMATION
 --
---  Driven by NWInt "GekkoHeadbuttPulse" (30% roll in crush_system,
---  mutually exclusive with kick).
---
---  Two bones, two different manipulation types:
---    b_spine3   -> ManipulateBoneAngles   X = -60  (head dips down)
---    b_pedestal -> ManipulateBonePosition X = +70, Z = -45
---
---  Timeline (HB_DURATION = 0.8 s):
---    0.0 -> HB_PEAK  : smoothstep rise  0 -> 1
---    HB_PEAK -> 1.0  : smoothstep fall  1 -> 0
---
---  Both bones are explicitly reset to zero after the window.
+--  b_spine3   -> ManipulateBoneAngles   X = -60
+--  b_pedestal -> ManipulateBonePosition X = +70, Z = -45
+--  Duration 0.8 s, peak at 0.4 s (smoothstep both ways).
 -- ============================================================
-local HB_DURATION        = 0.8   -- total seconds
-local HB_PEAK            = 0.4   -- normalised peak time (40 % in)
+local HB_DURATION       = 0.8
+local HB_PEAK           = 0.4   -- normalised (40 % into duration)
 
-local HB_SPINE3_ANG_X    = -60
-local HB_PEDESTAL_POS_X  =  70
-local HB_PEDESTAL_POS_Z  = -45
+local HB_SPINE3_ANG_X   = -60
+local HB_PEDESTAL_POS_X =  70
+local HB_PEDESTAL_POS_Z = -45
 
-local HB_SPINE3_BONE     = "b_spine3"
-local HB_PEDESTAL_BONE   = "b_pedestal"
+local HB_SPINE3_BONE    = "b_spine3"
+local HB_PEDESTAL_BONE  = "b_pedestal"
 
--- smoothstep: t in [0,1] -> smooth [0,1], zero velocity at both ends
+-- ============================================================
+--  SPIN KICK ANIMATION  (b_pelvis only)
+--
+--  A full 360-degree yaw rotation of b_pelvis over SK_DURATION.
+--  The head / spine chain is left completely untouched so the
+--  head-aim driver continues to work without interference.
+--
+--  Timeline:
+--    0  -> SK_RAMP  : ease-in from 0 -> full speed
+--    SK_RAMP -> 1-SK_RAMP : constant full speed
+--    1-SK_RAMP -> 1 : ease-out back to 0 (bone zeroed)
+--
+--  Yaw is accumulated in _skYaw so the bone always shows a
+--  smooth continuous angle rather than jumping.
+-- ============================================================
+local SK_DURATION  = 1.4   -- total seconds
+local SK_RAMP      = 0.15  -- fraction for ease-in and ease-out
+local SK_BONE      = "b_pelvis"
+
 local function Smoothstep(t)
     t = math.Clamp(t, 0, 1)
     return t * t * (3 - 2 * t)
@@ -217,8 +222,7 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
 end)
 
 -- ============================================================
---  STOMP LEG DRIVER  (inactive -- GekkoStompEnd never set server-
---  side; kept for future use)
+--  STOMP LEG DRIVER
 -- ============================================================
 local function GekkoStompLegs(ent)
     local t      = CurTime()
@@ -344,8 +348,8 @@ local function GekkoUpdateHead(ent, dt)
         local boneMatrix = ent:GetBoneMatrix(bone)
         local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
         local toEnemy    = (enemy:GetPos() + Vector(0, 0, 40) - pos):Angle()
-        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,    HEAD_LIMIT)
-        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP,  HEAD_PITCH_DOWN)
+        targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,   HEAD_LIMIT)
+        targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP, HEAD_PITCH_DOWN)
     end
 
     local maxStep   = HEAD_SPEED * dt
@@ -619,9 +623,6 @@ end
 
 -- ============================================================
 --  KICK BONE DRIVER  (b_r_upperleg)
---
---  Reads GekkoKickPulse. Each new pulse holds the kick pose for
---  KICK_WINDOW seconds then explicitly zeroes the bone.
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -648,17 +649,13 @@ end
 
 -- ============================================================
 --  HEADBUTT BONE DRIVER
---
---  b_spine3   -> ManipulateBoneAngles   X = -60
---  b_pedestal -> ManipulateBonePosition X = +70, Z = -45
---
---  Smoothstep envelope over HB_DURATION (0.8 s).
---  Both bones are explicitly zeroed/reset after the window.
+--  b_spine3 (angle X=-60) + b_pedestal (position X=+70, Z=-45)
+--  Duration 0.8 s, peak at 0.4 s.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
     if ent._hbInited == nil then
         ent._hbInited      = true
-        ent._hbSpineIdx    = ent:LookupBone(HB_SPINE3_BONE)   or -1
+        ent._hbSpineIdx    = ent:LookupBone(HB_SPINE3_BONE)  or -1
         ent._hbPedestalIdx = ent:LookupBone(HB_PEDESTAL_BONE) or -1
         ent._hbStartTime   = -9999
         ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
@@ -702,6 +699,84 @@ local function GekkoDoHeadbuttBone(ent)
 end
 
 -- ============================================================
+--  SPIN KICK BONE DRIVER  (b_pelvis yaw only)
+--
+--  GekkoSpinKickPulse triggers a full 360-degree yaw rotation
+--  of b_pelvis over SK_DURATION (1.4 s).
+--
+--  Head/spine bones are NOT touched here — GekkoUpdateHead
+--  continues to run and aim freely through the spin.
+--
+--  The yaw is driven by accumulating angular velocity each
+--  frame so it scales correctly with variable frame time:
+--    - SK_RAMP (first 15% + last 15%) : ease-in / ease-out
+--    - middle  (70%)                  : constant full speed
+--  Total integral = 360 degrees exactly.
+--
+--  After the window expires b_pelvis is hard-reset to (0,0,0).
+-- ============================================================
+local function GekkoDoSpinKickBone(ent)
+    if ent._skInited == nil then
+        ent._skInited    = true
+        ent._skBoneIdx   = ent:LookupBone(SK_BONE) or -1
+        ent._skStartTime = -9999
+        ent._skPulseLast = ent:GetNWInt("GekkoSpinKickPulse", 0)
+        ent._skYaw       = 0
+    end
+
+    local pulse = ent:GetNWInt("GekkoSpinKickPulse", 0)
+    if pulse ~= ent._skPulseLast then
+        ent._skPulseLast = pulse
+        ent._skStartTime = CurTime()
+        ent._skYaw       = 0
+        print(string.format("[GekkoSpinKick] pulse=%d", pulse))
+    end
+
+    local boneIdx = ent._skBoneIdx
+    if not boneIdx or boneIdx < 0 then return end
+
+    local elapsed = CurTime() - ent._skStartTime
+
+    if elapsed >= SK_DURATION or elapsed < 0 then
+        ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
+        ent._skYaw = 0
+        return
+    end
+
+    -- Angular velocity envelope: smoothstep ramp-in, flat, smoothstep ramp-out.
+    -- We need the integral over [0,1] to equal 360 degrees.
+    --
+    -- envelope(t):
+    --   t in [0, SK_RAMP]        -> smoothstep(t / SK_RAMP)
+    --   t in [SK_RAMP, 1-SK_RAMP]-> 1.0  (constant)
+    --   t in [1-SK_RAMP, 1]      -> smoothstep((1-t) / SK_RAMP)
+    --
+    -- Integral of smoothstep on [0,1] = 0.5
+    -- Total integral = SK_RAMP*0.5 + (1-2*SK_RAMP)*1 + SK_RAMP*0.5
+    --                = 1 - SK_RAMP
+    -- So peak speed = 360 / ((1 - SK_RAMP) * SK_DURATION)  degrees/sec
+
+    local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)  -- deg/s
+
+    local t = elapsed / SK_DURATION
+    local env
+    if t < SK_RAMP then
+        env = Smoothstep(t / SK_RAMP)
+    elseif t > (1.0 - SK_RAMP) then
+        env = Smoothstep((1.0 - t) / SK_RAMP)
+    else
+        env = 1.0
+    end
+
+    local dt = math.Clamp(CurTime() - (ent._skLastT or CurTime()), 0, 0.05)
+    ent._skLastT = CurTime()
+
+    ent._skYaw = ent._skYaw + peakSpeed * env * dt
+
+    ent:ManipulateBoneAngles(boneIdx, Angle(0, ent._skYaw, 0), false)
+end
+
+-- ============================================================
 --  THINK
 -- ============================================================
 function ENT:Think()
@@ -715,10 +790,15 @@ end
 --  DRAW
 --
 --  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead     -> b_spine4
---    2. GekkoStompLegs      -> leg bones, b_pelvis  (inactive)
---    3. GekkoDoKickBone     -> b_r_upperleg
---    4. GekkoDoHeadbuttBone -> b_spine3 (angle), b_pedestal (position)
+--    1. GekkoUpdateHead      -> b_spine4  (head aim)
+--    2. GekkoStompLegs       -> leg bones, b_pelvis  (inactive)
+--    3. GekkoDoKickBone      -> b_r_upperleg
+--    4. GekkoDoHeadbuttBone  -> b_spine3 (angle), b_pedestal (position)
+--    5. GekkoDoSpinKickBone  -> b_pelvis (yaw only)
+--
+--  GekkoDoSpinKickBone runs AFTER GekkoStompLegs so the spin
+--  always wins on b_pelvis when active.  Head aim (b_spine4)
+--  runs first and is never touched by the spin driver.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -746,6 +826,7 @@ function ENT:Draw()
 
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
+    GekkoDoSpinKickBone(self)
 
     self:DrawModel()
 end

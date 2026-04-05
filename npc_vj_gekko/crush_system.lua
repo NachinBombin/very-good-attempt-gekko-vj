@@ -4,13 +4,28 @@
 --  Three independent crush / blast systems:
 --
 --  1. Walk Crush   -- front hull sweep while walking/running.
---                     Fires KICK OR HEADBUTT, never both:
---                       * 30% chance -> HEADBUTT (GekkoHeadbuttPulse)
---                           No speed gate.  No minimum range.
---                           Uses its own wider sphere check so the
---                           player can be literally on top of the Gekko.
---                       * 70% chance -> KICK (GekkoKickPulse)
---                           Speed gate + hull sweep as before.
+--                     Fires exactly ONE of three attacks per
+--                     cooldown window (mutually exclusive):
+--
+--                       * SPIN KICK  (40% chance)
+--                           GekkoSpinKickPulse
+--                           360 sphere, same radius as kick (96 u).
+--                           No speed gate.  No angle gate.
+--                           Uses ents.FindInSphere — hits targets
+--                           in every direction including behind.
+--
+--                       * HEADBUTT   (30% chance)
+--                           GekkoHeadbuttPulse
+--                           Same 96 u sphere.  No speed gate.
+--                           No minimum range.
+--
+--                       * KICK       (remaining 30% chance)
+--                           GekkoKickPulse
+--                           Hull sweep forward.  Speed gate >= 30.
+--
+--                     Priority when the chosen attack has no valid
+--                     target: falls through to the next tier.
+--
 --  2. Launch Blast -- sphere damage at jump takeoff
 --  3. Land Blast   -- sphere damage + knockup on landing
 -- ============================================================
@@ -20,11 +35,11 @@ if SERVER then
 end
 
 -- ============================================================
---  Shared helper: apply damage + physics impulse to a single entity.
+--  Shared helper: apply damage + physics impulse to one entity.
 -- ============================================================
 local function CrushDamageEnt(attacker, target, dmg, impulseVec)
-    if not IsValid(target)        then return end
-    if target == attacker         then return end
+    if not IsValid(target)  then return end
+    if target == attacker   then return end
 
     local phys = target:GetPhysicsObject()
     if not target:IsNPC() and not target:IsPlayer() then
@@ -62,52 +77,49 @@ end
 -- ============================================================
 --  1. WALK CRUSH
 -- ============================================================
-local WALK_CRUSH_DIST      = 96
-local WALK_CRUSH_WIDTH     = 50
-local WALK_CRUSH_DAMAGE    = 25
-local WALK_CRUSH_SPEED     = 30    -- minimum speed for the KICK path
-local WALK_CRUSH_COOLDOWN  = 1.0
-local WALK_CRUSH_IMPULSE   = 9000
+local CRUSH_RADIUS        = 96    -- shared by all three melee attacks
+local CRUSH_COOLDOWN      = 1.0
 
--- Headbutt: 30% chance, no speed gate, radius covers point-blank range.
--- When headbutt wins the coin-flip the kick is suppressed entirely.
-local HEADBUTT_CHANCE      = 0.30
-local HEADBUTT_RADIUS      = 96    -- same reach as hull sweep
-local HEADBUTT_DAMAGE      = 20
-local HEADBUTT_IMPULSE     = 7000
+-- Spin kick
+local SPINKICK_CHANCE     = 0.40
+local SPINKICK_DAMAGE     = 30
+local SPINKICK_IMPULSE    = 10000
+
+-- Headbutt
+local HEADBUTT_CHANCE     = 0.30   -- evaluated only if spinkick lost
+local HEADBUTT_DAMAGE     = 20
+local HEADBUTT_IMPULSE    = 7000
+
+-- Kick (forward hull sweep, speed-gated)
+local WALK_CRUSH_WIDTH    = 50
+local WALK_CRUSH_DAMAGE   = 25
+local WALK_CRUSH_SPEED    = 30
+local WALK_CRUSH_IMPULSE  = 9000
 
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
 
-    local now = CurTime()
+    local now  = CurTime()
+    local pos  = self:GetPos() + Vector(0, 0, 80)
+    local fwd  = self:GetForward()
+    local speed = self:GetNWFloat("GekkoSpeed", 0)
+
     if not self._crushHitTimes then self._crushHitTimes = {} end
 
-    -- ---- Shared cooldown check: find closest valid target -------
-    -- We need one target to gate the cooldown against.  We look for
-    -- the closest NPC/Player within headbutt radius first (no speed
-    -- gate), then fall back to the hull-sweep for the kick path.
-
-    local speed = self:GetNWFloat("GekkoSpeed", 0)
-    local pos   = self:GetPos() + Vector(0, 0, 80)
-    local fwd   = self:GetForward()
-
-    -- Find closest NPC/player within headbutt sphere (no speed req)
-    local hbTarget = nil
-    local hbDistSq = math.huge
-    for _, ent in ipairs(ents.FindInSphere(pos, HEADBUTT_RADIUS)) do
+    -- ----------------------------------------------------------------
+    --  Gather candidates once (sphere covers all three attack ranges)
+    -- ----------------------------------------------------------------
+    local sphereTargets = {}
+    for _, ent in ipairs(ents.FindInSphere(pos, CRUSH_RADIUS)) do
         if ent == self then continue end
         if not ent:IsNPC() and not ent:IsPlayer() then continue end
-        local dsq = pos:DistToSqr(ent:GetPos())
-        if dsq < hbDistSq then
-            hbDistSq = dsq
-            hbTarget = ent
-        end
+        table.insert(sphereTargets, ent)
     end
 
-    -- Hull sweep for kick (speed-gated)
+    -- Kick needs a hull-sweep target (speed-gated, forward only)
     local kickTarget = nil
     if speed >= WALK_CRUSH_SPEED then
-        local sweep = pos + fwd * WALK_CRUSH_DIST
+        local sweep = pos + fwd * CRUSH_RADIUS
         local half  = Vector(WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH)
         local tr = util.TraceHull({
             start  = pos,
@@ -117,59 +129,98 @@ function ENT:GeckoCrush_Think()
             filter = self,
             mask   = MASK_SHOT_HULL,
         })
-        local hit = tr.Entity
-        if IsValid(hit) and (hit:IsNPC() or hit:IsPlayer()) then
-            kickTarget = hit
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            kickTarget = tr.Entity
         end
     end
 
-    -- Nothing in range at all
-    if not hbTarget and not kickTarget then return end
+    -- Nothing reachable at all
+    if #sphereTargets == 0 and not kickTarget then return end
 
-    -- ---- Coin flip: headbutt OR kick (never both) ---------------
-    local doHeadbutt = (math.random() < HEADBUTT_CHANCE)
+    -- ----------------------------------------------------------------
+    --  Closest sphere target (used by spin kick and headbutt)
+    -- ----------------------------------------------------------------
+    local closestTarget = nil
+    local closestDistSq = math.huge
+    for _, ent in ipairs(sphereTargets) do
+        local dsq = pos:DistToSqr(ent:GetPos())
+        if dsq < closestDistSq then
+            closestDistSq = dsq
+            closestTarget = ent
+        end
+    end
 
-    if doHeadbutt then
-        -- Headbutt path -- requires hbTarget (no speed gate)
-        if not IsValid(hbTarget) then return end
+    -- ----------------------------------------------------------------
+    --  3-way coin flip
+    --  Roll once: [0, SPINKICK_CHANCE)        -> spin kick
+    --             [SPINKICK_CHANCE, SK+HB)    -> headbutt
+    --             else                        -> kick
+    --  If the chosen attack has no valid target, fall through in order:
+    --  spinkick -> headbutt -> kick -> abort
+    -- ----------------------------------------------------------------
+    local roll = math.random()
+    local doSpinkick  = (roll < SPINKICK_CHANCE)
+    local doHeadbutt  = (not doSpinkick) and (roll < SPINKICK_CHANCE + HEADBUTT_CHANCE)
+    local doKick      = (not doSpinkick) and (not doHeadbutt)
 
-        local lastHit = self._crushHitTimes[hbTarget] or 0
-        if now - lastHit < WALK_CRUSH_COOLDOWN then return end
-        self._crushHitTimes[hbTarget] = now
+    -- Fall-through: if preferred attack has no target, try next
+    if doSpinkick  and not IsValid(closestTarget) then doSpinkick = false; doHeadbutt = true  end
+    if doHeadbutt  and not IsValid(closestTarget) then doHeadbutt = false; doKick     = true  end
+    if doKick      and not IsValid(kickTarget)    then return end
+
+    -- ----------------------------------------------------------------
+    --  Execute chosen attack
+    -- ----------------------------------------------------------------
+    if doSpinkick then
+        local target  = closestTarget
+        local lastHit = self._crushHitTimes[target] or 0
+        if now - lastHit < CRUSH_COOLDOWN then return end
+        self._crushHitTimes[target] = now
+
+        -- Impulse radiates outward from Gekko centre
+        local dir     = (target:GetPos() - self:GetPos()):GetNormalized()
+        local impulse = (dir + Vector(0, 0, 0.4)):GetNormalized() * SPINKICK_IMPULSE
+        CrushDamageEnt(self, target, SPINKICK_DAMAGE, impulse)
+
+        local prev = self:GetNWInt("GekkoSpinKickPulse", 0)
+        self:SetNWInt("GekkoSpinKickPulse", (prev % 254) + 1)
+
+        print(string.format("[GekkoCrush] SPINKICK  target=%s  skPulse=%d",
+            target:GetClass(), self:GetNWInt("GekkoSpinKickPulse", 0)))
+
+    elseif doHeadbutt then
+        local target  = closestTarget
+        local lastHit = self._crushHitTimes[target] or 0
+        if now - lastHit < CRUSH_COOLDOWN then return end
+        self._crushHitTimes[target] = now
 
         local impulse = (fwd + Vector(0, 0, 0.3)):GetNormalized() * HEADBUTT_IMPULSE
-        CrushDamageEnt(self, hbTarget, HEADBUTT_DAMAGE, impulse)
+        CrushDamageEnt(self, target, HEADBUTT_DAMAGE, impulse)
 
-        local hbPrev = self:GetNWInt("GekkoHeadbuttPulse", 0)
-        self:SetNWInt("GekkoHeadbuttPulse", (hbPrev % 254) + 1)
+        local prev = self:GetNWInt("GekkoHeadbuttPulse", 0)
+        self:SetNWInt("GekkoHeadbuttPulse", (prev % 254) + 1)
 
-        print(string.format(
-            "[GekkoCrush] HEADBUTT  target=%s  hbPulse=%d",
-            hbTarget:GetClass(), (self:GetNWInt("GekkoHeadbuttPulse", 0))
-        ))
+        print(string.format("[GekkoCrush] HEADBUTT  target=%s  hbPulse=%d",
+            target:GetClass(), self:GetNWInt("GekkoHeadbuttPulse", 0)))
 
-    else
-        -- Kick path -- requires kickTarget + speed gate
-        if not IsValid(kickTarget) then return end
+    else -- doKick
+        local target  = kickTarget
+        local lastHit = self._crushHitTimes[target] or 0
+        if now - lastHit < CRUSH_COOLDOWN then return end
+        self._crushHitTimes[target] = now
 
-        local lastHit = self._crushHitTimes[kickTarget] or 0
-        if now - lastHit < WALK_CRUSH_COOLDOWN then return end
-        self._crushHitTimes[kickTarget] = now
-
-        local toTarget = (kickTarget:GetPos() - self:GetPos()):GetNormalized()
+        local toTarget = (target:GetPos() - self:GetPos()):GetNormalized()
         local dot      = math.Clamp(fwd:Dot(toTarget), 0.5, 1.0)
         local dmg      = WALK_CRUSH_DAMAGE * dot
         local impulse  = (fwd + Vector(0, 0, 0.3)):GetNormalized() * WALK_CRUSH_IMPULSE
-        CrushDamageEnt(self, kickTarget, dmg, impulse)
+        CrushDamageEnt(self, target, dmg, impulse)
 
-        local kickPrev = self:GetNWInt("GekkoKickPulse", 0)
-        local kickNext = (kickPrev % 254) + 1
-        self:SetNWInt("GekkoKickPulse", kickNext)
+        local prev = self:GetNWInt("GekkoKickPulse", 0)
+        local next = (prev % 254) + 1
+        self:SetNWInt("GekkoKickPulse", next)
 
-        print(string.format(
-            "[GekkoCrush] KICK  target=%s  dmg=%.1f  dot=%.2f  kickPulse=%d",
-            kickTarget:GetClass(), dmg, dot, kickNext
-        ))
+        print(string.format("[GekkoCrush] KICK  target=%s  dmg=%.1f  dot=%.2f  kickPulse=%d",
+            target:GetClass(), dmg, dot, next))
     end
 end
 
@@ -208,7 +259,7 @@ local LAND_DAMAGE_MIN = 1
 local LAND_IMPULSE    = 22000
 
 function ENT:GeckoCrush_LandBlast()
-    local origin = self:GetPos() + Vector(0, 0, 20)
+    local origin   = self:GetPos() + Vector(0, 0, 20)
     local self_ref = self
 
     for _, ent in ipairs(ents.FindInSphere(origin, LAND_RADIUS)) do
