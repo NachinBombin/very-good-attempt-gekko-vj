@@ -27,43 +27,30 @@ local JUMP_LAND    = 3
 local KICK_WINDOW     = 1.0
 local KICK_BONE_NAME  = "b_r_upperleg"
 local KICK_BONE_ANGLE = Angle(112, 0, 0)
-local KICK_BONE_RESET = Angle(0,   0, 0)
 
 -- ============================================================
 --  HEADBUTT ANIMATION
---  b_spine3 angle X=-60, b_pedestal position X=+70 Z=-45.
---  Duration 0.8 s, peak at 0.4 s (smoothstep both ways).
 -- ============================================================
 local HB_DURATION       = 0.8
 local HB_PEAK           = 0.4
-
 local HB_SPINE3_ANG_X   = -60
 local HB_PEDESTAL_POS_X =  70
 local HB_PEDESTAL_POS_Z = -45
-
 local HB_SPINE3_BONE    = "b_spine3"
 local HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- ============================================================
---  360 FRONT KICK ANIMATION  (b_pelvis ROLL — full front flip)
+--  360 FRONT KICK  (b_pelvis)
 --
---  GekkoFrontKick360Pulse triggers a complete 360-degree ROLL
---  rotation of b_pelvis over FK360_DURATION (0.8 s).
+--  Axis: Angle(-pitch, 0, 0)  -- negative pitch on pelvis root
+--  drives a forward somersault (head tips forward first).
+--  Positive pitch tipped backward; roll was a barrel roll.
 --
---  WHY ROLL: b_pelvis is the skeleton root. On this rig,
---  Pitch(p,0,0) on the pelvis maps to a world-space yaw spin
---  of the whole model. The forward somersault (head-over-heels)
---  lives on the ROLL axis: Angle(0, 0, r).
---
---  Head / spine bones are NOT touched — GekkoUpdateHead
---  continues to aim freely through the flip.
---
---  Timeline: ease-in (FK360_RAMP) -> constant -> ease-out (FK360_RAMP)
---  Total integral = 360 degrees exactly.
---  b_pelvis is hard-reset to Angle(0,0,0) after the window.
+--  IMPORTANT: when inactive this driver writes NOTHING.
+--  Source restores the bone to its animation pose automatically.
 -- ============================================================
 local FK360_DURATION = 0.8
-local FK360_RAMP     = 0.15   -- fraction for ease-in and ease-out
+local FK360_RAMP     = 0.15
 local FK360_BONE     = "b_pelvis"
 
 local function Smoothstep(t)
@@ -72,17 +59,7 @@ local function Smoothstep(t)
 end
 
 -- ============================================================
---  SPIN KICK ANIMATION
---
---  Two bones driven simultaneously:
---    1. b_Pedestal  -- yaw (Y angle) accumulates 360 degrees
---                      over SK_DURATION (1.0 s).
---    2. b_r_upperleg -- X angle held at +120 degrees for the
---                       full window (leg extended outward).
---
---  Head/spine untouched -- GekkoUpdateHead runs freely.
---  Both bones hard-reset after the window expires.
---  NOTE: b_pelvis is NOT touched by SpinKick.
+--  SPIN KICK  (b_Pedestal yaw + b_r_upperleg)
 -- ============================================================
 local SK_DURATION      = 1.0
 local SK_RAMP          = 0.15
@@ -101,18 +78,15 @@ local CRUSH_IMPACT_SOUNDS = {
     "physics/body/body_medium_impact_hard5.wav",
     "physics/body/body_medium_impact_hard6.wav",
 }
-
 local CRUSH_SHAKE_RADIUS = 900
 
 net.Receive("GekkoCrushHit", function()
     local hitPos   = net.ReadVector()
     local gekkoPos = net.ReadVector()
-
     sound.Play(
         CRUSH_IMPACT_SOUNDS[math.random(#CRUSH_IMPACT_SOUNDS)],
         hitPos, 110, 80
     )
-
     local e = EffectData()
     e:SetOrigin(hitPos + Vector(0, 0, 20))
     e:SetNormal(Vector(0, 0, 1))
@@ -120,7 +94,6 @@ net.Receive("GekkoCrushHit", function()
     e:SetScale(3)
     e:SetRadius(40)
     util.Effect("ManhackSparks", e, false)
-
     local ply = LocalPlayer()
     if IsValid(ply) then
         local dist  = ply:GetPos():Distance(gekkoPos)
@@ -139,15 +112,12 @@ local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
 local SONAR_DURATION       = 3.0
 local SONAR_PULSE_COUNT    = 3
 local SONAR_PULSE_INTERVAL = 0.6
-
 local SONAR_RING_THICKNESS = 12
 local SONAR_PEAK_ALPHA     = 220
 local SONAR_TINT_ALPHA     = 80
-
 local SONAR_R = 0
 local SONAR_G = 200
 local SONAR_B = 255
-
 local sonar_startTime = nil
 local sonar_active    = false
 
@@ -191,38 +161,29 @@ end
 
 hook.Add("HUDPaint", "GekkoSonarEffect", function()
     if not sonar_active then return end
-
     local now     = CurTime()
     local elapsed = now - sonar_startTime
-
     if elapsed >= SONAR_DURATION then
         sonar_active = false
-        print("[GekkoSonar] effect ended")
         return
     end
-
     local sw, sh = ScrW(), ScrH()
     local cx, cy = sw * 0.5, sh * 0.5
     local globalFade = 1 - math.Clamp(elapsed / SONAR_DURATION, 0, 1)
-
     local tintFade = math.max(0, 1 - elapsed / (SONAR_DURATION * 0.4))
     local tintA    = math.floor(SONAR_TINT_ALPHA * tintFade * globalFade)
     if tintA > 0 then
         surface.SetDrawColor(SONAR_R, SONAR_G, SONAR_B, tintA)
         surface.DrawRect(0, 0, sw, sh)
     end
-
     local maxRadius = math.sqrt(cx*cx + cy*cy) * 1.1
-
     for i = 0, SONAR_PULSE_COUNT - 1 do
         local pulseStart    = i * SONAR_PULSE_INTERVAL
         local pulseAge      = elapsed - pulseStart
         if pulseAge < 0 then continue end
-
         local pulseDuration = SONAR_PULSE_INTERVAL + 0.5
         local t = math.Clamp(pulseAge / pulseDuration, 0, 1)
         if t >= 1 then continue end
-
         local riseEnd = 0.12
         local pAlpha
         if t < riseEnd then
@@ -231,10 +192,8 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
             pAlpha = 1 - ((t - riseEnd) / (1 - riseEnd))
         end
         pAlpha = pAlpha * pAlpha
-
         local finalAlpha = math.floor(SONAR_PEAK_ALPHA * pAlpha * globalFade)
         if finalAlpha <= 0 then continue end
-
         local radius = maxRadius * (0.05 + t * 0.95)
         DrawRingOutline(cx, cy, radius, SONAR_RING_THICKNESS,
             SONAR_R, SONAR_G, SONAR_B, finalAlpha)
@@ -250,19 +209,16 @@ local function GekkoStompLegs(ent)
     local amp    = 55
     local phaseR = t * freq
     local phaseL = t * freq + math.pi
-
     SetBoneAng(ent, "b_r_thigh",      Angle(math.sin(phaseR)         * amp,        0, 0))
     SetBoneAng(ent, "b_r_upperleg",   Angle(math.sin(phaseR + 0.4)   * amp * 0.7,  0, 0))
     SetBoneAng(ent, "b_r_calf",       Angle(math.sin(phaseR + 0.9)   * amp * 0.5,  0, 0))
     SetBoneAng(ent, "b_r_foot",       Angle(math.sin(phaseR + 1.2)   * -amp * 0.4, 0, 0))
     SetBoneAng(ent, "b_r_toe",        Angle(math.sin(phaseR + 1.5)   * -amp * 0.3, 0, 0))
-
     SetBoneAng(ent, "b_l_thigh",      Angle(math.sin(phaseL)         * amp,        0, 0))
     SetBoneAng(ent, "b_l_upperleg",   Angle(math.sin(phaseL + 0.4)   * amp * 0.7,  0, 0))
     SetBoneAng(ent, "b_l_calf",       Angle(math.sin(phaseL + 0.9)   * amp * 0.5,  0, 0))
     SetBoneAng(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
     SetBoneAng(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
-
     local slam = math.abs(math.sin(t * freq * 0.5)) * 12
     SetBoneAng(ent, "b_pelvis",       Angle(slam, 0, 0))
     SetBoneAng(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
@@ -285,22 +241,17 @@ local function GekkoSyncFootsteps(ent)
         ent._stepPhaseL = nil
         return
     end
-
     local cycleHz = (vel > 160) and 1.1 or 0.71
     local t       = CurTime()
     local cycleT  = t * cycleHz * 2 * math.pi
-
     local sinR = math.sin(cycleT)
     local sinL = math.sin(cycleT + math.pi)
-
     local prevR = ent._stepPhaseR or sinR
     local prevL = ent._stepPhaseL or sinL
     ent._stepPhaseR = sinR
     ent._stepPhaseL = sinL
-
     local pitch = (vel > 160) and math.random(58, 68) or math.random(70, 80)
     local vol   = (vel > 160) and 88 or 80
-
     if prevR > 0 and sinR <= 0 then
         ent:EmitSound(STEP_SOUNDS[math.random(#STEP_SOUNDS)], vol, pitch)
     end
@@ -319,27 +270,20 @@ local SHAKE_MIN_SPEED = 8
 local function GekkoFootShake(ent)
     local ply = LocalPlayer()
     if not IsValid(ply) then return end
-
     local vel = ent:GetNWFloat("GekkoSpeed", 0)
     if vel < SHAKE_MIN_SPEED then return end
-
     local dist = ply:GetPos():Distance(ent:GetPos())
     if dist >= SHAKE_FAR_DIST then return end
-
     local cycleHz = (vel > 160) and 1.1 or 0.71
     local cycleT  = CurTime() * cycleHz * 2 * math.pi
-
     local sinR = math.sin(cycleT)
     local sinL = math.sin(cycleT + math.pi)
-
     local prevR = ent._shakePhaseR or sinR
     local prevL = ent._shakePhaseL or sinL
     ent._shakePhaseR = sinR
     ent._shakePhaseL = sinL
-
     local footplant = (prevR > 0 and sinR <= 0) or (prevL > 0 and sinL <= 0)
     if not footplant then return end
-
     local alpha = 1 - (dist / SHAKE_FAR_DIST)
     local amp   = (dist < SHAKE_NEAR_DIST) and (12 * alpha) or (5 * alpha)
     util.ScreenShake(ent:GetPos(), amp, 14, 0.18, SHAKE_FAR_DIST)
@@ -348,22 +292,19 @@ end
 -- ============================================================
 --  HEAD DRIVER
 -- ============================================================
-local HEAD_LIMIT       =  50
-local HEAD_PITCH_UP    = -60
-local HEAD_PITCH_DOWN  =  60
-local HEAD_SPEED       =  30
+local HEAD_LIMIT      =  50
+local HEAD_PITCH_UP   = -60
+local HEAD_PITCH_DOWN =  60
+local HEAD_SPEED      =  30
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
     if not bone or bone < 0 then return end
-
     ent._headYaw   = ent._headYaw   or 0
     ent._headPitch = ent._headPitch or 0
-
     local enemy       = ent:GetNWEntity("GekkoEnemy", NULL)
     local targetYaw   = 0
     local targetPitch = 0
-
     if IsValid(enemy) then
         local boneMatrix = ent:GetBoneMatrix(bone)
         local pos        = boneMatrix and boneMatrix:GetTranslation() or (ent:GetPos() + Vector(0, 0, 130))
@@ -371,13 +312,11 @@ local function GekkoUpdateHead(ent, dt)
         targetYaw   = math.Clamp(math.NormalizeAngle(toEnemy.y - ent:GetAngles().y), -HEAD_LIMIT,   HEAD_LIMIT)
         targetPitch = math.Clamp(toEnemy.p,                                           HEAD_PITCH_UP, HEAD_PITCH_DOWN)
     end
-
     local maxStep   = HEAD_SPEED * dt
     local yawDiff   = math.NormalizeAngle(targetYaw - ent._headYaw)
     ent._headYaw    = math.Clamp(ent._headYaw   + math.Clamp(yawDiff,   -maxStep, maxStep), -HEAD_LIMIT,   HEAD_LIMIT)
     local pitchDiff = targetPitch - ent._headPitch
     ent._headPitch  = math.Clamp(ent._headPitch + math.Clamp(pitchDiff, -maxStep, maxStep),  HEAD_PITCH_UP, HEAD_PITCH_DOWN)
-
     ent:ManipulateBoneAngles(bone, Angle(-ent._headYaw, 0, ent._headPitch), false)
 end
 
@@ -391,7 +330,6 @@ local function GekkoDoJumpDust(ent)
     if pulse == 0 then return end
     if pulse == ent._lastJumpDustPulse then return end
     ent._lastJumpDustPulse = pulse
-
     local e = EffectData()
     e:SetOrigin(ent:GetPos())
     e:SetScale(math.random(80, 200))
@@ -408,7 +346,6 @@ local function GekkoDoLandDust(ent)
     if pulse == 0 then return end
     if pulse == ent._lastLandDustPulse then return end
     ent._lastLandDustPulse = pulse
-
     local e = EffectData()
     e:SetOrigin(ent:GetPos())
     e:SetScale(math.random(80, 200))
@@ -429,14 +366,11 @@ local function GekkoDoMGFX(ent)
         ent._nextShellT = nil
         return
     end
-
     local attData = ent:GetAttachment(ATT_MACHINEGUN)
     if not attData then return end
-
     local pos = attData.Pos
     local ang = attData.Ang
     local now = CurTime()
-
     if not ent._nextShellT or now >= ent._nextShellT then
         ent._nextShellT = now + SHELL_INTERVAL
         local e = EffectData()
@@ -445,7 +379,6 @@ local function GekkoDoMGFX(ent)
         e:SetAngles(ang)
         util.Effect("RifleShellEject", e, false)
     end
-
     if not ent._nextSparkT or now >= ent._nextSparkT then
         ent._nextSparkT = now + math.Rand(1.5, 3.5)
         local fwd = ang:Forward()
@@ -481,7 +414,6 @@ end
 local function SpawnBloodBlob(pos, dir, speed, scale)
     local s  = BLOOD_SIZE
     local sp = speed * s
-
     local e = EffectData()
     e:SetOrigin(pos)
     e:SetNormal(dir)
@@ -489,14 +421,12 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     e:SetMagnitude(sp * 0.05)
     e:SetRadius(math.random(12, 36) * s)
     util.Effect("BloodImpact", e, false)
-
     local e2 = EffectData()
     e2:SetOrigin(pos)
     e2:SetNormal(dir)
     e2:SetScale(scale * math.Rand(0.6, 1.4) * s)
     e2:SetMagnitude(math.Rand(8, 22) * s)
     util.Effect("BloodSpray", e2, false)
-
     local tr = util.TraceLine({
         start  = pos,
         endpos = pos + dir * sp,
@@ -624,15 +554,12 @@ end
 local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
     if packed == 0 then return end
-
     local pulse = math.floor(packed / 8)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
-
     local variant = (packed % 8) + 1
     local origin  = ent:GetPos() + Vector(0, 0, 80)
     local fwd     = ent:GetForward()
-
     if     variant == 1 then BloodVariant_Geyser(origin)
     elseif variant == 2 then BloodVariant_RadialRing(origin)
     elseif variant == 3 then BloodVariant_BurstCloud(origin)
@@ -643,6 +570,7 @@ end
 
 -- ============================================================
 --  KICK BONE DRIVER  (b_r_upperleg)
+--  Writes ONLY during the active window. Inactive = no write.
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -650,25 +578,22 @@ local function GekkoDoKickBone(ent)
         ent._kickEndTime   = 0
         ent._kickPulseLast = ent:GetNWInt("GekkoKickPulse", 0)
     end
-
     local pulse = ent:GetNWInt("GekkoKickPulse", 0)
     if pulse ~= ent._kickPulseLast then
         ent._kickPulseLast = pulse
         ent._kickEndTime   = math.max(ent._kickEndTime, CurTime() + KICK_WINDOW)
     end
-
     local boneIdx = ent._kickBoneIdx
     if not boneIdx or boneIdx < 0 then return end
-
+    -- Only write during the active window; do nothing when expired.
     if CurTime() < ent._kickEndTime then
         ent:ManipulateBoneAngles(boneIdx, KICK_BONE_ANGLE, false)
-    else
-        ent:ManipulateBoneAngles(boneIdx, KICK_BONE_RESET, false)
     end
 end
 
 -- ============================================================
 --  HEADBUTT BONE DRIVER
+--  Writes ONLY during the active window. Inactive = no write.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
     if ent._hbInited == nil then
@@ -678,26 +603,15 @@ local function GekkoDoHeadbuttBone(ent)
         ent._hbStartTime   = -9999
         ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     end
-
     local pulse = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
         ent._hbStartTime = CurTime()
         print(string.format("[GekkoHeadbutt] pulse=%d", pulse))
     end
-
     local elapsed = CurTime() - ent._hbStartTime
-
-    if elapsed >= HB_DURATION or elapsed < 0 then
-        if ent._hbSpineIdx    >= 0 then
-            ent:ManipulateBoneAngles(ent._hbSpineIdx, Angle(0, 0, 0), false)
-        end
-        if ent._hbPedestalIdx >= 0 then
-            ent:ManipulateBonePosition(ent._hbPedestalIdx, Vector(0, 0, 0), false)
-        end
-        return
-    end
-
+    -- Expired: write nothing, let Source restore animation pose.
+    if elapsed >= HB_DURATION or elapsed < 0 then return end
     local t = elapsed / HB_DURATION
     local env
     if t < HB_PEAK then
@@ -705,7 +619,6 @@ local function GekkoDoHeadbuttBone(ent)
     else
         env = Smoothstep(1 - (t - HB_PEAK) / (1 - HB_PEAK))
     end
-
     if ent._hbSpineIdx >= 0 then
         ent:ManipulateBoneAngles(ent._hbSpineIdx,
             Angle(HB_SPINE3_ANG_X * env, 0, 0), false)
@@ -718,22 +631,18 @@ end
 
 -- ============================================================
 --  SPIN KICK BONE DRIVER
---
---  b_Pedestal  -- YAW (Y) accumulates 360 degrees over 1.0 s.
---  b_r_upperleg -- X held at +120 for full window (roundhouse).
---  b_pelvis is NOT touched here — FK360 owns b_pelvis.
+--  Writes ONLY during the active window. Inactive = no write.
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
-        ent._skInited        = true
-        ent._skPedestalIdx   = ent:LookupBone(SK_PEDESTAL_BONE) or -1
-        ent._skLegIdx        = ent:LookupBone(SK_LEG_BONE)      or -1
-        ent._skStartTime     = -9999
-        ent._skPulseLast     = ent:GetNWInt("GekkoSpinKickPulse", 0)
-        ent._skYaw           = 0
-        ent._skLastT         = CurTime()
+        ent._skInited      = true
+        ent._skPedestalIdx = ent:LookupBone(SK_PEDESTAL_BONE) or -1
+        ent._skLegIdx      = ent:LookupBone(SK_LEG_BONE)      or -1
+        ent._skStartTime   = -9999
+        ent._skPulseLast   = ent:GetNWInt("GekkoSpinKickPulse", 0)
+        ent._skYaw         = 0
+        ent._skLastT       = CurTime()
     end
-
     local pulse = ent:GetNWInt("GekkoSpinKickPulse", 0)
     if pulse ~= ent._skPulseLast then
         ent._skPulseLast = pulse
@@ -742,22 +651,13 @@ local function GekkoDoSpinKickBone(ent)
         ent._skLastT     = CurTime()
         print(string.format("[GekkoSpinKick] pulse=%d", pulse))
     end
-
     local elapsed = CurTime() - ent._skStartTime
-
+    -- Expired: write nothing.
     if elapsed >= SK_DURATION or elapsed < 0 then
-        if ent._skPedestalIdx >= 0 then
-            ent:ManipulateBoneAngles(ent._skPedestalIdx, Angle(0, 0, 0), false)
-        end
-        if ent._skLegIdx >= 0 then
-            ent:ManipulateBoneAngles(ent._skLegIdx, Angle(0, 0, 0), false)
-        end
         ent._skYaw = 0
         return
     end
-
     local peakSpeed = 360.0 / ((1.0 - SK_RAMP) * SK_DURATION)
-
     local t = elapsed / SK_DURATION
     local env
     if t < SK_RAMP then
@@ -767,13 +667,10 @@ local function GekkoDoSpinKickBone(ent)
     else
         env = 1.0
     end
-
     local now = CurTime()
     local dt  = math.Clamp(now - ent._skLastT, 0, 0.05)
     ent._skLastT = now
-
     ent._skYaw = ent._skYaw + peakSpeed * env * dt
-
     if ent._skPedestalIdx >= 0 then
         ent:ManipulateBoneAngles(ent._skPedestalIdx, Angle(0, ent._skYaw, 0), false)
     end
@@ -783,15 +680,14 @@ local function GekkoDoSpinKickBone(ent)
 end
 
 -- ============================================================
---  360 FRONT KICK BONE DRIVER  (b_pelvis ROLL — full front flip)
+--  360 FRONT KICK BONE DRIVER  (b_pelvis)
 --
---  Runs LAST in Draw() so nothing overwrites b_pelvis after it.
+--  Axis under test: Angle(-r, 0, 0)  (negative pitch)
+--  If this flips backward, try Angle(r, 0, 0).
+--  If it spins again, the flip bone is NOT b_pelvis on this rig
+--  and we need to target b_spine1 or b_spine2 instead.
 --
---  AXIS: Angle(0, 0, roll) — Roll on the pelvis root produces
---  the forward somersault (head-over-heels). Pitch(p,0,0) on
---  this rig maps to a world-space yaw spin — wrong axis.
---
---  b_pelvis hard-reset to Angle(0,0,0) after window expires.
+--  Writes ONLY during the active window. Inactive = no write.
 -- ============================================================
 local function GekkoDoFrontKick360Bone(ent)
     if ent._fk360Inited == nil then
@@ -799,32 +695,26 @@ local function GekkoDoFrontKick360Bone(ent)
         ent._fk360BoneIdx   = ent:LookupBone(FK360_BONE) or -1
         ent._fk360StartTime = -9999
         ent._fk360PulseLast = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
-        ent._fk360Roll      = 0   -- accumulates on ROLL axis
+        ent._fk360Rot       = 0
         ent._fk360LastT     = CurTime()
     end
-
     local pulse = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
     if pulse ~= ent._fk360PulseLast then
         ent._fk360PulseLast = pulse
         ent._fk360StartTime = CurTime()
-        ent._fk360Roll      = 0
+        ent._fk360Rot       = 0
         ent._fk360LastT     = CurTime()
         print(string.format("[GekkoFrontKick360] pulse=%d", pulse))
     end
-
     local boneIdx = ent._fk360BoneIdx
     if not boneIdx or boneIdx < 0 then return end
-
     local elapsed = CurTime() - ent._fk360StartTime
-
+    -- Expired: write nothing, let Source restore pose.
     if elapsed >= FK360_DURATION or elapsed < 0 then
-        ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
-        ent._fk360Roll = 0
+        ent._fk360Rot = 0
         return
     end
-
     local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * FK360_DURATION)
-
     local t = elapsed / FK360_DURATION
     local env
     if t < FK360_RAMP then
@@ -834,15 +724,13 @@ local function GekkoDoFrontKick360Bone(ent)
     else
         env = 1.0
     end
-
     local now = CurTime()
     local dt  = math.Clamp(now - ent._fk360LastT, 0, 0.05)
     ent._fk360LastT = now
-
-    ent._fk360Roll = ent._fk360Roll + peakSpeed * env * dt
-
-    -- Roll axis: Angle(0, 0, r) — forward somersault on pelvis root
-    ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, ent._fk360Roll), false)
+    ent._fk360Rot = ent._fk360Rot + peakSpeed * env * dt
+    -- Negative pitch = forward somersault on pelvis root.
+    -- Change to Angle(ent._fk360Rot, 0, 0) if it flips backward.
+    ent:ManipulateBoneAngles(boneIdx, Angle(-ent._fk360Rot, 0, 0), false)
 end
 
 -- ============================================================
@@ -858,42 +746,40 @@ end
 -- ============================================================
 --  DRAW
 --
---  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead         -> b_spine4  (head aim)
---    2. GekkoStompLegs          -> leg bones, b_pelvis (stomp)
---    3. GekkoDoKickBone         -> b_r_upperleg (X=112)
---    4. GekkoDoHeadbuttBone     -> b_spine3 (angle), b_pedestal (pos)
---    5. GekkoDoSpinKickBone     -> b_Pedestal (yaw), b_r_upperleg (X=120)
---    6. GekkoDoFrontKick360Bone -> b_pelvis (ROLL) — LAST, wins over all
+--  Rule: every driver writes ONLY when its attack is active.
+--  Inactive drivers return immediately without touching bones.
+--  Source restores the animation pose naturally when no
+--  ManipulateBoneAngles call is made for a bone.
+--
+--  Call order (later wins on shared bones):
+--    1. GekkoUpdateHead         -> b_spine4
+--    2. GekkoStompLegs          -> leg bones + b_pelvis (stomp)
+--    3. GekkoDoKickBone         -> b_r_upperleg (active only)
+--    4. GekkoDoHeadbuttBone     -> b_spine3, b_pedestal (active only)
+--    5. GekkoDoSpinKickBone     -> b_Pedestal, b_r_upperleg (active only)
+--    6. GekkoDoFrontKick360Bone -> b_pelvis (active only, LAST)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
-
     if not self._spineBone then
         self._spineBone = self:LookupBone("b_spine4")
     end
-
     local t  = CurTime()
     local dt = math.Clamp(t - (self._cl_lastT or t), 0, 0.05)
     self._cl_lastT = t
-
     local jumpState = self:GetGekkoJumpState()
     local landing   = (jumpState == JUMP_LAND)
-
     if not landing then GekkoUpdateHead(self, dt) end
     if not landing then
         GekkoSyncFootsteps(self)
         GekkoFootShake(self)
     end
-
     local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
     if t < stompEnd and grounded then GekkoStompLegs(self) end
-
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
     GekkoDoSpinKickBone(self)
-    GekkoDoFrontKick360Bone(self)  -- LAST: owns b_pelvis roll, nothing writes after this
-
+    GekkoDoFrontKick360Bone(self)  -- LAST: b_pelvis, active only
     self:DrawModel()
 end
