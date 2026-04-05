@@ -3,9 +3,14 @@ include("shared.lua")
 -- ============================================================
 --  HELPERS
 -- ============================================================
-local function SetBone(ent, name, ang)
+local function SetBoneAng(ent, name, ang)
     local id = ent:LookupBone(name)
     if id and id >= 0 then ent:ManipulateBoneAngles(id, ang, false) end
+end
+
+local function SetBonePos(ent, name, pos)
+    local id = ent:LookupBone(name)
+    if id and id >= 0 then ent:ManipulateBonePosition(id, pos, false) end
 end
 
 -- ============================================================
@@ -29,31 +34,35 @@ local KICK_BONE_ANGLE = Angle(112, 0, 0)
 local KICK_BONE_RESET = Angle(0,   0, 0)
 
 -- ============================================================
---  HEADBUTT ANIMATION  (b_spine3 + b_pedestal)
+--  HEADBUTT ANIMATION
 --
---  Driven by NWInt "GekkoHeadbuttPulse" incremented on the 30%
---  headbutt roll in crush_system.lua.
+--  Driven by NWInt "GekkoHeadbuttPulse" (30% roll in crush_system).
 --
---  Timeline over HB_DURATION (2 s):
---    0.0 → HB_PEAK   : ease-in  from 0 to target angles
---    HB_PEAK → 1.0   : ease-out from target back to 0
+--  Two bones, two different manipulation types:
+--    b_spine3   -> ManipulateBoneAngles   X = -60  (head dips down)
+--    b_pedestal -> ManipulateBonePosition X = +70, Z = -45  (knees/body forward-down)
 --
---  b_spine3   target X = -60  (head/upper spine dips forward)
---  b_pedestal target X = +70  (knees / lower body thrusts forward)
+--  Timeline (HB_DURATION = 2 s):
+--    0.0 -> HB_PEAK  : smoothstep rise  0 -> 1
+--    HB_PEAK -> 1.0  : smoothstep fall  1 -> 0
 --
---  Uses a smoothstep curve so the motion accelerates in and
---  decelerates out — no jarring snaps at either end.
+--  Both bones are explicitly reset to zero after the window so no
+--  stale pose persists.
 -- ============================================================
-local HB_DURATION       = 2.0   -- total animation seconds
-local HB_PEAK           = 0.4   -- normalised time of peak pose (40 % in)
+local HB_DURATION   = 2.0   -- total seconds
+local HB_PEAK       = 0.4   -- normalised peak time (40 % in)
 
-local HB_SPINE3_TARGET  = -60   -- X degrees, upper body bows forward
-local HB_PEDESTAL_TARGET =  70  -- X degrees, lower body drives forward
+-- b_spine3 angle target
+local HB_SPINE3_ANG_X    = -60
+
+-- b_pedestal position targets
+local HB_PEDESTAL_POS_X  =  70
+local HB_PEDESTAL_POS_Z  = -45
 
 local HB_SPINE3_BONE    = "b_spine3"
 local HB_PEDESTAL_BONE  = "b_pedestal"
 
--- smoothstep: maps t∈[0,1] → smooth [0,1] with zero derivatives at ends
+-- smoothstep: t in [0,1] -> smooth [0,1], zero velocity at both ends
 local function Smoothstep(t)
     t = math.Clamp(t, 0, 1)
     return t * t * (3 - 2 * t)
@@ -211,7 +220,7 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
 end)
 
 -- ============================================================
---  STOMP LEG DRIVER  (inactive — GekkoStompEnd never set server-
+--  STOMP LEG DRIVER  (inactive -- GekkoStompEnd never set server-
 --  side; kept for future use)
 -- ============================================================
 local function GekkoStompLegs(ent)
@@ -221,22 +230,22 @@ local function GekkoStompLegs(ent)
     local phaseR = t * freq
     local phaseL = t * freq + math.pi
 
-    SetBone(ent, "b_r_thigh",      Angle(math.sin(phaseR)         * amp,        0, 0))
-    SetBone(ent, "b_r_upperleg",   Angle(math.sin(phaseR + 0.4)   * amp * 0.7,  0, 0))
-    SetBone(ent, "b_r_calf",       Angle(math.sin(phaseR + 0.9)   * amp * 0.5,  0, 0))
-    SetBone(ent, "b_r_foot",       Angle(math.sin(phaseR + 1.2)   * -amp * 0.4, 0, 0))
-    SetBone(ent, "b_r_toe",        Angle(math.sin(phaseR + 1.5)   * -amp * 0.3, 0, 0))
+    SetBoneAng(ent, "b_r_thigh",      Angle(math.sin(phaseR)         * amp,        0, 0))
+    SetBoneAng(ent, "b_r_upperleg",   Angle(math.sin(phaseR + 0.4)   * amp * 0.7,  0, 0))
+    SetBoneAng(ent, "b_r_calf",       Angle(math.sin(phaseR + 0.9)   * amp * 0.5,  0, 0))
+    SetBoneAng(ent, "b_r_foot",       Angle(math.sin(phaseR + 1.2)   * -amp * 0.4, 0, 0))
+    SetBoneAng(ent, "b_r_toe",        Angle(math.sin(phaseR + 1.5)   * -amp * 0.3, 0, 0))
 
-    SetBone(ent, "b_l_thigh",      Angle(math.sin(phaseL)         * amp,        0, 0))
-    SetBone(ent, "b_l_upperleg",   Angle(math.sin(phaseL + 0.4)   * amp * 0.7,  0, 0))
-    SetBone(ent, "b_l_calf",       Angle(math.sin(phaseL + 0.9)   * amp * 0.5,  0, 0))
-    SetBone(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
-    SetBone(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
+    SetBoneAng(ent, "b_l_thigh",      Angle(math.sin(phaseL)         * amp,        0, 0))
+    SetBoneAng(ent, "b_l_upperleg",   Angle(math.sin(phaseL + 0.4)   * amp * 0.7,  0, 0))
+    SetBoneAng(ent, "b_l_calf",       Angle(math.sin(phaseL + 0.9)   * amp * 0.5,  0, 0))
+    SetBoneAng(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
+    SetBoneAng(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
 
     local slam = math.abs(math.sin(t * freq * 0.5)) * 12
-    SetBone(ent, "b_pelvis",       Angle(slam, 0, 0))
-    SetBone(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
-    SetBone(ent, "b_l_hippiston1", Angle(math.sin(phaseL) * amp * 0.4, 0, 0))
+    SetBoneAng(ent, "b_pelvis",       Angle(slam, 0, 0))
+    SetBoneAng(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
+    SetBoneAng(ent, "b_l_hippiston1", Angle(math.sin(phaseL) * amp * 0.4, 0, 0))
 end
 
 -- ============================================================
@@ -614,9 +623,8 @@ end
 -- ============================================================
 --  KICK BONE DRIVER  (b_r_upperleg)
 --
---  Reads GekkoKickPulse.  Each new pulse holds the kick pose
---  for KICK_WINDOW seconds, then zeroes the bone.
---  Runs last in Draw() to always win on b_r_upperleg.
+--  Reads GekkoKickPulse. Each new pulse holds the kick pose for
+--  KICK_WINDOW seconds then explicitly zeroes the bone.
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -642,64 +650,67 @@ local function GekkoDoKickBone(ent)
 end
 
 -- ============================================================
---  HEADBUTT BONE DRIVER  (b_spine3 + b_pedestal)
+--  HEADBUTT BONE DRIVER
 --
---  Reads GekkoHeadbuttPulse (set by crush_system 30% chance).
---  On each new pulse: records hb_startTime = CurTime().
+--  b_spine3   -> ManipulateBoneAngles   X = -60
+--  b_pedestal -> ManipulateBonePosition X = +70, Z = -45
 --
---  Per-frame in Draw(), computes normalised time t = elapsed / HB_DURATION.
---  Uses a two-phase smoothstep envelope:
---    Phase A  (t < HB_PEAK)   : rise  0 → 1  via smoothstep
---    Phase B  (t >= HB_PEAK)  : fall  1 → 0  via smoothstep
---  Multiplies the envelope by target angles and writes both bones.
+--  Smoothstep envelope over HB_DURATION (2 s):
+--    rise phase  (0 -> HB_PEAK)      : envelope 0 -> 1
+--    fall phase  (HB_PEAK -> end)    : envelope 1 -> 0
 --
---  When the animation finishes both bones are explicitly zeroed
---  each frame so no stale pose persists.
+--  Both bones are explicitly zeroed/reset after the window.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
-    if ent._hbSpineBone == nil then
-        ent._hbSpineBone    = ent:LookupBone(HB_SPINE3_BONE)   or -1
-        ent._hbPedestalBone = ent:LookupBone(HB_PEDESTAL_BONE) or -1
+    -- lazy init
+    if ent._hbInited == nil then
+        ent._hbInited       = true
+        ent._hbSpineIdx     = ent:LookupBone(HB_SPINE3_BONE)   or -1
+        ent._hbPedestalIdx  = ent:LookupBone(HB_PEDESTAL_BONE) or -1
         ent._hbStartTime    = -9999
         ent._hbPulseLast    = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     end
 
+    -- detect new pulse
     local pulse = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
         ent._hbStartTime = CurTime()
-        print(string.format("[GekkoHeadbutt] animation start  pulse=%d", pulse))
+        print(string.format("[GekkoHeadbutt] pulse=%d", pulse))
     end
 
     local elapsed = CurTime() - ent._hbStartTime
 
+    -- outside window: hard reset both bones
     if elapsed >= HB_DURATION or elapsed < 0 then
-        if ent._hbSpineBone    and ent._hbSpineBone    >= 0 then
-            ent:ManipulateBoneAngles(ent._hbSpineBone,    Angle(0, 0, 0), false)
+        if ent._hbSpineIdx    >= 0 then
+            ent:ManipulateBoneAngles(ent._hbSpineIdx, Angle(0, 0, 0), false)
         end
-        if ent._hbPedestalBone and ent._hbPedestalBone >= 0 then
-            ent:ManipulateBoneAngles(ent._hbPedestalBone, Angle(0, 0, 0), false)
+        if ent._hbPedestalIdx >= 0 then
+            ent:ManipulateBonePosition(ent._hbPedestalIdx, Vector(0, 0, 0), false)
         end
         return
     end
 
+    -- compute smoothstep envelope
     local t = elapsed / HB_DURATION
-
-    local envelope
+    local env
     if t < HB_PEAK then
-        envelope = Smoothstep(t / HB_PEAK)
+        env = Smoothstep(t / HB_PEAK)
     else
-        envelope = Smoothstep(1 - (t - HB_PEAK) / (1 - HB_PEAK))
+        env = Smoothstep(1 - (t - HB_PEAK) / (1 - HB_PEAK))
     end
 
-    local spineAng    = Angle(HB_SPINE3_TARGET   * envelope, 0, 0)
-    local pedestalAng = Angle(HB_PEDESTAL_TARGET * envelope, 0, 0)
-
-    if ent._hbSpineBone    and ent._hbSpineBone    >= 0 then
-        ent:ManipulateBoneAngles(ent._hbSpineBone,    spineAng,    false)
+    -- apply b_spine3 angle
+    if ent._hbSpineIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._hbSpineIdx,
+            Angle(HB_SPINE3_ANG_X * env, 0, 0), false)
     end
-    if ent._hbPedestalBone and ent._hbPedestalBone >= 0 then
-        ent:ManipulateBoneAngles(ent._hbPedestalBone, pedestalAng, false)
+
+    -- apply b_pedestal position
+    if ent._hbPedestalIdx >= 0 then
+        ent:ManipulateBonePosition(ent._hbPedestalIdx,
+            Vector(HB_PEDESTAL_POS_X * env, 0, HB_PEDESTAL_POS_Z * env), false)
     end
 end
 
@@ -716,12 +727,11 @@ end
 -- ============================================================
 --  DRAW
 --
---  Bone driver call order matters — later calls win on shared
---  bones.  Order:
---    1. GekkoUpdateHead     (b_spine4)
---    2. GekkoStompLegs      (leg bones + b_pelvis when stomp active)
---    3. GekkoDoKickBone     (b_r_upperleg)
---    4. GekkoDoHeadbuttBone (b_spine3 + b_pedestal)
+--  Bone driver call order (later wins on shared bones):
+--    1. GekkoUpdateHead     -> b_spine4
+--    2. GekkoStompLegs      -> leg bones, b_pelvis  (inactive)
+--    3. GekkoDoKickBone     -> b_r_upperleg
+--    4. GekkoDoHeadbuttBone -> b_spine3 (angle), b_pedestal (position)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
