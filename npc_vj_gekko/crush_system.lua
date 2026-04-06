@@ -16,14 +16,15 @@
 --         OUTSIDE cone  ->  force SPINKICK (b_Pedestal yaw, any dir)
 --
 --         INSIDE cone   ->  weighted roll:
---                             FK360        20%  (b_pelvis flip, front only)
---                             HEADBUTT     20%
---                             KICK         20%  (only if dist+speed gates pass)
---                             SPINKICK     20%
---                             FOOTBALLKICK 20%  (b_l_hippiston1 forward kick)
+--                             FK360        ~17%  (b_pelvis flip, front only)
+--                             HEADBUTT     ~17%
+--                             KICK         ~17%  (only if dist+speed gates pass)
+--                             SPINKICK     ~17%
+--                             FOOTBALLKICK ~17%  (b_l_hippiston1 forward kick)
+--                             DIAGONALKICK ~17%  (b_l_hippiston1 diagonal sweep)
 --
 --         If Kick is excluded from pool its weight redistributes
---         proportionally among the remaining four.
+--         proportionally among the remaining five.
 --
 --  FK360 HIT TIMING:
 --    Hit 1 (launch) — fires immediately when FK360 is selected.
@@ -38,6 +39,10 @@
 --    Single hit at t=0.55 s (phase 3 start = leg extension).
 --    Hull sweep forward, heavy forward impulse.
 --
+--  DIAGONAL KICK HIT TIMING:
+--    Single hit at t=DK_HIT_T (phase 3 start = sweep begins).
+--    Hull sweep forward+diagonal, forward/side impulse.
+--
 --  LAUNCH BLAST  — sphere damage at jump takeoff.
 --  LAND BLAST    — sphere damage + knockup on landing.
 -- ============================================================
@@ -46,6 +51,7 @@ if SERVER then
     util.AddNetworkString("GekkoCrushHit")
     util.AddNetworkString("GekkoSpinKickPulse")      -- true yaw spin
     util.AddNetworkString("GekkoFootballKickPulse")  -- left-leg football kick
+    util.AddNetworkString("GekkoDiagonalKickPulse")  -- left-leg diagonal sweep kick
 end
 
 -- ============================================================
@@ -88,10 +94,6 @@ end
 
 -- ============================================================
 --  ClaimKickLock
---
---  Sets _gekkoSuppressActivity and PauseAttacks for the given
---  duration so the range-attack system and GekkoUpdateAnimation
---  are both blocked while a kick animation plays.
 -- ============================================================
 local function ClaimKickLock(ent, duration)
     local until_t = CurTime() + duration
@@ -111,24 +113,21 @@ local CRUSH_RADIUS   = 96
 local CRUSH_COOLDOWN = 1.0
 local CONE_DOT       = 0.5   -- ~60 deg half-angle forward cone
 
--- FK360  (b_pelvis Angle(0,val,0) -- forward flip, front-cone only)
--- Hit 1: immediate launch, single target, forward impulse.
--- Hit 2: after ENT.FK360_DURATION (from shared.lua), full sphere, outward impulse + ThumperDust.
--- NOTE: do NOT define a local FK360_DURATION here — use self.FK360_DURATION at call time.
+-- FK360
 local FK360_DAMAGE        = 30
 local FK360_IMPULSE       = 10000
 local FK360_W             = 20
-local FK360_LAND_RADIUS   = 160    -- sphere radius for the landing kick hit
+local FK360_LAND_RADIUS   = 160
 local FK360_LAND_DMG_MAX  = 45
 local FK360_LAND_DMG_MIN  = 5
-local FK360_LAND_IMPULSE  = 13000  -- outward, no directional bias
+local FK360_LAND_IMPULSE  = 13000
 
 -- Headbutt
 local HB_DAMAGE      = 20
 local HB_IMPULSE     = 7000
 local HB_W           = 20
 
--- Simple Kick  (hull sweep forward; dist + speed gated)
+-- Simple Kick
 local KICK_DAMAGE    = 25
 local KICK_IMPULSE   = 9000
 local KICK_W         = 20
@@ -136,26 +135,33 @@ local KICK_MIN_DIST  = 48
 local KICK_SPEED     = 30
 local WALK_CRUSH_WIDTH = 50
 
--- SpinKick  (b_Pedestal yaw; forced out-of-cone, also in-cone at 20%)
+-- SpinKick
 local SK_DAMAGE      = 35
 local SK_IMPULSE     = 11000
 local SK_W           = 20
 
--- Football Kick  (b_l_hippiston1 forward kick; front-cone only)
--- Hit: hull sweep at t=FB_HIT_T (phase 3 start = leg extension).
+-- Football Kick
 local FB_DAMAGE      = 40
 local FB_IMPULSE     = 14000
 local FB_W           = 20
 local FB_DURATION    = 1.3
-local FB_HIT_T       = 0.55   -- seconds until leg extension = damage moment
-local FB_SWEEP_DIST  = 140    -- hull sweep distance
-local FB_SWEEP_HALF  = 55     -- hull half-extents
+local FB_HIT_T       = 0.55
+local FB_SWEEP_DIST  = 140
+local FB_SWEEP_HALF  = 55
+
+-- Diagonal Kick  (b_l_hippiston1 diagonal sweep; front-cone only)
+-- Hit: hull sweep at t=DK_HIT_T (phase 3 start = sweep begins).
+local DK_DAMAGE      = 38
+local DK_IMPULSE     = 13000
+local DK_W           = 20
+local DK_DURATION    = 1.4    -- total animation length
+local DK_HIT_T       = 0.60   -- phase 3 start = leg sweeps through target
+local DK_SWEEP_DIST  = 150    -- hull sweep distance
+local DK_SWEEP_HALF  = 55     -- hull half-extents
 
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
 
-    -- ── Mutual exclusion gate ─────────────────────────────────
-    -- Do NOT fire a kick if a range attack or previous kick is active.
     local now = CurTime()
     if now < (self._gekkoSuppressActivity or 0) then return end
     if self.PauseAttacks then return end
@@ -167,9 +173,6 @@ function ENT:GeckoCrush_Think()
 
     if not self._crushHitTimes then self._crushHitTimes = {} end
 
-    -- ----------------------------------------------------------------
-    --  Gather candidates
-    -- ----------------------------------------------------------------
     local sphereTargets = {}
     for _, ent in ipairs(ents.FindInSphere(pos, CRUSH_RADIUS)) do
         if ent == self then continue end
@@ -177,7 +180,6 @@ function ENT:GeckoCrush_Think()
         table.insert(sphereTargets, ent)
     end
 
-    -- Closest sphere target
     local closestTarget, closestDistSq = nil, math.huge
     for _, ent in ipairs(sphereTargets) do
         local dsq = pos:DistToSqr(ent:GetPos())
@@ -186,19 +188,14 @@ function ENT:GeckoCrush_Think()
 
     if not IsValid(closestTarget) then return end
 
-    -- Cooldown check
     local lastHit = self._crushHitTimes[closestTarget] or 0
     if now - lastHit < CRUSH_COOLDOWN then return end
 
-    -- ----------------------------------------------------------------
-    --  Gate checks
-    -- ----------------------------------------------------------------
     local dist      = math.sqrt(closestDistSq)
     local toTarget  = (closestTarget:GetPos() - self:GetPos()):GetNormalized()
     local dot       = fwd:Dot(toTarget)
     local inCone    = (dot >= CONE_DOT)
 
-    -- Simple Kick eligibility: needs forward hull-sweep target, dist and speed
     local kickTarget = nil
     if inCone and dist > KICK_MIN_DIST and speed >= KICK_SPEED then
         local sweep = pos + fwd * CRUSH_RADIUS
@@ -216,9 +213,6 @@ function ENT:GeckoCrush_Think()
         end
     end
 
-    -- ----------------------------------------------------------------
-    --  Attack selection
-    -- ----------------------------------------------------------------
     local attack
 
     if not inCone then
@@ -229,6 +223,7 @@ function ENT:GeckoCrush_Think()
         pool[#pool+1] = { name = "HEADBUTT",      w = HB_W    }
         pool[#pool+1] = { name = "SPINKICK",      w = SK_W    }
         pool[#pool+1] = { name = "FOOTBALLKICK",  w = FB_W    }
+        pool[#pool+1] = { name = "DIAGONALKICK",  w = DK_W    }
         if kickTarget then
             pool[#pool+1] = { name = "KICK", w = KICK_W }
         end
@@ -245,48 +240,35 @@ function ENT:GeckoCrush_Think()
         attack = attack or pool[#pool].name
     end
 
-    -- ----------------------------------------------------------------
-    --  Execute
-    -- ----------------------------------------------------------------
     self._crushHitTimes[closestTarget] = now
 
     if attack == "FK360" then
-        -- Claim the lock for the full flip + land window
         local fk360Dur = self.FK360_DURATION or 0.9
         ClaimKickLock(self, fk360Dur + 0.3)
 
-        -- ── HIT 1: launch impulse (immediate, single target, forward) ──
         local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * FK360_IMPULSE
         CrushDamageEnt(self, closestTarget, FK360_DAMAGE, impulse)
 
-        -- Signal client bone driver to play the flip.
         local next = (self:GetNWInt("GekkoFrontKick360Pulse", 0) % 254) + 1
         self:SetNWInt("GekkoFrontKick360Pulse", next)
         print(string.format("[GekkoCrush] FK360 HIT1  target=%s  dot=%.2f  pulse=%d",
             closestTarget:GetClass(), dot, next))
 
-        -- ── HIT 2: landing kick (delayed by ENT.FK360_DURATION from shared.lua) ──
-        -- No cone gate: the spin means both front and rear are equally hit.
         local selfRef = self
         timer.Simple(fk360Dur, function()
             if not IsValid(selfRef) then return end
-
             local origin = selfRef:GetPos() + Vector(0, 0, 40)
             for _, ent in ipairs(ents.FindInSphere(origin, FK360_LAND_RADIUS)) do
                 if ent == selfRef then continue end
                 if not ent:IsNPC() and not ent:IsPlayer() then continue end
-
                 local entDist    = ent:GetPos():Distance(origin)
-                local dmg        = BlastDamage(FK360_LAND_DMG_MAX, FK360_LAND_DMG_MIN,
-                                               entDist, FK360_LAND_RADIUS)
+                local dmg        = BlastDamage(FK360_LAND_DMG_MAX, FK360_LAND_DMG_MIN, entDist, FK360_LAND_RADIUS)
                 local dir        = (ent:GetPos() - origin):GetNormalized()
                 local landImpulse = (dir + Vector(0, 0, 0.35)):GetNormalized() * FK360_LAND_IMPULSE
                 CrushDamageEnt(selfRef, ent, dmg, landImpulse)
                 print(string.format("[GekkoCrush] FK360 HIT2  target=%s  dist=%.0f  dmg=%.1f",
                     ent:GetClass(), entDist, dmg))
             end
-
-            -- Pulse GekkoFK360LandDust so cl_init.lua fires ThumperDust.
             local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
             selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
             print(string.format("[GekkoCrush] FK360 LandDust  dur=%.2f  pulse=%d", fk360Dur, dustPulse))
@@ -316,14 +298,10 @@ function ENT:GeckoCrush_Think()
 
     elseif attack == "FOOTBALLKICK" then
         ClaimKickLock(self, FB_DURATION + 0.2)
-
-        -- Signal client bone driver
         local next = (self:GetNWInt("GekkoFootballKickPulse", 0) % 254) + 1
         self:SetNWInt("GekkoFootballKickPulse", next)
         print(string.format("[GekkoCrush] FOOTBALLKICK  target=%s  dot=%.2f  pulse=%d",
             closestTarget:GetClass(), dot, next))
-
-        -- Damage fires at phase 3 start (leg extension moment)
         local selfRef = self
         timer.Simple(FB_HIT_T, function()
             if not IsValid(selfRef) then return end
@@ -332,17 +310,43 @@ function ENT:GeckoCrush_Think()
             local sweep  = origin + fwdRef * FB_SWEEP_DIST
             local half   = Vector(FB_SWEEP_HALF, FB_SWEEP_HALF, FB_SWEEP_HALF)
             local tr = util.TraceHull({
-                start  = origin,
-                endpos = sweep,
-                mins   = -half,
-                maxs   =  half,
-                filter = selfRef,
-                mask   = MASK_SHOT_HULL,
+                start  = origin, endpos = sweep,
+                mins   = -half,  maxs   =  half,
+                filter = selfRef, mask  = MASK_SHOT_HULL,
             })
             if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
                 local fwdImpulse = (fwdRef + Vector(0, 0, 0.25)):GetNormalized() * FB_IMPULSE
                 CrushDamageEnt(selfRef, tr.Entity, FB_DAMAGE, fwdImpulse)
                 print(string.format("[GekkoCrush] FOOTBALLKICK HIT  target=%s  pulse=%d",
+                    tr.Entity:GetClass(), next))
+            end
+        end)
+
+    elseif attack == "DIAGONALKICK" then
+        ClaimKickLock(self, DK_DURATION + 0.2)
+        local next = (self:GetNWInt("GekkoDiagonalKickPulse", 0) % 254) + 1
+        self:SetNWInt("GekkoDiagonalKickPulse", next)
+        print(string.format("[GekkoCrush] DIAGONALKICK  target=%s  dot=%.2f  pulse=%d",
+            closestTarget:GetClass(), dot, next))
+        local selfRef = self
+        timer.Simple(DK_HIT_T, function()
+            if not IsValid(selfRef) then return end
+            local fwdRef  = selfRef:GetForward()
+            local rightRef = selfRef:GetRight()
+            -- Sweep direction: forward + slight left diagonal (matches the bone sweep)
+            local sweepDir = (fwdRef - rightRef * 0.35):GetNormalized()
+            local origin   = selfRef:GetPos() + Vector(0, 0, 60)
+            local sweep    = origin + sweepDir * DK_SWEEP_DIST
+            local half     = Vector(DK_SWEEP_HALF, DK_SWEEP_HALF, DK_SWEEP_HALF)
+            local tr = util.TraceHull({
+                start  = origin, endpos = sweep,
+                mins   = -half,  maxs   =  half,
+                filter = selfRef, mask  = MASK_SHOT_HULL,
+            })
+            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+                local impDir = (sweepDir + Vector(0, 0, 0.3)):GetNormalized()
+                CrushDamageEnt(selfRef, tr.Entity, DK_DAMAGE, impDir * DK_IMPULSE)
+                print(string.format("[GekkoCrush] DIAGONALKICK HIT  target=%s  pulse=%d",
                     tr.Entity:GetClass(), next))
             end
         end)
