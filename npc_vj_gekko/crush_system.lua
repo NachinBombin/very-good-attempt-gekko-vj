@@ -81,6 +81,24 @@ local function BlastDamage(dmgMax, dmgMin, dist, radius)
 end
 
 -- ============================================================
+--  ClaimKickLock
+--
+--  Sets _gekkoSuppressActivity and PauseAttacks for the given
+--  duration so the range-attack system and GekkoUpdateAnimation
+--  are both blocked while a kick animation plays.
+-- ============================================================
+local function ClaimKickLock(ent, duration)
+    local until_t = CurTime() + duration
+    ent._gekkoSuppressActivity = until_t
+    ent.PauseAttacks = true
+    timer.Create("gekko_kick_pauserelease" .. ent:EntIndex(), duration, 1, function()
+        if IsValid(ent) then
+            ent.PauseAttacks = false
+        end
+    end)
+end
+
+-- ============================================================
 --  1. WALK CRUSH
 -- ============================================================
 local CRUSH_RADIUS   = 96
@@ -120,7 +138,13 @@ local SK_W           = 20
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
 
-    local now   = CurTime()
+    -- ── Mutual exclusion gate ─────────────────────────────────
+    -- Do NOT fire a kick if a range attack or previous kick is active.
+    local now = CurTime()
+    if now < (self._gekkoSuppressActivity or 0) then return end
+    if self.PauseAttacks then return end
+    if self.AttackAnimTime and self.AttackAnimTime > now then return end
+
     local pos   = self:GetPos() + Vector(0, 0, 80)
     local fwd   = self:GetForward()
     local speed = self:GetNWFloat("GekkoSpeed", 0)
@@ -210,6 +234,10 @@ function ENT:GeckoCrush_Think()
     self._crushHitTimes[closestTarget] = now
 
     if attack == "FK360" then
+        -- Claim the lock for the full flip + land window
+        local fk360Dur = self.FK360_DURATION or 0.9
+        ClaimKickLock(self, fk360Dur + 0.3)
+
         -- ── HIT 1: launch impulse (immediate, single target, forward) ──
         local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * FK360_IMPULSE
         CrushDamageEnt(self, closestTarget, FK360_DAMAGE, impulse)
@@ -222,8 +250,7 @@ function ENT:GeckoCrush_Think()
 
         -- ── HIT 2: landing kick (delayed by ENT.FK360_DURATION from shared.lua) ──
         -- No cone gate: the spin means both front and rear are equally hit.
-        local selfRef    = self
-        local fk360Dur   = self.FK360_DURATION or 0.9   -- read shared constant
+        local selfRef = self
         timer.Simple(fk360Dur, function()
             if not IsValid(selfRef) then return end
 
@@ -249,6 +276,7 @@ function ENT:GeckoCrush_Think()
         end)
 
     elseif attack == "HEADBUTT" then
+        ClaimKickLock(self, 0.55)
         local impulse = (fwd + Vector(0, 0, 0.3)):GetNormalized() * HB_IMPULSE
         CrushDamageEnt(self, closestTarget, HB_DAMAGE, impulse)
         local next = (self:GetNWInt("GekkoHeadbuttPulse", 0) % 254) + 1
@@ -257,6 +285,7 @@ function ENT:GeckoCrush_Think()
             closestTarget:GetClass(), next))
 
     elseif attack == "KICK" then
+        ClaimKickLock(self, 0.5)
         local target  = kickTarget
         local toT     = (target:GetPos() - self:GetPos()):GetNormalized()
         local dotT    = math.Clamp(fwd:Dot(toT), 0.5, 1.0)
@@ -269,6 +298,7 @@ function ENT:GeckoCrush_Think()
             target:GetClass(), dist, speed, dmg, next))
 
     else -- SPINKICK
+        ClaimKickLock(self, 0.65)
         local dir     = (closestTarget:GetPos() - self:GetPos()):GetNormalized()
         local impulse = (dir + Vector(0, 0, 0.4)):GetNormalized() * SK_IMPULSE
         CrushDamageEnt(self, closestTarget, SK_DAMAGE, impulse)

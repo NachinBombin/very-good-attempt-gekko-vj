@@ -31,6 +31,10 @@ local ANIM_RUN_SPEED     = 20
 local RUN_ENGAGE_DIST    = 2300
 local RUN_DISENGAGE_DIST = 1600
 
+-- Playback rate lerp speed (higher = snappier, lower = smoother)
+-- 8.0 gives ~0.12s ramp, fast enough to feel responsive.
+local RATE_SMOOTH_SPEED  = 8.0
+
 local MG_ROUNDS_MIN = 9
 local MG_ROUNDS_MAX = 36
 local MG_INTERVAL   = 0.15
@@ -125,10 +129,6 @@ local function GetActiveEnemy(ent)
     e = ent:GetEnemy()
     if IsValid(e) then return e end
     return nil
-end
-
-local function SafeResetSequence(ent, seq)
-    if seq and seq ~= -1 then ent:ResetSequence(seq) end
 end
 
 -- Weapon roll
@@ -356,7 +356,20 @@ function ENT:GekkoUpdateAnimation()
         arate     = 1.0
     end
     arate = math.Clamp(arate, 0.5, 3.0)
-    if targetSeq and targetSeq ~= -1 then SafeResetSequence(self, targetSeq) end
+
+    -- ── Sequence change guard ─────────────────────────────────
+    -- Only call ResetSequence when the target sequence actually changes.
+    -- Calling it every tick resets the blend window every frame (hard cut).
+    -- By preserving the current cycle on entry, the engine's bone lerp
+    -- produces a soft transition even without dedicated transition clips.
+    if targetSeq and targetSeq ~= -1 then
+        if self._gekkoCurrentLocoSeq ~= targetSeq then
+            self._gekkoCurrentLocoSeq = targetSeq
+            self:ResetSequence(targetSeq)
+            -- intentionally NO SetCycle(0) here
+        end
+    end
+
     if targetSeq == self.GekkoSeq_Run then
         self.Gekko_LastSeqName = "run"
     elseif targetSeq == self.GekkoSeq_Walk then
@@ -365,7 +378,14 @@ function ENT:GekkoUpdateAnimation()
         self.Gekko_LastSeqName = "idle"
     end
     self.Gekko_LastSeqIdx = targetSeq
-    self:SetPlaybackRate(arate)
+
+    -- ── Playback rate smoother ────────────────────────────────
+    -- Lerp toward the target rate instead of snapping.
+    -- Eliminates the leg-cycle speed stutter when velocity changes suddenly.
+    self._gekkoTargetRate = arate
+    local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
+    self:SetPlaybackRate(smoothed)
+
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
@@ -407,6 +427,9 @@ function ENT:Init()
     self._bloodSplatPulse    = 0
     self._gibCooldownT       = 0
     self._lastWeaponChoice   = ""
+    -- Sequence guard + rate smoother state
+    self._gekkoCurrentLocoSeq = -1
+    self._gekkoTargetRate     = 1.0
     self:SetNWBool("GekkoMGFiring",    false)
     self:SetNWInt("GekkoJumpDust",     0)
     self:SetNWInt("GekkoLandDust",     0)
@@ -428,6 +451,8 @@ function ENT:Init()
         selfRef.GekkoSeq_Walk = (walkSeq and walkSeq ~= -1) and walkSeq or 0
         selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
+        -- Reset sequence guard so first tick picks up correctly
+        selfRef._gekkoCurrentLocoSeq = -1
         selfRef:GeckoCrouch_CacheSeqs()
         selfRef:SetAnimationTranslations()
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
