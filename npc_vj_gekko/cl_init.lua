@@ -882,7 +882,7 @@ end
 --
 --  NW signal: GekkoDiagonalKickPulse
 -- ============================================================
-local function GekkoDoD iagonalKickBone(ent)
+local function GekkoDoDiagonalKickBone(ent)
     if ent._dgkInited == nil then
         ent._dgkInited    = true
         ent._dgkLHipIdx   = ent:LookupBone(DGK_LHIP_BONE) or -1
@@ -961,7 +961,7 @@ end
 --    6. GekkoDoSpinKickBone      -> b_Pedestal yaw, b_pelvis pos Z,
 --                                   b_r_hippiston1 Z, b_r_upperleg X
 --    7. GekkoDoFootballKickBone  -> b_l_hippiston1, b_r_hippiston1
---    8. GekkoDoD iagonalKickBone  -> b_l_hippiston1, b_r_hippiston1  (no conflict with #7; only one fires at a time)
+--    8. GekkoDoDiagonalKickBone  -> b_l_hippiston1, b_r_hippiston1 (no conflict with #7; only one fires at a time)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -992,7 +992,7 @@ function ENT:Draw()
     GekkoDoFK360Bone(self)
     GekkoDoSpinKickBone(self)
     GekkoDoFootballKickBone(self)
-    GekkoDoD iagonalKickBone(self)
+    GekkoDoDiagonalKickBone(self)
 
     self:DrawModel()
 end
