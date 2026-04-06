@@ -721,7 +721,7 @@ end
 
 local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
-    if packed == 0 then return end
+    if packed == 0 then return end  -- no event yet; safe exit before any arithmetic
     local pulse = math.floor(packed / 8)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
