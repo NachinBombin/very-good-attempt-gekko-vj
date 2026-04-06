@@ -57,7 +57,7 @@ local HB_PEDESTAL_BONE  = "b_pedestal"
 --  -- that will break it.  The formula is correct as-is.
 --
 --  Duration is read from ENT.FK360_DURATION (set in shared.lua).
---  DO NOT define a local FK360_DURATION here — use the shared constant.
+--  DO NOT define a local FK360_DURATION here -- use the shared constant.
 --
 --  Server gates this to front-cone targets only.
 --  NW signal: GekkoFrontKick360Pulse
@@ -103,6 +103,40 @@ local SK_ULEG_BONE  = "b_r_upperleg"
 local SK_PEL_DROP   = -50
 local SK_HIP_Z      = -22
 local SK_ULEG_X     = 120
+
+-- ============================================================
+--  FOOTBALL KICK ANIMATION
+--
+--  Left leg coils back then fires forward.  4 phases:
+--
+--    Phase 1  t 0.000-0.300  Preparation
+--               b_l_hippiston1 ramps to Angle(36, 105, 0)
+--               b_r_hippiston1 ramps to Angle(36,   0, 0)  (stabiliser)
+--    Phase 2  t 0.300-0.550  Hold
+--               Both bones locked at peak.
+--    Phase 3  t 0.550-0.700  Extension
+--               b_l_hippiston1 Y sweeps from +105 -> -105  (kick fires)
+--               X and r_hip return to 0 during extension.
+--    Phase 4  t 0.700-1.300  Recovery
+--               All bones lerp smoothly back to rest.
+--
+--  Damage is dealt server-side at t=0.55 s (phase 3 start).
+--  Bones used: b_l_hippiston1, b_r_hippiston1.
+--  No conflict with any other driver.
+--  NW signal: GekkoFootballKickPulse
+-- ============================================================
+local FK_DURATION      = 1.3
+local FK_PHASE_HOLD    = 0.300 / FK_DURATION   -- ~0.231 normalised
+local FK_PHASE_EXTEND  = 0.550 / FK_DURATION   -- ~0.423 normalised
+local FK_PHASE_RECOVER = 0.700 / FK_DURATION   -- ~0.538 normalised
+
+local FK_LHIP_Y_PREP   =  105
+local FK_LHIP_X_PREP   =   36
+local FK_RHIP_X_PREP   =   36
+local FK_LHIP_Y_EXT    = -105   -- extension: Y snaps to opposite side
+
+local FK_LHIP_BONE     = "b_l_hippiston1"
+local FK_RHIP_BONE     = "b_r_hippiston1"
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -905,6 +939,86 @@ local function GekkoDoSpinKickBone(ent)
 end
 
 -- ============================================================
+--  FOOTBALL KICK BONE DRIVER
+--
+--  Phase 1  t 0.000-0.300  ramp b_l_hippiston1 to Angle(36,105,0)
+--                               b_r_hippiston1 to Angle(36,0,0)
+--  Phase 2  t 0.300-0.550  hold (both bones locked at peak)
+--  Phase 3  t 0.550-0.700  extend: b_l_hippiston1 Y sweeps +105->-105
+--                                  X and r_hip return to 0
+--  Phase 4  t 0.700-1.300  recovery: all bones lerp back to rest
+--
+--  No bone conflicts with existing drivers.
+--  NW signal: GekkoFootballKickPulse
+-- ============================================================
+local function GekkoDoFootballKickBone(ent)
+    if ent._fkInited == nil then
+        ent._fkInited    = true
+        ent._fkLHipIdx   = ent:LookupBone(FK_LHIP_BONE) or -1
+        ent._fkRHipIdx   = ent:LookupBone(FK_RHIP_BONE) or -1
+        ent._fkStartTime = -9999
+        ent._fkPulseLast = ent:GetNWInt("GekkoFootballKickPulse", 0)
+    end
+
+    local pulse = ent:GetNWInt("GekkoFootballKickPulse", 0)
+    if pulse ~= ent._fkPulseLast then
+        ent._fkPulseLast = pulse
+        ent._fkStartTime = CurTime()
+        print(string.format("[GekkoFootballKick] pulse=%d", pulse))
+    end
+
+    local elapsed = CurTime() - ent._fkStartTime
+
+    -- Inactive: reset and bail
+    if elapsed >= FK_DURATION or elapsed < 0 then
+        if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(0, 0, 0), false) end
+        if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(0, 0, 0), false) end
+        return
+    end
+
+    local t = elapsed / FK_DURATION
+    local lhipY, lhipX, rhipX
+
+    if t < FK_PHASE_HOLD then
+        -- Phase 1: smoothstep ramp into preparation pose
+        local localT = t / FK_PHASE_HOLD
+        local env    = Smoothstep(localT)
+        lhipY =  FK_LHIP_Y_PREP * env
+        lhipX =  FK_LHIP_X_PREP * env
+        rhipX =  FK_RHIP_X_PREP * env
+
+    elseif t < FK_PHASE_EXTEND then
+        -- Phase 2: hold full preparation pose
+        lhipY =  FK_LHIP_Y_PREP
+        lhipX =  FK_LHIP_X_PREP
+        rhipX =  FK_RHIP_X_PREP
+
+    elseif t < FK_PHASE_RECOVER then
+        -- Phase 3: kick extension -- Y sweeps +105 to -105
+        local localT = (t - FK_PHASE_EXTEND) / (FK_PHASE_RECOVER - FK_PHASE_EXTEND)
+        local env    = Smoothstep(localT)
+        lhipY = FK_LHIP_Y_PREP + (FK_LHIP_Y_EXT - FK_LHIP_Y_PREP) * env
+        lhipX = FK_LHIP_X_PREP * (1 - env)  -- X eases out during extension
+        rhipX = FK_RHIP_X_PREP * (1 - env)
+
+    else
+        -- Phase 4: slow recovery back to rest
+        local localT = (t - FK_PHASE_RECOVER) / (1.0 - FK_PHASE_RECOVER)
+        local env    = Smoothstep(localT)
+        lhipY = FK_LHIP_Y_EXT * (1 - env)
+        lhipX = 0
+        rhipX = 0
+    end
+
+    if ent._fkLHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(lhipX, lhipY, 0), false)
+    end
+    if ent._fkRHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(rhipX, 0, 0), false)
+    end
+end
+
+-- ============================================================
 --  THINK
 -- ============================================================
 function ENT:Think()
@@ -919,16 +1033,18 @@ end
 --  DRAW
 --
 --  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead      -> b_spine4  (head aim, never contested)
---    2. GekkoStompLegs       -> leg bones, b_pelvis angle (inactive during SK)
---    3. GekkoDoKickBone      -> b_r_upperleg
---    4. GekkoDoHeadbuttBone  -> b_spine3 angle, b_pedestal position
---    5. GekkoDoFK360Bone     -> b_pelvis Angle(0,val,0)  [front-cone]
---    6. GekkoDoSpinKickBone  -> b_Pedestal yaw, b_pelvis pos Z (phased),
---                               b_r_hippiston1 Z (phased), b_r_upperleg X (phased)
+--    1. GekkoUpdateHead         -> b_spine4  (head aim, never contested)
+--    2. GekkoStompLegs          -> leg bones, b_pelvis angle, b_l/r_hippiston1
+--                                  (inactive during FK and SK windows)
+--    3. GekkoDoKickBone         -> b_r_upperleg
+--    4. GekkoDoHeadbuttBone     -> b_spine3 angle, b_pedestal position
+--    5. GekkoDoFK360Bone        -> b_pelvis Angle(0,val,0)  [front-cone]
+--    6. GekkoDoSpinKickBone     -> b_Pedestal yaw, b_pelvis pos Z (phased),
+--                                  b_r_hippiston1 Z (phased), b_r_upperleg X (phased)
+--    7. GekkoDoFootballKickBone -> b_l_hippiston1, b_r_hippiston1
+--                                  (no conflict with any other driver)
 --
---  SpinKick runs last so it wins over stomp on b_r_upperleg and
---  b_pelvis position during its active window.
+--  FootballKick runs last on b_l/r_hippiston1 and wins cleanly.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -958,6 +1074,7 @@ function ENT:Draw()
     GekkoDoHeadbuttBone(self)
     GekkoDoFK360Bone(self)
     GekkoDoSpinKickBone(self)
+    GekkoDoFootballKickBone(self)
 
     self:DrawModel()
 end
