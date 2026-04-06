@@ -123,6 +123,122 @@ local DGK_LHIP_BONE = "b_l_hippiston1"
 local DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
+--  HOOK KICK ANIMATION
+--
+--  Front-leg hook kick translated directly from the 7-step
+--  martial arts poster into Gekko bone space.
+--
+--  Total duration: HK_DURATION = 1.0 s
+--  NW signal:      GekkoHookKickPulse  (int, monotone counter)
+--
+--  Bones used  (left leg kicks, right leg supports):
+--    b_pelvis          -- main rotational driver
+--    b_spine4          -- counter-rotation / lean
+--    b_l_hippiston1    -- kick hip piston (lifts + rotates kick side)
+--    b_l_thigh         -- kick thigh (chamber angle)
+--    b_l_calf          -- kick lower leg (folds, extends, hooks)
+--    b_l_foot          -- kick foot (dorsiflex, heel-lead, roll)
+--    b_l_toe           -- toes pulled back
+--    b_l_pinky_toe1    -- toes pulled back
+--    b_r_hippiston1    -- support hip
+--    b_r_thigh         -- support thigh (compression + recovery)
+--    b_r_foot          -- support foot (heel lift, pivot)
+--
+--  Phase boundaries (normalised 0-1 over HK_DURATION):
+--    P1 end  = 0.18   Chamber
+--    P2 end  = 0.32   Pivot
+--    P3 end  = 0.46   Extension
+--    P4 end  = 0.56   Hook / Impact     <-- damage fires server-side at t=0.54
+--    P5 end  = 0.70   Retract
+--    P6 end  = 1.00   Recover
+--
+--  All Angle() values are LOCAL-SPACE deltas from the model rest pose.
+--  Pitch=X  Yaw=Y  Roll=Z
+-- ============================================================
+local HK_DURATION = 1.0
+
+-- Phase boundary (normalised)
+local HK_P1_END   = 0.18   -- end of Chamber
+local HK_P2_END   = 0.32   -- end of Pivot
+local HK_P3_END   = 0.46   -- end of Extension
+local HK_P4_END   = 0.56   -- end of Hook/Impact
+local HK_P5_END   = 0.70   -- end of Retract
+-- Phase 6 (Recover) runs HK_P5_END -> 1.0
+
+-- ---- Pose 2 : Chamber ----
+local HK_P2_PELVIS   = Angle(  8,  12, -6 )   -- shift toward support, open hip
+local HK_P2_SPINE4   = Angle(-10,   5,  0 )   -- torso leans back slightly
+local HK_P2_LHIP     = Angle( 55,  25,  0 )   -- kick hip rises and crosses
+local HK_P2_LTHIGH   = Angle( 60,  20,  0 )   -- thigh nearly horizontal, knee across body
+local HK_P2_LCALF    = Angle(-100,  0,  0 )   -- shin folds tight under thigh
+local HK_P2_LFOOT    = Angle( 30,   0, 10 )   -- ankle dorsiflexed, toes cocked back
+local HK_P2_LTOE     = Angle(-15,   0,  0 )   -- toes pulled back
+local HK_P2_RTHIGH   = Angle(-15,   0,  0 )   -- support knee bends to absorb weight
+local HK_P2_RFOOT    = Angle( -8,   0,  0 )   -- support heel begins to lift
+
+-- ---- Pose 3 : Pivot ----
+-- Chamber is HELD on the kick leg; pelvis rotates, support foot pivots.
+local HK_P3_PELVIS   = Angle(  8,  45, -8 )   -- BIG yaw: the power source
+local HK_P3_SPINE4   = Angle(-12, -15,  0 )   -- counter-rotation against pelvis
+local HK_P3_LHIP     = Angle( 55,  25,  0 )   -- chamber held
+local HK_P3_LTHIGH   = Angle( 60,  20,  0 )   -- chamber held
+local HK_P3_LCALF    = Angle(-100,  0,  0 )   -- chamber held
+local HK_P3_LFOOT    = Angle( 30,   0, 10 )   -- chamber held
+local HK_P3_LTOE     = Angle(-15,   0,  0 )   -- chamber held
+local HK_P3_RTHIGH   = Angle(-20,   0,  0 )   -- support bends more under load
+local HK_P3_RFOOT    = Angle(-15,  20,  0 )   -- heel fully lifted, foot pivots
+
+-- ---- Pose 4 : Extension ----
+local HK_P4_PELVIS   = Angle(  6,  55, -10)   -- rotation continues toward peak
+local HK_P4_SPINE4   = Angle(-14, -18,  0 )   -- leaning further back
+local HK_P4_LHIP     = Angle( 60,  30,  0 )   -- hip holds high, swings across
+local HK_P4_LTHIGH   = Angle( 50,  25,  0 )   -- thigh begins extending
+local HK_P4_LCALF    = Angle(-40,  10,  0 )   -- lower leg LAUNCHES outward
+local HK_P4_LFOOT    = Angle( 15,  -5, 20 )   -- heel starts rotating outward to lead
+local HK_P4_LTOE     = Angle(-10,   0,  0 )   -- toes still back
+local HK_P4_RTHIGH   = Angle(  8,   0,  0 )   -- support knee partial extension
+local HK_P4_RFOOT    = Angle(-15,  20,  0 )   -- support foot pivot holds
+
+-- ---- Pose 5 : Hook / Impact ----
+-- The "C" arc completes.  b_l_calf yaw REVERSES -- this is the hook.
+local HK_P5_PELVIS   = Angle(  5,  65, -12)   -- peak rotation, hip driven through
+local HK_P5_SPINE4   = Angle(-15, -22,  5 )   -- maximum lean / counter
+local HK_P5_LHIP     = Angle( 55,  40,  0 )   -- hip stays high, swept past target
+local HK_P5_LTHIGH   = Angle( 40,  35,  0 )   -- thigh fully across target line
+local HK_P5_LCALF    = Angle(-20, -15,  0 )   -- HOOK: lower leg swings INWARD (yaw reversal)
+local HK_P5_LFOOT    = Angle( 10, -20, 35 )   -- heel maximum outward roll = striking surface
+local HK_P5_LTOE     = Angle(-20,   0,  0 )   -- toes fully back, heel leads
+local HK_P5_RTHIGH   = Angle(  5,   0,  0 )   -- support post, near-straight
+local HK_P5_RFOOT    = Angle(-15,  20,  0 )   -- pivot completed, holding
+
+-- ---- Pose 6 : Retract ----
+local HK_P6_PELVIS   = Angle(  5,  30, -5 )   -- begins unwinding
+local HK_P6_SPINE4   = Angle( -8, -10,  0 )   -- torso comes back up
+local HK_P6_LHIP     = Angle( 50,  15,  0 )   -- hip still high, leg folding back
+local HK_P6_LTHIGH   = Angle( 45,  10,  0 )
+local HK_P6_LCALF    = Angle(-85,   0,  0 )   -- shin tucks quickly back under thigh
+local HK_P6_LFOOT    = Angle( 20,   0,  5 )   -- compact, no floppy extension
+local HK_P6_LTOE     = Angle( -8,   0,  0 )
+local HK_P6_RTHIGH   = Angle( -5,   0,  0 )
+local HK_P6_RFOOT    = Angle( -8,  10,  0 )
+
+-- ---- Pose 7 : Recover (target = all zeros = rest) ----
+local HK_REST        = Angle(  0,   0,  0 )
+
+-- Bone name strings
+local HK_PELVIS_BONE  = "b_pelvis"
+local HK_SPINE4_BONE  = "b_spine4"
+local HK_LHIP_BONE    = "b_l_hippiston1"
+local HK_LTHIGH_BONE  = "b_l_thigh"
+local HK_LCALF_BONE   = "b_l_calf"
+local HK_LFOOT_BONE   = "b_l_foot"
+local HK_LTOE_BONE    = "b_l_toe"
+local HK_LPINKY_BONE  = "b_l_pinky_toe1"
+local HK_RHIP_BONE    = "b_r_hippiston1"
+local HK_RTHIGH_BONE  = "b_r_thigh"
+local HK_RFOOT_BONE   = "b_r_foot"
+
+-- ============================================================
 --  SMOOTHSTEP
 -- ============================================================
 local function Smoothstep(t)
@@ -939,6 +1055,207 @@ local function GekkoDoDiagonalKickBone(ent)
 end
 
 -- ============================================================
+--  HOOK KICK BONE DRIVER
+--
+--  7 phases mapped to the front-leg hook kick poster steps.
+--  Left leg kicks.  Right leg supports.
+--
+--  NW signal: GekkoHookKickPulse  (int, monotone counter)
+--
+--  Phase boundaries (normalised, over HK_DURATION = 1.0 s):
+--    P1  0.00 -> HK_P1_END (0.18)   Stance  -> Chamber
+--    P2  P1   -> HK_P2_END (0.32)   Chamber -> Pivot      (kick-leg chamber HELD)
+--    P3  P2   -> HK_P3_END (0.46)   Pivot   -> Extension
+--    P4  P3   -> HK_P4_END (0.56)   Extend  -> Hook/Impact (easing: linear)
+--    P5  P4   -> HK_P5_END (0.70)   Impact  -> Retract
+--    P6  P5   -> 1.0                Retract -> Recover
+-- ============================================================
+local function GekkoDoHookKickBone(ent)
+    -- One-time bone index cache
+    if ent._hkInited == nil then
+        ent._hkInited      = true
+        ent._hkPelvisIdx   = ent:LookupBone(HK_PELVIS_BONE)  or -1
+        ent._hkSpine4Idx   = ent:LookupBone(HK_SPINE4_BONE)  or -1
+        ent._hkLHipIdx     = ent:LookupBone(HK_LHIP_BONE)    or -1
+        ent._hkLThighIdx   = ent:LookupBone(HK_LTHIGH_BONE)  or -1
+        ent._hkLCalfIdx    = ent:LookupBone(HK_LCALF_BONE)   or -1
+        ent._hkLFootIdx    = ent:LookupBone(HK_LFOOT_BONE)   or -1
+        ent._hkLToeIdx     = ent:LookupBone(HK_LTOE_BONE)    or -1
+        ent._hkLPinkyIdx   = ent:LookupBone(HK_LPINKY_BONE)  or -1
+        ent._hkRHipIdx     = ent:LookupBone(HK_RHIP_BONE)    or -1
+        ent._hkRThighIdx   = ent:LookupBone(HK_RTHIGH_BONE)  or -1
+        ent._hkRFootIdx    = ent:LookupBone(HK_RFOOT_BONE)   or -1
+        ent._hkStartTime   = -9999
+        ent._hkPulseLast   = ent:GetNWInt("GekkoHookKickPulse", 0)
+    end
+
+    -- Pulse detection: new pulse = new kick
+    local pulse = ent:GetNWInt("GekkoHookKickPulse", 0)
+    if pulse ~= ent._hkPulseLast then
+        ent._hkPulseLast = pulse
+        ent._hkStartTime = CurTime()
+        print(string.format("[GekkoHookKick] pulse=%d  duration=%.2fs", pulse, HK_DURATION))
+    end
+
+    local elapsed = CurTime() - ent._hkStartTime
+
+    -- Outside animation window: reset all bones to rest
+    if elapsed >= HK_DURATION or elapsed < 0 then
+        local REST = HK_REST
+        if ent._hkPelvisIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkPelvisIdx,  REST, false) end
+        if ent._hkSpine4Idx  >= 0 then ent:ManipulateBoneAngles(ent._hkSpine4Idx,  REST, false) end
+        if ent._hkLHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hkLHipIdx,    REST, false) end
+        if ent._hkLThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkLThighIdx,  REST, false) end
+        if ent._hkLCalfIdx   >= 0 then ent:ManipulateBoneAngles(ent._hkLCalfIdx,   REST, false) end
+        if ent._hkLFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hkLFootIdx,   REST, false) end
+        if ent._hkLToeIdx    >= 0 then ent:ManipulateBoneAngles(ent._hkLToeIdx,    REST, false) end
+        if ent._hkLPinkyIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkLPinkyIdx,  REST, false) end
+        if ent._hkRHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hkRHipIdx,    REST, false) end
+        if ent._hkRThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkRThighIdx,  REST, false) end
+        if ent._hkRFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hkRFootIdx,   REST, false) end
+        return
+    end
+
+    local t    = elapsed / HK_DURATION
+    local REST = HK_REST
+
+    -- Resolved bone angles for this tick
+    local pelvis, spine4
+    local lhip, lthigh, lcalf, lfoot, ltoe, lpinky
+    local rhip, rthigh, rfoot
+
+    -- ==================================================
+    --  PHASE 1 : Stance -> Chamber
+    --  Ease: smoothstep in
+    -- ==================================================
+    if t < HK_P1_END then
+        local env = Smoothstep(t / HK_P1_END)
+        pelvis  = LerpAngle(REST,        HK_P2_PELVIS,  env)
+        spine4  = LerpAngle(REST,        HK_P2_SPINE4,  env)
+        lhip    = LerpAngle(REST,        HK_P2_LHIP,    env)
+        lthigh  = LerpAngle(REST,        HK_P2_LTHIGH,  env)
+        lcalf   = LerpAngle(REST,        HK_P2_LCALF,   env)
+        lfoot   = LerpAngle(REST,        HK_P2_LFOOT,   env)
+        ltoe    = LerpAngle(REST,        HK_P2_LTOE,    env)
+        lpinky  = LerpAngle(REST,        HK_P2_LTOE,    env)
+        rhip    = LerpAngle(REST,        HK_P2_RTHIGH,  env)  -- rthigh drives rhip here
+        rthigh  = LerpAngle(REST,        HK_P2_RTHIGH,  env)
+        rfoot   = LerpAngle(REST,        HK_P2_RFOOT,   env)
+
+    -- ==================================================
+    --  PHASE 2 : Chamber -> Pivot
+    --  Kick-leg chamber is HELD.  Pelvis + support rotate.
+    --  Ease: ease-in quadratic on pelvis/support, held on kick leg
+    -- ==================================================
+    elseif t < HK_P2_END then
+        local localT = (t - HK_P1_END) / (HK_P2_END - HK_P1_END)
+        local env    = localT * localT   -- ease-in quadratic: momentum building
+        pelvis  = LerpAngle(HK_P2_PELVIS,  HK_P3_PELVIS,  env)
+        spine4  = LerpAngle(HK_P2_SPINE4,  HK_P3_SPINE4,  env)
+        -- kick leg: chamber HELD
+        lhip    = HK_P2_LHIP
+        lthigh  = HK_P2_LTHIGH
+        lcalf   = HK_P2_LCALF
+        lfoot   = HK_P2_LFOOT
+        ltoe    = HK_P2_LTOE
+        lpinky  = HK_P2_LTOE
+        -- support pivots
+        rhip    = LerpAngle(HK_P2_RTHIGH, HK_P3_RTHIGH, env)
+        rthigh  = LerpAngle(HK_P2_RTHIGH, HK_P3_RTHIGH, env)
+        rfoot   = LerpAngle(HK_P2_RFOOT,  HK_P3_RFOOT,  env)
+
+    -- ==================================================
+    --  PHASE 3 : Pivot -> Extension
+    --  Lower leg launches.  Ease: ease-in cubic (max accel)
+    -- ==================================================
+    elseif t < HK_P3_END then
+        local localT = (t - HK_P2_END) / (HK_P3_END - HK_P2_END)
+        local env    = localT * localT * localT  -- ease-in cubic
+        pelvis  = LerpAngle(HK_P3_PELVIS,  HK_P4_PELVIS,  env)
+        spine4  = LerpAngle(HK_P3_SPINE4,  HK_P4_SPINE4,  env)
+        lhip    = LerpAngle(HK_P3_LHIP,    HK_P4_LHIP,    env)
+        lthigh  = LerpAngle(HK_P3_LTHIGH,  HK_P4_LTHIGH,  env)
+        lcalf   = LerpAngle(HK_P3_LCALF,   HK_P4_LCALF,   env)
+        lfoot   = LerpAngle(HK_P3_LFOOT,   HK_P4_LFOOT,   env)
+        ltoe    = LerpAngle(HK_P3_LTOE,    HK_P4_LTOE,    env)
+        lpinky  = LerpAngle(HK_P3_LTOE,    HK_P4_LTOE,    env)
+        rhip    = LerpAngle(HK_P3_RTHIGH,  HK_P4_RTHIGH,  env)
+        rthigh  = LerpAngle(HK_P3_RTHIGH,  HK_P4_RTHIGH,  env)
+        rfoot   = LerpAngle(HK_P3_RFOOT,   HK_P4_RFOOT,   env)
+
+    -- ==================================================
+    --  PHASE 4 : Extension -> Hook / Impact
+    --  The "C" arc. b_l_calf yaw REVERSES here.
+    --  Ease: linear (constant arc, no decel until contact)
+    -- ==================================================
+    elseif t < HK_P4_END then
+        local env = (t - HK_P3_END) / (HK_P4_END - HK_P3_END)  -- linear
+        pelvis  = LerpAngle(HK_P4_PELVIS,  HK_P5_PELVIS,  env)
+        spine4  = LerpAngle(HK_P4_SPINE4,  HK_P5_SPINE4,  env)
+        lhip    = LerpAngle(HK_P4_LHIP,    HK_P5_LHIP,    env)
+        lthigh  = LerpAngle(HK_P4_LTHIGH,  HK_P5_LTHIGH,  env)
+        lcalf   = LerpAngle(HK_P4_LCALF,   HK_P5_LCALF,   env)  -- yaw crosses zero here
+        lfoot   = LerpAngle(HK_P4_LFOOT,   HK_P5_LFOOT,   env)
+        ltoe    = LerpAngle(HK_P4_LTOE,    HK_P5_LTOE,    env)
+        lpinky  = LerpAngle(HK_P4_LTOE,    HK_P5_LTOE,    env)
+        rhip    = LerpAngle(HK_P4_RTHIGH,  HK_P5_RTHIGH,  env)
+        rthigh  = LerpAngle(HK_P4_RTHIGH,  HK_P5_RTHIGH,  env)
+        rfoot   = LerpAngle(HK_P4_RFOOT,   HK_P5_RFOOT,   env)
+
+    -- ==================================================
+    --  PHASE 5 : Impact -> Retract
+    --  Snap back.  Ease: ease-out cubic
+    -- ==================================================
+    elseif t < HK_P5_END then
+        local localT = (t - HK_P4_END) / (HK_P5_END - HK_P4_END)
+        local inv    = 1 - localT
+        local env    = 1 - (inv * inv * inv)  -- ease-out cubic
+        pelvis  = LerpAngle(HK_P5_PELVIS,  HK_P6_PELVIS,  env)
+        spine4  = LerpAngle(HK_P5_SPINE4,  HK_P6_SPINE4,  env)
+        lhip    = LerpAngle(HK_P5_LHIP,    HK_P6_LHIP,    env)
+        lthigh  = LerpAngle(HK_P5_LTHIGH,  HK_P6_LTHIGH,  env)
+        lcalf   = LerpAngle(HK_P5_LCALF,   HK_P6_LCALF,   env)
+        lfoot   = LerpAngle(HK_P5_LFOOT,   HK_P6_LFOOT,   env)
+        ltoe    = LerpAngle(HK_P5_LTOE,    HK_P6_LTOE,    env)
+        lpinky  = LerpAngle(HK_P5_LTOE,    HK_P6_LTOE,    env)
+        rhip    = LerpAngle(HK_P5_RTHIGH,  HK_P6_RTHIGH,  env)
+        rthigh  = LerpAngle(HK_P5_RTHIGH,  HK_P6_RTHIGH,  env)
+        rfoot   = LerpAngle(HK_P5_RFOOT,   HK_P6_RFOOT,   env)
+
+    -- ==================================================
+    --  PHASE 6 : Retract -> Recover (back to rest)
+    --  Ease: smoothstep (natural weight redistribution)
+    -- ==================================================
+    else
+        local env = Smoothstep((t - HK_P5_END) / (1.0 - HK_P5_END))
+        pelvis  = LerpAngle(HK_P6_PELVIS,  REST, env)
+        spine4  = LerpAngle(HK_P6_SPINE4,  REST, env)
+        lhip    = LerpAngle(HK_P6_LHIP,    REST, env)
+        lthigh  = LerpAngle(HK_P6_LTHIGH,  REST, env)
+        lcalf   = LerpAngle(HK_P6_LCALF,   REST, env)
+        lfoot   = LerpAngle(HK_P6_LFOOT,   REST, env)
+        ltoe    = LerpAngle(HK_P6_LTOE,    REST, env)
+        lpinky  = LerpAngle(HK_P6_LTOE,    REST, env)
+        rhip    = LerpAngle(HK_P6_RTHIGH,  REST, env)
+        rthigh  = LerpAngle(HK_P6_RTHIGH,  REST, env)
+        rfoot   = LerpAngle(HK_P6_RFOOT,   REST, env)
+    end
+
+    -- Apply all bones
+    if ent._hkPelvisIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkPelvisIdx,  pelvis, false) end
+    if ent._hkSpine4Idx  >= 0 then ent:ManipulateBoneAngles(ent._hkSpine4Idx,  spine4, false) end
+    if ent._hkLHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hkLHipIdx,    lhip,   false) end
+    if ent._hkLThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkLThighIdx,  lthigh, false) end
+    if ent._hkLCalfIdx   >= 0 then ent:ManipulateBoneAngles(ent._hkLCalfIdx,   lcalf,  false) end
+    if ent._hkLFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hkLFootIdx,   lfoot,  false) end
+    if ent._hkLToeIdx    >= 0 then ent:ManipulateBoneAngles(ent._hkLToeIdx,    ltoe,   false) end
+    if ent._hkLPinkyIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkLPinkyIdx,  lpinky, false) end
+    if ent._hkRHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hkRHipIdx,    rhip,   false) end
+    if ent._hkRThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hkRThighIdx,  rthigh, false) end
+    if ent._hkRFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hkRFootIdx,   rfoot,  false) end
+end
+
+-- ============================================================
 --  THINK
 -- ============================================================
 function ENT:Think()
@@ -953,15 +1270,21 @@ end
 --  DRAW
 --
 --  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead          -> b_spine4
---    2. GekkoStompLegs           -> leg bones, b_pelvis angle, b_l/r_hippiston1
---    3. GekkoDoKickBone          -> b_r_upperleg
---    4. GekkoDoHeadbuttBone      -> b_spine3 angle, b_pedestal position
---    5. GekkoDoFK360Bone         -> b_pelvis Angle(0,val,0)
---    6. GekkoDoSpinKickBone      -> b_Pedestal yaw, b_pelvis pos Z,
---                                   b_r_hippiston1 Z, b_r_upperleg X
---    7. GekkoDoFootballKickBone  -> b_l_hippiston1, b_r_hippiston1
---    8. GekkoDoDiagonalKickBone  -> b_l_hippiston1, b_r_hippiston1 (no conflict with #7; only one fires at a time)
+--    1. GekkoUpdateHead           -> b_spine4
+--    2. GekkoStompLegs            -> leg bones, b_pelvis angle, b_l/r_hippiston1
+--    3. GekkoDoKickBone           -> b_r_upperleg
+--    4. GekkoDoHeadbuttBone       -> b_spine3 angle, b_pedestal position
+--    5. GekkoDoFK360Bone          -> b_pelvis Angle(0,val,0)
+--    6. GekkoDoSpinKickBone       -> b_Pedestal yaw, b_pelvis pos Z,
+--                                    b_r_hippiston1 Z, b_r_upperleg X
+--    7. GekkoDoFootballKickBone   -> b_l_hippiston1, b_r_hippiston1
+--    8. GekkoDoDiagonalKickBone   -> b_l_hippiston1, b_r_hippiston1
+--                                    (no conflict with #7; only one fires at a time)
+--    9. GekkoDoHookKickBone       -> b_pelvis, b_spine4, b_l_hippiston1,
+--                                    b_l_thigh, b_l_calf, b_l_foot, b_l_toe,
+--                                    b_l_pinky_toe1, b_r_hippiston1, b_r_thigh,
+--                                    b_r_foot
+--                                    (only one melee fires at a time; no conflict)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -993,6 +1316,7 @@ function ENT:Draw()
     GekkoDoSpinKickBone(self)
     GekkoDoFootballKickBone(self)
     GekkoDoDiagonalKickBone(self)
+    GekkoDoHookKickBone(self)
 
     self:DrawModel()
 end
