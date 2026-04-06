@@ -32,7 +32,6 @@ local RUN_ENGAGE_DIST    = 2300
 local RUN_DISENGAGE_DIST = 1600
 
 -- Playback rate lerp speed (higher = snappier, lower = smoother)
--- 8.0 gives ~0.12s ramp, fast enough to feel responsive.
 local RATE_SMOOTH_SPEED  = 8.0
 
 local MG_ROUNDS_MIN = 9
@@ -46,9 +45,9 @@ local MG_SPREAD_MAX = 2.0
 local WWEIGHT_MG             = 50
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
-local WWEIGHT_GRENADE        = 11
-local WWEIGHT_TOPMISSILE     = 12
-local WWEIGHT_TRACKMISSILE   = 2
+local WWEIGHT_GRENADE        = 10
+local WWEIGHT_TOPMISSILE     = 10
+local WWEIGHT_TRACKMISSILE   = 5
 
 -- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
@@ -79,25 +78,11 @@ local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }
 
 -- ============================================================
 --  Grenade sprite trail constants
---
---  util.SpriteTrail is the correct GMod-native API for sprite
---  trails. It is called server-side, automatically networked
---  to every client, and uses a material path that is
---  guaranteed to exist in every GMod installation.
---
---  Signature:
---    util.SpriteTrail( entity, attachIndex, color, additive,
---                      startSize, endSize, lifetime,
---                      textureRes, material )
---
---  attachIndex 0  = entity origin.
---  additive    false = normal alpha-blend (smoky look).
---  textureRes  = 1 / startSize  (standard convention).
 -- ============================================================
-local GL_TRAIL_MATERIAL  = "trails/smoke"   -- NO .vmt extension
-local GL_TRAIL_LIFETIME  = 1.8              -- seconds of arc kept visible
-local GL_TRAIL_STARTSIZE = 8               -- ribbon width at the grenade head
-local GL_TRAIL_ENDSIZE   = 1               -- ribbon width at the tail tip
+local GL_TRAIL_MATERIAL  = "trails/smoke"
+local GL_TRAIL_LIFETIME  = 1.8
+local GL_TRAIL_STARTSIZE = 8
+local GL_TRAIL_ENDSIZE   = 1
 local GL_TRAIL_COLOR     = Color(235, 235, 235, 200)
 
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
@@ -211,31 +196,17 @@ local function GLVaporAtAttachment(ent, shotIndex)
     end
 end
 
--- ============================================================
---  AttachGrenadeTrail
---
---  Uses util.SpriteTrail instead of env_spritetrail because:
---    1. env_spritetrail requires a valid .vmt on disk;
---       "trails/smoke.vmt" is NOT a standard GMod material
---       and silently produces an invisible trail.
---    2. util.SpriteTrail calls the engine's C++ SpriteTrail
---       factory directly, accepts the bare material name
---       (no extension), and networks the trail to all
---       clients automatically with no extra work.
---    3. The trail lifetime is tied to the entity — when the
---       grenade is removed the trail fades on its own.
--- ============================================================
 local function AttachGrenadeTrail(gren)
     if not IsValid(gren) then return end
     util.SpriteTrail(
         gren,
-        0,                              -- attachment 0 = entity origin
+        0,
         GL_TRAIL_COLOR,
-        false,                          -- additive = false → translucent/smoky
+        false,
         GL_TRAIL_STARTSIZE,
         GL_TRAIL_ENDSIZE,
         GL_TRAIL_LIFETIME,
-        1 / GL_TRAIL_STARTSIZE,         -- textureRes (standard convention)
+        1 / GL_TRAIL_STARTSIZE,
         GL_TRAIL_MATERIAL
     )
 end
@@ -357,16 +328,11 @@ function ENT:GekkoUpdateAnimation()
     end
     arate = math.Clamp(arate, 0.5, 3.0)
 
-    -- ── Sequence change guard ─────────────────────────────────
-    -- Only call ResetSequence when the target sequence actually changes.
-    -- Calling it every tick resets the blend window every frame (hard cut).
-    -- By preserving the current cycle on entry, the engine's bone lerp
-    -- produces a soft transition even without dedicated transition clips.
+    -- Sequence change guard: only ResetSequence on actual change
     if targetSeq and targetSeq ~= -1 then
         if self._gekkoCurrentLocoSeq ~= targetSeq then
             self._gekkoCurrentLocoSeq = targetSeq
             self:ResetSequence(targetSeq)
-            -- intentionally NO SetCycle(0) here
         end
     end
 
@@ -379,9 +345,7 @@ function ENT:GekkoUpdateAnimation()
     end
     self.Gekko_LastSeqIdx = targetSeq
 
-    -- ── Playback rate smoother ────────────────────────────────
-    -- Lerp toward the target rate instead of snapping.
-    -- Eliminates the leg-cycle speed stutter when velocity changes suddenly.
+    -- Playback rate smoother: lerp instead of snap
     self._gekkoTargetRate = arate
     local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
     self:SetPlaybackRate(smoothed)
@@ -427,14 +391,15 @@ function ENT:Init()
     self._bloodSplatPulse    = 0
     self._gibCooldownT       = 0
     self._lastWeaponChoice   = ""
+    self._glSparkCounter     = 0
     -- Sequence guard + rate smoother state
     self._gekkoCurrentLocoSeq = -1
     self._gekkoTargetRate     = 1.0
-    self:SetNWBool("GekkoMGFiring",    false)
-    self:SetNWInt("GekkoJumpDust",     0)
-    self:SetNWInt("GekkoLandDust",     0)
-    self:SetNWInt("GekkoFK360LandDust", 0)  -- ThumperDust on FK360 landing kick
-    self:SetNWInt("GekkoBloodSplat",   0)
+    self:SetNWBool("GekkoMGFiring",     false)
+    self:SetNWInt("GekkoJumpDust",      0)
+    self:SetNWInt("GekkoLandDust",      0)
+    self:SetNWInt("GekkoFK360LandDust", 0)
+    self:SetNWInt("GekkoBloodSplat",    0)
     SafeInitVJTables(self)
     self:GekkoJump_Init()
     self:GeckoCrouch_Init()
@@ -451,7 +416,6 @@ function ENT:Init()
         selfRef.GekkoSeq_Walk = (walkSeq and walkSeq ~= -1) and walkSeq or 0
         selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
-        -- Reset sequence guard so first tick picks up correctly
         selfRef._gekkoCurrentLocoSeq = -1
         selfRef:GeckoCrouch_CacheSeqs()
         selfRef:SetAnimationTranslations()
@@ -540,6 +504,243 @@ function ENT:OnThink()
         else
             dist = -1 src = "none"
         end
-        self.Gekko_NextDebugT = CurTime() + 2.0
+        print(string.format(
+            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s",
+            self:GetNWFloat("GekkoSpeed", 0), tostring(self.Gekko_LastSeqName),
+            tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
+            JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
+            tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
+            tostring(self._lastWeaponChoice)
+        ))
+        self.Gekko_NextDebugT = CurTime() + 1
     end
+end
+
+-- ============================================================
+--  Weapon: MG burst
+-- ============================================================
+local function FireMGBurst(ent, enemy)
+    if ent._mgBurstActive then return false end
+    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
+    local mgRounds = math.random(MG_ROUNDS_MIN, MG_ROUNDS_MAX)
+    local mgSpread = math.Rand(MG_SPREAD_MIN, MG_SPREAD_MAX)
+    ent._mgBurstActive = true
+    ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
+    ent:SetNWBool("GekkoMGFiring", true)
+    for i = 0, mgRounds - 1 do
+        timer.Simple(i * MG_INTERVAL, function()
+            if not IsValid(ent) then return end
+            local curEnemy = GetActiveEnemy(ent)
+            local curAim   = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0,0,40)) or aimPos
+            local src
+            local mgAtt = ent:GetAttachment(ATT_MACHINEGUN)
+            if mgAtt then
+                src = mgAtt.Pos
+            else
+                local boneIdx = ent.GekkoLGunBone
+                if boneIdx and boneIdx >= 0 then
+                    local m = ent:GetBoneMatrix(boneIdx)
+                    if m then src = m:GetTranslation() + m:GetForward() * 28 end
+                end
+                src = src or (ent:GetPos() + Vector(0, 0, 200))
+            end
+            local dir = (curAim - src):GetNormalized()
+            ent:FireBullets({
+                Attacker=ent, Damage=MG_DAMAGE, Dir=dir, Src=src,
+                AmmoType="AR2", TracerName="Tracer", Num=1,
+                Spread=Vector(mgSpread, mgSpread, mgSpread),
+            })
+            local eff = EffectData()
+            eff:SetOrigin(src) eff:SetNormal(dir)
+            util.Effect("MuzzleFlash", eff)
+            ent:EmitSound("weapons/ar2/fire1.wav", 75, math.random(95, 115))
+            if i == mgRounds - 1 then
+                ent._mgBurstActive = false
+                ent:SetNWBool("GekkoMGFiring", false)
+            end
+        end)
+    end
+    return true
+end
+
+-- ============================================================
+--  Weapon: single accurate missile
+-- ============================================================
+local function FireMissile(ent, enemy)
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    ent._missileCount = (ent._missileCount or 0) + 1
+    SpawnRocket(ent, (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, nil)
+    return true
+end
+
+-- ============================================================
+--  Weapon: double inaccurate salvo
+-- ============================================================
+local function FireDoubleSalvo(ent, enemy)
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    ent._missileCount = (ent._missileCount or 0) + 1
+    SpawnRocket(ent, (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, SalvoSpread())
+    timer.Simple(SALVO_DELAY, function()
+        if not IsValid(ent) then return end
+        local curEnemy = GetActiveEnemy(ent)
+        local curAim   = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0,0,40)) or aimPos
+        ent._missileCount = (ent._missileCount or 0) + 1
+        SpawnRocket(ent, (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R, curAim, SalvoSpread())
+    end)
+    return true
+end
+
+-- ============================================================
+--  Weapon: grenade launcher
+-- ============================================================
+local function FireGrenadeLauncher(ent, enemy)
+    local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
+    local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
+    local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
+    local forward = ent:GetForward()
+    local right   = ent:GetRight()
+    local origin  = ent:GetPos() + Vector(0, 0, GL_LAUNCH_Z)
+    ent._glSparkCounter = 0
+    ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
+    timer.Simple(GL_FIDGET_LEAD, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(GL_SOUND_FIRE, 80, 100, 1)
+    end)
+    timer.Simple(GL_FIDGET_LEAD + (count - 1) * GL_INTERVAL + 0.1, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
+    end)
+    for i = 0, count - 1 do
+        local shotNumber = i + 1
+        timer.Simple(GL_FIDGET_LEAD + i * GL_INTERVAL, function()
+            if not IsValid(ent) then return end
+            GLSparkAtAttachment(ent, shotNumber)
+            GLVaporAtAttachment(ent, shotNumber)
+            local scatter   = forward * math.Rand(300, 700)
+                            + right   * ((math.random() - 0.5) * 2 * GL_SPREAD_Y)
+            local spawnPos  = origin + scatter * 0.05
+            local launchDir = scatter:GetNormalized()
+            launchDir.z     = launchDir.z + typeParams.loft
+            launchDir:Normalize()
+            local gren = ents.Create(grenadeType)
+            if IsValid(gren) then
+                gren:SetPos(spawnPos)
+                gren:SetAngles(launchDir:Angle())
+                gren:SetOwner(ent)
+                gren:Spawn()
+                gren:Activate()
+                local phys = gren:GetPhysicsObject()
+                if IsValid(phys) then
+                    phys:SetVelocity(launchDir * typeParams.speed)
+                    phys:SetAngleVelocity(Vector(
+                        math.Rand(-200,200), math.Rand(-200,200), math.Rand(-200,200)
+                    ))
+                end
+                AttachGrenadeTrail(gren)
+            end
+        end)
+    end
+    return true
+end
+
+-- ============================================================
+--  Weapon: top-attack terror missile  (5th)
+-- ============================================================
+local function FireTopMissile(ent, enemy)
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist < MISSILE_MIN_DIST then
+        print(string.format("[GekkoTM] Too close (%.0f) -- re-rolling", dist))
+        local alt = RerollNotMissile(ent, enemy, "TOPMISSILE")
+        if alt == "MG" then return FireMGBurst(ent, enemy)
+        elseif alt == "MISSILE" then return FireMissile(ent, enemy)
+        elseif alt == "SALVO" then return FireDoubleSalvo(ent, enemy)
+        else return FireGrenadeLauncher(ent, enemy) end
+    end
+    sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
+    local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
+    local missile = ents.Create("sent_npc_topmissile")
+    if not IsValid(missile) then
+        print("[GekkoTM] ERROR: create failed")
+        return FireGrenadeLauncher(ent, enemy)
+    end
+    missile.Owner  = ent
+    missile.Target = enemy:GetPos() + Vector(0, 0, 40)
+    missile:SetPos(launchPos)
+    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
+    missile:Spawn()
+    missile:Activate()
+    print(string.format("[GekkoTM] Launched | dist=%.0f", dist))
+    return true
+end
+
+-- ============================================================
+--  Weapon: active-track then ballistic missile  (6th)
+-- ============================================================
+local function FireTrackMissile(ent, enemy)
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist < MISSILE_MIN_DIST then
+        print(string.format("[GekkoTRK] Too close (%.0f) -- re-rolling", dist))
+        local alt = RerollNotMissile(ent, enemy, "TRACKMISSILE")
+        if alt == "MG" then return FireMGBurst(ent, enemy)
+        elseif alt == "MISSILE" then return FireMissile(ent, enemy)
+        elseif alt == "SALVO" then return FireDoubleSalvo(ent, enemy)
+        elseif alt == "TOPMISSILE" then return FireTopMissile(ent, enemy)
+        else return FireGrenadeLauncher(ent, enemy) end
+    end
+    SendSonarLock(enemy)
+    sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
+    local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
+    local missile = ents.Create("sent_npc_trackmissile")
+    if not IsValid(missile) then
+        print("[GekkoTRK] ERROR: create failed")
+        return FireGrenadeLauncher(ent, enemy)
+    end
+    missile.Owner    = ent
+    missile.Target   = enemy:GetPos() + Vector(0, 0, 40)
+    missile.TrackEnt = enemy
+    missile:SetPos(launchPos)
+    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
+    missile:Spawn()
+    missile:Activate()
+    print(string.format("[GekkoTRK] Launched | dist=%.0f  tracking=%s", dist, tostring(enemy)))
+    return true
+end
+
+-- ============================================================
+--  Range attack entry point
+-- ============================================================
+function ENT:OnRangeAttackExecute(status, enemy, projectile)
+    if status ~= "Init" then return end
+    if not IsValid(enemy) then return true end
+    local choice = RollWeapon()
+    self._lastWeaponChoice = choice
+    print("[GekkoWpn] Roll -> " .. choice)
+    if     choice == "MG"           then return FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"      then return FireMissile(self, enemy)
+    elseif choice == "SALVO"        then return FireDoubleSalvo(self, enemy)
+    elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
+    elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
+    else                                 return FireGrenadeLauncher(self, enemy)
+    end
+end
+
+-- ============================================================
+--  Death
+-- ============================================================
+function ENT:OnDeath(dmginfo, hitgroup, status)
+    if status ~= "Finish" then return end
+    local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
+    local pos      = self:GetPos()
+    self:SetGekkoJumpState(self.JUMP_NONE)
+    self:SetMoveType(MOVETYPE_STEP)
+    self:SetNWBool("GekkoMGFiring", false)
+    timer.Simple(0.8, function()
+        if not IsValid(self) then return end
+        ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
+        self:EmitSound(VJ.PICK({
+            "weapons/mgs3/explosion_01.wav",
+            "weapons/mgs3/explosion_02.wav"
+        }), 511, 100, 2)
+        util.BlastDamage(self, attacker, pos, 512, 256)
+    end)
 end
