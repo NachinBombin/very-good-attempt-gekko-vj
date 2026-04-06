@@ -3,6 +3,7 @@
 --  + 5th weapon : Top-Attack Terror Missile   (sent_npc_topmissile)
 --  + 6th weapon : Active-Track Ballistic Missile (sent_npc_trackmissile)
 --  + Sonar Lock : net message to targeted player on TRACKMISSILE fire
+--  + Melee #5   : Football Kick  (football_kick_system.lua)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -11,12 +12,14 @@ include("crush_system.lua")
 include("jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
+include("football_kick_system.lua")
 
 -- ============================================================
 --  Net message pool
 -- ============================================================
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")  -- ThumperDust on FK360 landing kick
+util.AddNetworkString("GekkoFootballKickPulse")  -- signals client bone driver
 
 -- ============================================================
 --  Constants
@@ -395,14 +398,16 @@ function ENT:Init()
     -- Sequence guard + rate smoother state
     self._gekkoCurrentLocoSeq = -1
     self._gekkoTargetRate     = 1.0
-    self:SetNWBool("GekkoMGFiring",     false)
-    self:SetNWInt("GekkoJumpDust",      0)
-    self:SetNWInt("GekkoLandDust",      0)
-    self:SetNWInt("GekkoFK360LandDust", 0)
-    self:SetNWInt("GekkoBloodSplat",    0)
+    self:SetNWBool("GekkoMGFiring",          false)
+    self:SetNWInt("GekkoJumpDust",           0)
+    self:SetNWInt("GekkoLandDust",           0)
+    self:SetNWInt("GekkoFK360LandDust",      0)
+    self:SetNWInt("GekkoBloodSplat",         0)
+    self:SetNWInt("GekkoFootballKickPulse",  0)  -- football kick client signal
     SafeInitVJTables(self)
     self:GekkoJump_Init()
     self:GeckoCrouch_Init()
+    self:GekkoFK_Init()  -- football kick state
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -492,6 +497,7 @@ function ENT:OnThink()
     if self:GekkoJump_ShouldJump() then self:GekkoJump_Execute() end
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
+    self:GekkoFK_Think()  -- football kick tick
     if CurTime() > self.Gekko_NextDebugT then
         local enemy = GetActiveEnemy(self)
         local dist, src
