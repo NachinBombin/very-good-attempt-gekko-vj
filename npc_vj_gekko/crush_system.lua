@@ -24,6 +24,14 @@
 --         If Kick is excluded from pool its weight redistributes
 --         proportionally among the remaining three.
 --
+--  FK360 HIT TIMING:
+--    Hit 1 (launch) — fires immediately when FK360 is selected.
+--                     forward impulse, single target.
+--    Hit 2 (landing kick) — fires after FK360_DURATION seconds.
+--                     full 360-degree sphere (no cone — spin means
+--                     rear targets hit equally), outward impulse,
+--                     pulses GekkoFK360LandDust for ThumperDust.
+--
 --  LAUNCH BLAST  — sphere damage at jump takeoff.
 --  LAND BLAST    — sphere damage + knockup on landing.
 -- ============================================================
@@ -79,9 +87,16 @@ local CRUSH_COOLDOWN = 1.0
 local CONE_DOT       = 0.5   -- ~60 deg half-angle forward cone
 
 -- FK360  (b_pelvis Angle(0,val,0) -- forward flip, front-cone only)
-local FK360_DAMAGE   = 30
-local FK360_IMPULSE  = 10000
-local FK360_W        = 30
+-- Hit 1: immediate launch, single target, forward impulse.
+-- Hit 2: after FK360_DURATION, full sphere (no cone), outward impulse + ThumperDust.
+local FK360_DAMAGE        = 30
+local FK360_IMPULSE       = 10000
+local FK360_W             = 30
+local FK360_DURATION      = 1.4    -- must match cl_init.lua FK360_DURATION
+local FK360_LAND_RADIUS   = 160    -- sphere radius for the landing kick hit
+local FK360_LAND_DMG_MAX  = 45
+local FK360_LAND_DMG_MIN  = 5
+local FK360_LAND_IMPULSE  = 13000  -- outward, no directional bias
 
 -- Headbutt
 local HB_DAMAGE      = 20
@@ -197,12 +212,44 @@ function ENT:GeckoCrush_Think()
     self._crushHitTimes[closestTarget] = now
 
     if attack == "FK360" then
+        -- ── HIT 1: launch impulse (immediate, single target, forward) ──
         local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * FK360_IMPULSE
         CrushDamageEnt(self, closestTarget, FK360_DAMAGE, impulse)
+
+        -- Signal client bone driver to play the flip.
         local next = (self:GetNWInt("GekkoFrontKick360Pulse", 0) % 254) + 1
         self:SetNWInt("GekkoFrontKick360Pulse", next)
-        print(string.format("[GekkoCrush] FK360  target=%s  dot=%.2f  pulse=%d",
+        print(string.format("[GekkoCrush] FK360 HIT1  target=%s  dot=%.2f  pulse=%d",
             closestTarget:GetClass(), dot, next))
+
+        -- ── HIT 2: landing kick (delayed, full 360° sphere, ThumperDust) ──
+        -- No cone gate: the spin means both front and rear are equally hit.
+        local selfRef = self
+        timer.Simple(FK360_DURATION, function()
+            if not IsValid(selfRef) then return end
+
+            local origin = selfRef:GetPos() + Vector(0, 0, 40)
+            for _, ent in ipairs(ents.FindInSphere(origin, FK360_LAND_RADIUS)) do
+                if ent == selfRef then continue end
+                if not ent:IsNPC() and not ent:IsPlayer() then continue end
+
+                local entDist    = ent:GetPos():Distance(origin)
+                local dmg        = BlastDamage(FK360_LAND_DMG_MAX, FK360_LAND_DMG_MIN,
+                                               entDist, FK360_LAND_RADIUS)
+                -- Outward impulse from Gekko center — no directional bias,
+                -- equal in all directions to match the 360° spin.
+                local dir        = (ent:GetPos() - origin):GetNormalized()
+                local landImpulse = (dir + Vector(0, 0, 0.35)):GetNormalized() * FK360_LAND_IMPULSE
+                CrushDamageEnt(selfRef, ent, dmg, landImpulse)
+                print(string.format("[GekkoCrush] FK360 HIT2  target=%s  dist=%.0f  dmg=%.1f",
+                    ent:GetClass(), entDist, dmg))
+            end
+
+            -- Pulse GekkoFK360LandDust so cl_init.lua fires ThumperDust.
+            local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
+            selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
+            print(string.format("[GekkoCrush] FK360 LandDust pulse=%d", dustPulse))
+        end)
 
     elseif attack == "HEADBUTT" then
         local impulse = (fwd + Vector(0, 0, 0.3)):GetNormalized() * HB_IMPULSE
