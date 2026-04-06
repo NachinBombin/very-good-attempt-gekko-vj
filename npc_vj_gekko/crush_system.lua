@@ -16,13 +16,14 @@
 --         OUTSIDE cone  ->  force SPINKICK (b_Pedestal yaw, any dir)
 --
 --         INSIDE cone   ->  weighted roll:
---                             FK360    30%  (b_pelvis flip, front only)
---                             HEADBUTT 25%
---                             KICK     25%  (only if dist+speed gates pass)
---                             SPINKICK 20%
+--                             FK360        20%  (b_pelvis flip, front only)
+--                             HEADBUTT     20%
+--                             KICK         20%  (only if dist+speed gates pass)
+--                             SPINKICK     20%
+--                             FOOTBALLKICK 20%  (b_l_hippiston1 forward kick)
 --
 --         If Kick is excluded from pool its weight redistributes
---         proportionally among the remaining three.
+--         proportionally among the remaining four.
 --
 --  FK360 HIT TIMING:
 --    Hit 1 (launch) — fires immediately when FK360 is selected.
@@ -33,13 +34,18 @@
 --                     rear targets hit equally), outward impulse,
 --                     pulses GekkoFK360LandDust for ThumperDust.
 --
+--  FOOTBALL KICK HIT TIMING:
+--    Single hit at t=0.55 s (phase 3 start = leg extension).
+--    Hull sweep forward, heavy forward impulse.
+--
 --  LAUNCH BLAST  — sphere damage at jump takeoff.
 --  LAND BLAST    — sphere damage + knockup on landing.
 -- ============================================================
 
 if SERVER then
     util.AddNetworkString("GekkoCrushHit")
-    util.AddNetworkString("GekkoSpinKickPulse")  -- new signal for true yaw spin
+    util.AddNetworkString("GekkoSpinKickPulse")      -- true yaw spin
+    util.AddNetworkString("GekkoFootballKickPulse")  -- left-leg football kick
 end
 
 -- ============================================================
@@ -111,7 +117,7 @@ local CONE_DOT       = 0.5   -- ~60 deg half-angle forward cone
 -- NOTE: do NOT define a local FK360_DURATION here — use self.FK360_DURATION at call time.
 local FK360_DAMAGE        = 30
 local FK360_IMPULSE       = 10000
-local FK360_W             = 30
+local FK360_W             = 20
 local FK360_LAND_RADIUS   = 160    -- sphere radius for the landing kick hit
 local FK360_LAND_DMG_MAX  = 45
 local FK360_LAND_DMG_MIN  = 5
@@ -120,12 +126,12 @@ local FK360_LAND_IMPULSE  = 13000  -- outward, no directional bias
 -- Headbutt
 local HB_DAMAGE      = 20
 local HB_IMPULSE     = 7000
-local HB_W           = 25
+local HB_W           = 20
 
 -- Simple Kick  (hull sweep forward; dist + speed gated)
 local KICK_DAMAGE    = 25
 local KICK_IMPULSE   = 9000
-local KICK_W         = 25
+local KICK_W         = 20
 local KICK_MIN_DIST  = 48
 local KICK_SPEED     = 30
 local WALK_CRUSH_WIDTH = 50
@@ -134,6 +140,16 @@ local WALK_CRUSH_WIDTH = 50
 local SK_DAMAGE      = 35
 local SK_IMPULSE     = 11000
 local SK_W           = 20
+
+-- Football Kick  (b_l_hippiston1 forward kick; front-cone only)
+-- Hit: hull sweep at t=FB_HIT_T (phase 3 start = leg extension).
+local FB_DAMAGE      = 40
+local FB_IMPULSE     = 14000
+local FB_W           = 20
+local FB_DURATION    = 1.3
+local FB_HIT_T       = 0.55   -- seconds until leg extension = damage moment
+local FB_SWEEP_DIST  = 140    -- hull sweep distance
+local FB_SWEEP_HALF  = 55     -- hull half-extents
 
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
@@ -209,11 +225,12 @@ function ENT:GeckoCrush_Think()
         attack = "SPINKICK"
     else
         local pool = {}
-        pool[#pool+1] = { name = "FK360",    w = FK360_W }
-        pool[#pool+1] = { name = "HEADBUTT", w = HB_W    }
-        pool[#pool+1] = { name = "SPINKICK", w = SK_W    }
+        pool[#pool+1] = { name = "FK360",        w = FK360_W }
+        pool[#pool+1] = { name = "HEADBUTT",      w = HB_W    }
+        pool[#pool+1] = { name = "SPINKICK",      w = SK_W    }
+        pool[#pool+1] = { name = "FOOTBALLKICK",  w = FB_W    }
         if kickTarget then
-            pool[#pool+1] = { name = "KICK", w = KICK_W  }
+            pool[#pool+1] = { name = "KICK", w = KICK_W }
         end
 
         local total = 0
@@ -296,6 +313,39 @@ function ENT:GeckoCrush_Think()
         self:SetNWInt("GekkoKickPulse", next)
         print(string.format("[GekkoCrush] KICK  target=%s  dist=%.0f  spd=%.0f  dmg=%.1f  pulse=%d",
             target:GetClass(), dist, speed, dmg, next))
+
+    elseif attack == "FOOTBALLKICK" then
+        ClaimKickLock(self, FB_DURATION + 0.2)
+
+        -- Signal client bone driver
+        local next = (self:GetNWInt("GekkoFootballKickPulse", 0) % 254) + 1
+        self:SetNWInt("GekkoFootballKickPulse", next)
+        print(string.format("[GekkoCrush] FOOTBALLKICK  target=%s  dot=%.2f  pulse=%d",
+            closestTarget:GetClass(), dot, next))
+
+        -- Damage fires at phase 3 start (leg extension moment)
+        local selfRef = self
+        timer.Simple(FB_HIT_T, function()
+            if not IsValid(selfRef) then return end
+            local fwdRef = selfRef:GetForward()
+            local origin = selfRef:GetPos() + Vector(0, 0, 60)
+            local sweep  = origin + fwdRef * FB_SWEEP_DIST
+            local half   = Vector(FB_SWEEP_HALF, FB_SWEEP_HALF, FB_SWEEP_HALF)
+            local tr = util.TraceHull({
+                start  = origin,
+                endpos = sweep,
+                mins   = -half,
+                maxs   =  half,
+                filter = selfRef,
+                mask   = MASK_SHOT_HULL,
+            })
+            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+                local fwdImpulse = (fwdRef + Vector(0, 0, 0.25)):GetNormalized() * FB_IMPULSE
+                CrushDamageEnt(selfRef, tr.Entity, FB_DAMAGE, fwdImpulse)
+                print(string.format("[GekkoCrush] FOOTBALLKICK HIT  target=%s  pulse=%d",
+                    tr.Entity:GetClass(), next))
+            end
+        end)
 
     else -- SPINKICK
         ClaimKickLock(self, 0.65)
