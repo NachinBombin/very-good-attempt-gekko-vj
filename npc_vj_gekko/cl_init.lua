@@ -56,10 +56,12 @@ local HB_PEDESTAL_BONE  = "b_pedestal"
 --  skeleton.  Do NOT change Angle(0, val, 0) to Angle(val,0,0)
 --  -- that will break it.  The formula is correct as-is.
 --
+--  Duration is read from ENT.FK360_DURATION (set in shared.lua).
+--  DO NOT define a local FK360_DURATION here — use the shared constant.
+--
 --  Server gates this to front-cone targets only.
 --  NW signal: GekkoFrontKick360Pulse
 -- ============================================================
-local FK360_DURATION = 1.4
 local FK360_RAMP     = 0.15
 local FK360_BONE     = "b_pelvis"
 
@@ -766,10 +768,15 @@ end
 --  flip on this model due to b_pelvis local axis orientation.
 --  DO NOT change to Angle(val,0,0) -- that breaks the effect.
 --
+--  Duration read from ENT.FK360_DURATION (shared.lua).
+--  DO NOT define a local FK360_DURATION here.
 --  Server gates this to front-cone targets (dot >= 0.5).
 --  NW signal: GekkoFrontKick360Pulse
 -- ============================================================
 local function GekkoDoFK360Bone(ent)
+    -- Read the shared duration once per entity, cache it.
+    local fk360Duration = ent.FK360_DURATION or 0.9
+
     if ent._fk360Inited == nil then
         ent._fk360Inited    = true
         ent._fk360BoneIdx   = ent:LookupBone(FK360_BONE) or -1
@@ -783,7 +790,7 @@ local function GekkoDoFK360Bone(ent)
         ent._fk360PulseLast = pulse
         ent._fk360StartTime = CurTime()
         ent._fk360Yaw       = 0
-        print(string.format("[GekkoFK360] pulse=%d", pulse))
+        print(string.format("[GekkoFK360] pulse=%d  duration=%.2f", pulse, fk360Duration))
     end
 
     local boneIdx = ent._fk360BoneIdx
@@ -791,15 +798,15 @@ local function GekkoDoFK360Bone(ent)
 
     local elapsed = CurTime() - ent._fk360StartTime
 
-    if elapsed >= FK360_DURATION or elapsed < 0 then
+    if elapsed >= fk360Duration or elapsed < 0 then
         ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
         ent._fk360Yaw = 0
         return
     end
 
-    local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * FK360_DURATION)
+    local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * fk360Duration)
 
-    local t = elapsed / FK360_DURATION
+    local t = elapsed / fk360Duration
     local env
     if t < FK360_RAMP then
         env = Smoothstep(t / FK360_RAMP)
@@ -820,23 +827,6 @@ end
 
 -- ============================================================
 --  SPINKICK BONE DRIVER  (b_Pedestal yaw + phased support bones)
---
---  Total duration: SK_DURATION = 0.9 s
---  6 equal units of 0.15 s, described by normalised t (0-1):
---
---    Unit 1  t 0.000-0.167   neutral    (no crouch, spin winds up)
---    Unit 2  t 0.167-0.333   neutral    (still no crouch)
---    Unit 3  t 0.333-0.500   CROUCH IN  (pelvis/hip ramp 0->peak smoothstep)
---    Unit 4  t 0.500-0.667   HOLD       (full crouch, b_r_upperleg reaches peak)
---    Unit 5  t 0.667-0.833   RISE       (leg stays at peak, crouch begins easing out)
---    Unit 6  t 0.833-1.000   RISE CONT  (leg still at peak, crouch finishes easing out)
---
---  b_r_upperleg:   held at SK_ULEG_X from t=0.500 through t=1.000
---  b_pelvis pos Z: rises from peak back to 0 over t=0.667 to t=1.000
---  b_r_hippiston1: same envelope as b_pelvis
---
---  b_Pedestal (yaw): 420 degrees total, full duration, short ramp.
---  NW signal: GekkoSpinKickPulse
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
@@ -869,7 +859,6 @@ local function GekkoDoSpinKickBone(ent)
         return
     end
 
-    -- ---- yaw spin (full duration, short ramp, 420 degrees total) ----
     local peakSpeed = SK_YAW_TOTAL / ((1.0 - SK_RAMP) * SK_DURATION)
     local t = elapsed / SK_DURATION
     local yawEnv
@@ -889,19 +878,6 @@ local function GekkoDoSpinKickBone(ent)
         ent:ManipulateBoneAngles(ent._skPedIdx, Angle(0, ent._skYaw, 0), false)
     end
 
-    -- ---- support bones: phased envelopes ----
-    --
-    --  CROUCH (b_pelvis pos Z, b_r_hippiston1 angle Z):
-    --    t < CROUCH_START (0.333):   0
-    --    t 0.333-0.500 (unit 3):     smoothstep ramp 0->1
-    --    t 0.500-0.667 (unit 4):     held at 1
-    --    t 0.667-1.000 (units 5-6):  smoothstep ease 1->0
-    --
-    --  LEG (b_r_upperleg angle X):
-    --    t < HOLD_START (0.500):     0
-    --    t >= 0.500:                 held at 1 through end of animation
-
-    -- Crouch envelope
     local crouchEnv
     if t < SK_PHASE_CROUCH_START then
         crouchEnv = 0
@@ -915,7 +891,6 @@ local function GekkoDoSpinKickBone(ent)
         crouchEnv = Smoothstep(1 - localT)
     end
 
-    -- Leg envelope: held from unit 4 (t >= 0.500) to end
     local legEnv = (t >= SK_PHASE_HOLD_START) and 1 or 0
 
     if ent._skPelIdx  >= 0 then

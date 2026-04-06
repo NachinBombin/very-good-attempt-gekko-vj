@@ -27,7 +27,8 @@
 --  FK360 HIT TIMING:
 --    Hit 1 (launch) — fires immediately when FK360 is selected.
 --                     forward impulse, single target.
---    Hit 2 (landing kick) — fires after FK360_DURATION seconds.
+--    Hit 2 (landing kick) — fires after ENT.FK360_DURATION seconds
+--                     (read from shared.lua — do NOT hardcode here).
 --                     full 360-degree sphere (no cone — spin means
 --                     rear targets hit equally), outward impulse,
 --                     pulses GekkoFK360LandDust for ThumperDust.
@@ -88,11 +89,11 @@ local CONE_DOT       = 0.5   -- ~60 deg half-angle forward cone
 
 -- FK360  (b_pelvis Angle(0,val,0) -- forward flip, front-cone only)
 -- Hit 1: immediate launch, single target, forward impulse.
--- Hit 2: after FK360_DURATION, full sphere (no cone), outward impulse + ThumperDust.
+-- Hit 2: after ENT.FK360_DURATION (from shared.lua), full sphere, outward impulse + ThumperDust.
+-- NOTE: do NOT define a local FK360_DURATION here — use self.FK360_DURATION at call time.
 local FK360_DAMAGE        = 30
 local FK360_IMPULSE       = 10000
 local FK360_W             = 30
-local FK360_DURATION      = 1.4    -- must match cl_init.lua FK360_DURATION
 local FK360_LAND_RADIUS   = 160    -- sphere radius for the landing kick hit
 local FK360_LAND_DMG_MAX  = 45
 local FK360_LAND_DMG_MIN  = 5
@@ -181,11 +182,8 @@ function ENT:GeckoCrush_Think()
     local attack
 
     if not inCone then
-        -- Target outside forward cone: only SpinKick makes spatial sense.
         attack = "SPINKICK"
     else
-        -- Build weighted pool for in-cone roll.
-        -- Kick is included only if it passed dist + speed + hull gates.
         local pool = {}
         pool[#pool+1] = { name = "FK360",    w = FK360_W }
         pool[#pool+1] = { name = "HEADBUTT", w = HB_W    }
@@ -222,10 +220,11 @@ function ENT:GeckoCrush_Think()
         print(string.format("[GekkoCrush] FK360 HIT1  target=%s  dot=%.2f  pulse=%d",
             closestTarget:GetClass(), dot, next))
 
-        -- ── HIT 2: landing kick (delayed, full 360° sphere, ThumperDust) ──
+        -- ── HIT 2: landing kick (delayed by ENT.FK360_DURATION from shared.lua) ──
         -- No cone gate: the spin means both front and rear are equally hit.
-        local selfRef = self
-        timer.Simple(FK360_DURATION, function()
+        local selfRef    = self
+        local fk360Dur   = self.FK360_DURATION or 0.9   -- read shared constant
+        timer.Simple(fk360Dur, function()
             if not IsValid(selfRef) then return end
 
             local origin = selfRef:GetPos() + Vector(0, 0, 40)
@@ -236,8 +235,6 @@ function ENT:GeckoCrush_Think()
                 local entDist    = ent:GetPos():Distance(origin)
                 local dmg        = BlastDamage(FK360_LAND_DMG_MAX, FK360_LAND_DMG_MIN,
                                                entDist, FK360_LAND_RADIUS)
-                -- Outward impulse from Gekko center — no directional bias,
-                -- equal in all directions to match the 360° spin.
                 local dir        = (ent:GetPos() - origin):GetNormalized()
                 local landImpulse = (dir + Vector(0, 0, 0.35)):GetNormalized() * FK360_LAND_IMPULSE
                 CrushDamageEnt(selfRef, ent, dmg, landImpulse)
@@ -248,7 +245,7 @@ function ENT:GeckoCrush_Think()
             -- Pulse GekkoFK360LandDust so cl_init.lua fires ThumperDust.
             local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
             selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
-            print(string.format("[GekkoCrush] FK360 LandDust pulse=%d", dustPulse))
+            print(string.format("[GekkoCrush] FK360 LandDust  dur=%.2f  pulse=%d", fk360Dur, dustPulse))
         end)
 
     elseif attack == "HEADBUTT" then

@@ -69,6 +69,15 @@ function ENT:SetupDataTables()
 end
 
 -- ============================================================
+--  FK360 shared timing constant
+--
+--  Both cl_init.lua (bone driver) and crush_system.lua
+--  (timer.Simple for Hit 2 + dust pulse) read ENT.FK360_DURATION.
+--  Change it here ONLY — never in either of those files.
+-- ============================================================
+ENT.FK360_DURATION = 0.9
+
+-- ============================================================
 --  Attack config
 -- ============================================================
 ENT.HasMeleeAttack = false
