@@ -179,8 +179,8 @@ local AK_SPINE_BONE = "b_spine3"
 --    Bracing bone  : b_l_hippiston1
 --
 --  Selection: strict toggle (_jkMirror flips on every new pulse).
---  Starts false (left), becomes true (right) on the 1st pulse,
---  then alternates: left -> right -> left -> right ...
+--  Starts TRUE so: pulse1=left, pulse2=right, pulse3=left...
+--  (_jkPulseLast seeded to -1 so pulse 1 is never swallowed.)
 --
 --  Pedestal motion is identical for both variants.
 --  Mutex key : "JUMPKICK"  |  NW signal : GekkoJumpKickPulse
@@ -1237,7 +1237,14 @@ end
 --  JUMP KICK BONE DRIVER  (mutex: JUMPKICK)
 --
 --  _jkMirror toggles on every new pulse (strict alternation).
---  Starts false so: pulse1=right, pulse2=left, pulse3=right...
+--  Seeded TRUE + _jkPulseLast=-1 so:
+--    pulse 1 → flips to false → LEFT leg
+--    pulse 2 → flips to true  → RIGHT leg
+--    pulse 3 → flips to false → LEFT leg  ...
+--
+--  Seeding _jkPulseLast to -1 (not the current NW value)
+--  guarantees pulse 1 is never silently swallowed even when
+--  the NW int already has a non-zero value at spawn time.
 -- ============================================================
 local function GekkoDoJumpKickBone(ent)
     if ent._jkInited == nil then
@@ -1246,9 +1253,9 @@ local function GekkoDoJumpKickBone(ent)
         ent._jkRHipIdx   = ent:LookupBone(JK_RHIP_BONE) or -1
         ent._jkPedIdx    = ent:LookupBone(JK_PED_BONE)  or -1
         ent._jkStartTime = -9999
-        ent._jkPulseLast = ent:GetNWInt("GekkoJumpKickPulse", 0)
+        ent._jkPulseLast = -1     -- seed to -1: pulse 1 is never swallowed
         ent._jkWasActive = false
-        ent._jkMirror    = false   -- false = left leg, true = right leg
+        ent._jkMirror    = true   -- seed true: flip on pulse 1 → false → LEFT
     end
 
     local pulse = ent:GetNWInt("GekkoJumpKickPulse", 0)
