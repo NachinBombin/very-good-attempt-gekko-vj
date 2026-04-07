@@ -16,6 +16,11 @@ if SERVER then
     util.AddNetworkString("GekkoSideHookKickPulse")
     util.AddNetworkString("GekkoAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
+    -- NW bool that tells the client which visual variant to play:
+    --   false  → original  (left leg kicks)
+    --   true   → mirrored  (right leg kicks)
+    -- The damage logic is identical for both.
+    util.AddNetworkString("GekkoJumpKickMirrored")
 end
 
 -- ============================================================
@@ -131,14 +136,17 @@ local ATTACKS = {
     --
     --  Forward-cone only (inCone required).
     --  The Gekko gets a brief forward velocity impulse at hit_t.
+    --
+    --  Visual variant (left vs right leg) is chosen by FireJumpKick
+    --  via GekkoJumpKickMirrored NW bool.  Damage is identical.
     -- ============================================================
     JUMPKICK = {
         w = 20, nwkey = "GekkoJumpKickPulse",
         duration = 1.6,
-        hit_t    = 0.55,          -- sweep fires mid-phase-2
+        hit_t    = 0.55,
         dmg = 42, impulse = 14500,
         sweep_dist = 160, sweep_half = 55, sweep_z = 75,
-        hop_force = 240,          -- forward units/s applied at kick moment
+        hop_force = 240,
     },
 }
 
@@ -316,23 +324,28 @@ end
 -- ============================================================
 --  JUMPKICK fire helper
 --
---  Phase timing (seconds):
---    0.00 - 0.30   Phase 1: preparation  (bone anim only, no damage)
---    0.30 - 0.55   Phase 2: kick + forward hop  (hit_t = 0.55)
---    0.55 - 1.00   Phase 3: falling
---    1.00 - 1.60   Phase 4: recovery
---
---  Server responsibility:
---    - ClaimKickLock for full duration
---    - Apply a brief forward velocity at hit_t (the hop)
---    - Forward hull sweep at hit_t for damage
+--  Coin-flip selects which visual variant plays:
+--    mirrored = false  → left leg  (original GekkoDoJumpKickBone)
+--    mirrored = true   → right leg (GekkoDoJumpKickBoneMirror)
+--  Both variants share the same GekkoJumpKickPulse increment,
+--  so the single client driver that matches the NW bool fires.
+--  Damage / sweep logic is completely unchanged.
 -- ============================================================
 local function FireJumpKick(self, closestTarget, fwd, dot)
     local A    = ATTACKS.JUMPKICK
     ClaimKickLock(self, A.duration + 0.2)
+
+    -- ── Visual variant randomisation ──────────────────────────
+    local mirrored = (math.random(2) == 2)
+    self:SetNWBool("GekkoJumpKickMirrored", mirrored)
+    -- ─────────────────────────────────────────────────────────
+
     local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
     self:SetNWInt(A.nwkey, next)
-    print(string.format("[GekkoCrush] JUMPKICK  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
+    print(string.format(
+        "[GekkoCrush] JUMPKICK  target=%s  dot=%.2f  pulse=%d  mirrored=%s",
+        closestTarget:GetClass(), dot, next, tostring(mirrored)
+    ))
     local selfRef = self
     timer.Simple(A.hit_t, function()
         if not IsValid(selfRef) then return end
