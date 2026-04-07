@@ -22,6 +22,41 @@ local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
 -- ============================================================
+--  HIP BONE MUTEX
+--
+--  ent._hipDriver  = string key of whichever driver currently
+--                    owns b_l_hippiston1 / b_r_hippiston1,
+--                    or nil when free.
+--
+--  Rules:
+--    ClaimHips(ent, key)  -> returns true if lock acquired
+--                            (or already owned by same key).
+--    ReleaseHips(ent, key)-> clears lock only if caller owns it.
+--    HasHips(ent, key)    -> true while caller owns it.
+--
+--  Every driver that touches the hip bones MUST call
+--  ClaimHips at animation start and ReleaseHips on finish.
+--  If ClaimHips returns false, the driver must skip that frame.
+-- ============================================================
+local function ClaimHips(ent, key)
+    if ent._hipDriver == nil or ent._hipDriver == key then
+        ent._hipDriver = key
+        return true
+    end
+    return false
+end
+
+local function ReleaseHips(ent, key)
+    if ent._hipDriver == key then
+        ent._hipDriver = nil
+    end
+end
+
+local function HasHips(ent, key)
+    return ent._hipDriver == key
+end
+
+-- ============================================================
 --  KICK ANIMATION  (b_r_upperleg)
 -- ============================================================
 local KICK_WINDOW     = 1.0
@@ -48,36 +83,13 @@ local FK360_BONE     = "b_pelvis"
 
 -- ============================================================
 --  SPINKICK ANIMATION
---
---  5 phases over SK_DURATION seconds.
---  Phase boundaries are NORMALIZED (0..1) fractions of the total
---  duration, so changing SK_DURATION does not alter the shape.
---
---    Phase 1  t 0.000 - SK_P1_END   Pre-spin: Pedestal yaw ramps up.
---               No crouch yet, leg stays neutral.
---    Phase 2  t SK_P1_END - SK_P2_END  Crouch + kick extension:
---               b_pelvis Z drops, b_r_hippiston1 Z tucks,
---               b_r_upperleg X extends. Yaw at full speed.
---    Phase 3  t SK_P2_END - SK_P3_END  Hold:
---               All bones locked at peak values.
---    Phase 4  t SK_P3_END - SK_P4_END  Slow decel (double-smoothstep):
---               Yaw spin starts dying, pelvis begins rising,
---               leg/hip start returning. Very lazy easing.
---    Phase 5  t SK_P4_END - 1.000  Near-freeze return (triple-smoothstep):
---               Final drift back to rest.
---
---  Bones used: b_Pedestal (yaw), b_pelvis (pos Z),
---              b_r_hippiston1 (ang Z), b_r_upperleg (ang X).
---  NW signal: GekkoSpinKickPulse
 -- ============================================================
-local SK_DURATION = 1.4   -- change freely; phase shape is preserved
+local SK_DURATION = 1.4
 
--- Normalized phase boundaries (fractions of 1.0, duration-independent)
 local SK_P1_END   = 0.330
 local SK_P2_END   = 0.500
 local SK_P3_END   = 0.670
 local SK_P4_END   = 0.800
--- Phase 5 ends at 1.0
 
 local SK_RAMP       = 0.10
 local SK_YAW_TOTAL  = 420
@@ -105,25 +117,6 @@ local FK_RHIP_BONE     = "b_r_hippiston1"
 
 -- ============================================================
 --  DIAGONAL KICK ANIMATION
---
---  5 phases over DGK_DURATION = 1.4 s:
---
---    Phase 1  t 0.000-0.300  Leg raise & posture
---               b_l_hippiston1 ramps to Angle(-8, -22, 43)
---               b_r_hippiston1 ramps to Angle(-32,  0,  0)
---    Phase 2  t 0.300-0.600  Hold
---               Both bones locked at peak.
---    Phase 3  t 0.600-0.750  Diagonal sweep (HIT fires at t=0.60)
---               b_l_hippiston1 -> Angle(-8, -22, 105)
---               b_r_hippiston1 -> Angle(109,  0,   0)
---    Phase 4  t 0.750-0.950  End posture / inertia
---               b_l_hippiston1 -> Angle(136,   0,  12)
---               b_r_hippiston1 -> Angle(0,      0,   0)
---    Phase 5  t 0.950-1.400  Recovery
---               All bones lerp back to rest.
---
---  Bones used: b_l_hippiston1, b_r_hippiston1. No conflict with other drivers.
---  NW signal: GekkoDiagonalKickPulse
 -- ============================================================
 local DGK_DURATION       = 1.4
 
@@ -144,38 +137,6 @@ local DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
---
---  Bones: b_l_hippiston1  (leg lift, outward tilt, hook-back yaw)
---         b_pelvis         (hip-line rotation — the main power driver)
---         b_spine3         (torso counterbalance lean)
---
---  Timeline (t = 0..1 over HH_DURATION_CL = 1.6 s):
---
---    Phase 1  t 0.000-0.200  Chamber
---               b_l_hippiston1 pitch ramps to HH_HIP_CHAMBER_PITCH (leg lifts)
---               b_pelvis       yaw ramps toward HH_PELVIS_YAW * 0.5 (hip begins opening)
---
---    Phase 2  t 0.200-0.440  Pivot — chamber held, pelvis finishes rotating
---               b_l_hippiston1 held at chamber pitch
---               b_pelvis       yaw reaches full HH_PELVIS_YAW
---               b_spine3       lean builds toward HH_SPINE_LEAN
---
---    Phase 3  t 0.440-0.650  Extension — heel shoots outward
---               b_l_hippiston1 roll opens to HH_HIP_EXTEND_ROLL (outward tilt)
---               b_pelvis       pitch adds HH_PELVIS_PITCH (slight fwd lean, stabilises)
---               b_spine3       lean at peak HH_SPINE_LEAN
---               (server HIT 1 at 0.62 s)
---
---    Phase 4  t 0.650-0.800  Hook-back — leg sweeps inward on C-path
---               b_l_hippiston1 yaw moves to HH_HIP_HOOK_YAW (crosses body)
---               b_pelvis       yaw begins unwinding back toward 0
---               (server HIT 2 at 0.82 s)
---
---    Phase 5  t 0.800-1.000  Recover
---               All three bones lerp back to Angle(0,0,0) / Vector(0,0,0)
---
---  HH_HIP_CHAMBER_PITCH = 55  (safe range; avoids sideways pop)
---  NW signal: GekkoHeelHookPulse
 -- ============================================================
 local HH_DURATION_CL        = 1.6
 local HH_HIP_CHAMBER_PITCH  =  55
@@ -191,32 +152,6 @@ local HH_SPINE_BONE  = "b_spine3"
 
 -- ============================================================
 --  SIDE HOOK KICK ANIMATION
---
---  5 phases over SHK_DURATION = 1.5 s (t = 0..1):
---
---    Phase 1  t 0.000-0.200  Wide stance — both legs open sideways
---               b_l_hippiston1 -> Angle(-74, 0, 0)
---               b_r_hippiston1 -> Angle(-102, 0, 0)
---
---    Phase 2  t 0.200-0.400  Positioning — weight shifts to left, right cocks
---               b_l_hippiston1 -> Angle(-25, 0, 0)
---               b_r_hippiston1 -> Angle(-8,  0, -64)
---
---    Phase 3  t 0.400-0.550  Coil — right leg winds for snap
---               b_r_hippiston1 -> Angle(0, 0, -120)   (Z pulls back hard)
---               b_l_hippiston1 held at Phase 2 value
---
---    Phase 4  t 0.550-0.700  SNAP + fall — violent release, leg drops
---               b_r_hippiston1 -> Angle(-12, 0, -25)
---               b_l_hippiston1 -> Angle(-57, 0, -29)
---               (server HIT fires at SHK_HIT_T = 0.55 s)
---
---    Phase 5  t 0.700-1.000  Recovery — all bones lerp to rest
---               b_l_hippiston1 -> Angle(0,0,0)
---               b_r_hippiston1 -> Angle(0,0,0)
---
---  Bones used: b_l_hippiston1, b_r_hippiston1.
---  NW signal: GekkoSideHookKickPulse
 -- ============================================================
 local SHK_DURATION = 1.5
 
@@ -224,16 +159,14 @@ local SHK_P1_END = 0.200 / SHK_DURATION
 local SHK_P2_END = 0.400 / SHK_DURATION
 local SHK_P3_END = 0.550 / SHK_DURATION
 local SHK_P4_END = 0.700 / SHK_DURATION
--- Phase 5 ends at 1.0
 
--- Pose targets (exactly as specified)
 local SHK_P1_LHIP = Angle(-74,  0,   0)
 local SHK_P1_RHIP = Angle(-102, 0,   0)
 
 local SHK_P2_LHIP = Angle(-25,  0,   0)
 local SHK_P2_RHIP = Angle( -8,  0, -64)
 
-local SHK_P3_LHIP = Angle(-25,  0,   0)   -- held from P2
+local SHK_P3_LHIP = Angle(-25,  0,   0)
 local SHK_P3_RHIP = Angle(  0,  0, -120)
 
 local SHK_P4_LHIP = Angle(-57,  0, -29)
@@ -395,32 +328,6 @@ hook.Add("HUDPaint", "GekkoSonarEffect", function()
         DrawRingOutline(cx, cy, radius, SONAR_RING_THICKNESS, SONAR_R, SONAR_G, SONAR_B, finalAlpha)
     end
 end)
-
--- ============================================================
---  STOMP LEG DRIVER
--- ============================================================
-local function GekkoStompLegs(ent)
-    local t      = CurTime()
-    local freq   = 14
-    local amp    = 55
-    local phaseR = t * freq
-    local phaseL = t * freq + math.pi
-
-    SetBoneAng(ent, "b_r_thigh",      Angle(math.sin(phaseR)         * amp,        0, 0))
-    SetBoneAng(ent, "b_r_upperleg",   Angle(math.sin(phaseR + 0.4)   * amp * 0.7,  0, 0))
-    SetBoneAng(ent, "b_r_calf",       Angle(math.sin(phaseR + 0.9)   * amp * 0.5,  0, 0))
-    SetBoneAng(ent, "b_r_foot",       Angle(math.sin(phaseR + 1.2)   * -amp * 0.4, 0, 0))
-    SetBoneAng(ent, "b_r_toe",        Angle(math.sin(phaseR + 1.5)   * -amp * 0.3, 0, 0))
-    SetBoneAng(ent, "b_l_thigh",      Angle(math.sin(phaseL)         * amp,        0, 0))
-    SetBoneAng(ent, "b_l_upperleg",   Angle(math.sin(phaseL + 0.4)   * amp * 0.7,  0, 0))
-    SetBoneAng(ent, "b_l_calf",       Angle(math.sin(phaseL + 0.9)   * amp * 0.5,  0, 0))
-    SetBoneAng(ent, "b_l_foot",       Angle(math.sin(phaseL + 1.2)   * -amp * 0.4, 0, 0))
-    SetBoneAng(ent, "b_l_toe",        Angle(math.sin(phaseL + 1.5)   * -amp * 0.3, 0, 0))
-    local slam = math.abs(math.sin(t * freq * 0.5)) * 12
-    SetBoneAng(ent, "b_pelvis",       Angle(slam, 0, 0))
-    SetBoneAng(ent, "b_r_hippiston1", Angle(math.sin(phaseR) * amp * 0.4, 0, 0))
-    SetBoneAng(ent, "b_l_hippiston1", Angle(math.sin(phaseL) * amp * 0.4, 0, 0))
-end
 
 -- ============================================================
 --  FOOTSTEP SYNC
@@ -777,7 +684,7 @@ local function GekkoDoBloodSplat(ent)
 end
 
 -- ============================================================
---  KICK BONE DRIVER  (b_r_upperleg)
+--  KICK BONE DRIVER  (b_r_upperleg — no hip bones, no mutex needed)
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -804,7 +711,7 @@ local function GekkoDoKickBone(ent)
 end
 
 -- ============================================================
---  HEADBUTT BONE DRIVER
+--  HEADBUTT BONE DRIVER  (spine3 + pedestal — no hip bones)
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
     if ent._hbInited == nil then
@@ -848,7 +755,7 @@ local function GekkoDoHeadbuttBone(ent)
 end
 
 -- ============================================================
---  FK360 BONE DRIVER
+--  FK360 BONE DRIVER  (b_pelvis yaw — no hip bones)
 -- ============================================================
 local function GekkoDoFK360Bone(ent)
     local fk360Duration = ent.FK360_DURATION or 0.9
@@ -898,6 +805,7 @@ end
 
 -- ============================================================
 --  SPINKICK BONE DRIVER
+--  Hip bone used: b_r_hippiston1  ->  mutex key "SPINKICK"
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
@@ -922,10 +830,12 @@ local function GekkoDoSpinKickBone(ent)
 
     local elapsed = CurTime() - ent._skStartTime
     local active  = elapsed >= 0 and elapsed < SK_DURATION
+
     if not active then
         if ent._skWasActive then
             ent._skWasActive = false
             ent._skYaw = 0
+            ReleaseHips(ent, "SPINKICK")
             if ent._skPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._skPedIdx,    Angle(0, 0, 0),    false) end
             if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx,  Vector(0, 0, 0),   false) end
             if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,    Angle(0, 0, 0),    false) end
@@ -933,6 +843,8 @@ local function GekkoDoSpinKickBone(ent)
         end
         return
     end
+
+    if not ClaimHips(ent, "SPINKICK") then return end
     ent._skWasActive = true
 
     local t  = elapsed / SK_DURATION
@@ -993,6 +905,7 @@ end
 
 -- ============================================================
 --  FOOTBALL KICK BONE DRIVER
+--  Hip bones: b_l_hippiston1, b_r_hippiston1  ->  mutex key "FOOTBALLKICK"
 -- ============================================================
 local function GekkoDoFootballKickBone(ent)
     if ent._fkInited == nil then
@@ -1011,15 +924,20 @@ local function GekkoDoFootballKickBone(ent)
     end
     local elapsed = CurTime() - ent._fkStartTime
     local active  = elapsed >= 0 and elapsed < FK_DURATION
+
     if not active then
         if ent._fkWasActive then
             ent._fkWasActive = false
+            ReleaseHips(ent, "FOOTBALLKICK")
             if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(0, 0, 0), false) end
             if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(0, 0, 0), false) end
         end
         return
     end
+
+    if not ClaimHips(ent, "FOOTBALLKICK") then return end
     ent._fkWasActive = true
+
     local t = elapsed / FK_DURATION
     local lhipY, lhipX, rhipX
     if t < FK_PHASE_HOLD then
@@ -1048,6 +966,7 @@ end
 
 -- ============================================================
 --  DIAGONAL KICK BONE DRIVER
+--  Hip bones: b_l_hippiston1, b_r_hippiston1  ->  mutex key "DIAGONALKICK"
 -- ============================================================
 local function GekkoDoDiagonalKickBone(ent)
     if ent._dgkInited == nil then
@@ -1068,14 +987,18 @@ local function GekkoDoDiagonalKickBone(ent)
 
     local elapsed = CurTime() - ent._dgkStartTime
     local active  = elapsed >= 0 and elapsed < DGK_DURATION
+
     if not active then
         if ent._dgkWasActive then
             ent._dgkWasActive = false
+            ReleaseHips(ent, "DIAGONALKICK")
             if ent._dgkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkLHipIdx, Angle(0, 0, 0), false) end
             if ent._dgkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkRHipIdx, Angle(0, 0, 0), false) end
         end
         return
     end
+
+    if not ClaimHips(ent, "DIAGONALKICK") then return end
     ent._dgkWasActive = true
 
     local t     = elapsed / DGK_DURATION
@@ -1109,6 +1032,7 @@ end
 
 -- ============================================================
 --  HEEL HOOK BONE DRIVER
+--  Hip bone: b_l_hippiston1  ->  mutex key "HEELHOOK"
 -- ============================================================
 local function GekkoDoHeelHookBone(ent)
     if ent._hhInited == nil then
@@ -1130,15 +1054,19 @@ local function GekkoDoHeelHookBone(ent)
 
     local elapsed = CurTime() - ent._hhStartTime
     local active  = elapsed >= 0 and elapsed < HH_DURATION_CL
+
     if not active then
         if ent._hhWasActive then
             ent._hhWasActive = false
+            ReleaseHips(ent, "HEELHOOK")
             if ent._hhHipIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhHipIdx,   Angle(0, 0, 0), false) end
             if ent._hhPelIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhPelIdx,   Angle(0, 0, 0), false) end
             if ent._hhSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0, 0, 0), false) end
         end
         return
     end
+
+    if not ClaimHips(ent, "HEELHOOK") then return end
     ent._hhWasActive = true
 
     local t    = elapsed / HH_DURATION_CL
@@ -1234,34 +1162,7 @@ end
 
 -- ============================================================
 --  SIDE HOOK KICK BONE DRIVER
---
---  5 phases over SHK_DURATION = 1.5 s (t = 0..1):
---
---    Phase 1  [0.000, SHK_P1_END]  Wide stance
---      Both hips open sideways from rest.
---      b_l_hippiston1 -> SHK_P1_LHIP  Angle(-74,  0,   0)
---      b_r_hippiston1 -> SHK_P1_RHIP  Angle(-102, 0,   0)
---
---    Phase 2  [SHK_P1_END, SHK_P2_END]  Positioning
---      Weight shifts left, right leg cocks.
---      b_l_hippiston1 -> SHK_P2_LHIP  Angle(-25, 0,  0)
---      b_r_hippiston1 -> SHK_P2_RHIP  Angle(-8,  0, -64)
---
---    Phase 3  [SHK_P2_END, SHK_P3_END]  Coil
---      Right leg winds hard for the snap. Left held.
---      b_r_hippiston1 -> SHK_P3_RHIP  Angle(0, 0, -120)
---
---    Phase 4  [SHK_P3_END, SHK_P4_END]  SNAP + leg drop
---      Violent release. Right leg drops toward floor.
---      b_r_hippiston1 -> SHK_P4_RHIP  Angle(-12, 0, -25)
---      b_l_hippiston1 -> SHK_P4_LHIP  Angle(-57, 0, -29)
---      (server HIT fires at SHK_HIT_T = 0.55 s)
---
---    Phase 5  [SHK_P4_END, 1.000]  Recovery
---      All bones lerp back to rest.
---
---  Bones: b_l_hippiston1, b_r_hippiston1
---  NW signal: GekkoSideHookKickPulse
+--  Hip bones: b_l_hippiston1, b_r_hippiston1  ->  mutex key "SIDEHOOKKICK"
 -- ============================================================
 local function GekkoDoSideHookKickBone(ent)
     if ent._shkInited == nil then
@@ -1282,14 +1183,18 @@ local function GekkoDoSideHookKickBone(ent)
 
     local elapsed = CurTime() - ent._shkStartTime
     local active  = elapsed >= 0 and elapsed < SHK_DURATION
+
     if not active then
         if ent._shkWasActive then
             ent._shkWasActive = false
+            ReleaseHips(ent, "SIDEHOOKKICK")
             if ent._shkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._shkLHipIdx, Angle(0, 0, 0), false) end
             if ent._shkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._shkRHipIdx, Angle(0, 0, 0), false) end
         end
         return
     end
+
+    if not ClaimHips(ent, "SIDEHOOKKICK") then return end
     ent._shkWasActive = true
 
     local t    = elapsed / SHK_DURATION
@@ -1297,31 +1202,22 @@ local function GekkoDoSideHookKickBone(ent)
     local lhip, rhip
 
     if t < SHK_P1_END then
-        -- Phase 1: wide stance ramp from rest
         local env = Smoothstep(t / SHK_P1_END)
         lhip = LerpAngle(REST,        SHK_P1_LHIP, env)
         rhip = LerpAngle(REST,        SHK_P1_RHIP, env)
-
     elseif t < SHK_P2_END then
-        -- Phase 2: positioning
         local env = Smoothstep((t - SHK_P1_END) / (SHK_P2_END - SHK_P1_END))
         lhip = LerpAngle(SHK_P1_LHIP, SHK_P2_LHIP, env)
         rhip = LerpAngle(SHK_P1_RHIP, SHK_P2_RHIP, env)
-
     elseif t < SHK_P3_END then
-        -- Phase 3: coil — left held at P2, right winds to -120 Z
         local env = Smoothstep((t - SHK_P2_END) / (SHK_P3_END - SHK_P2_END))
         lhip = SHK_P2_LHIP
         rhip = LerpAngle(SHK_P2_RHIP, SHK_P3_RHIP, env)
-
     elseif t < SHK_P4_END then
-        -- Phase 4: violent snap — fast easing, both legs
         local env = Smoothstep((t - SHK_P3_END) / (SHK_P4_END - SHK_P3_END))
         lhip = LerpAngle(SHK_P2_LHIP, SHK_P4_LHIP, env)
         rhip = LerpAngle(SHK_P3_RHIP, SHK_P4_RHIP, env)
-
     else
-        -- Phase 5: recovery
         local env = Smoothstep((t - SHK_P4_END) / (1.0 - SHK_P4_END))
         lhip = LerpAngle(SHK_P4_LHIP, REST, env)
         rhip = LerpAngle(SHK_P4_RHIP, REST, env)
@@ -1343,12 +1239,6 @@ end
 -- ============================================================
 function ENT:Think()
     local dt = FrameTime()
-
-    local jumpState = self:GetNWInt("GekkoJumpState", JUMP_NONE)
-
-    if jumpState == JUMP_RISING or jumpState == JUMP_FALLING then
-        GekkoStompLegs(self)
-    end
 
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
