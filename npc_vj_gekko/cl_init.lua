@@ -170,29 +170,20 @@ local AK_SPINE_BONE = "b_spine3"
 -- ============================================================
 --  JUMP KICK ANIMATION
 --
---  Shared timing for both the LEFT-leg (L) and RIGHT-leg (R)
---  mirrored variants. The coin flip is stored per-entity on
---  each new pulse so both clients see the same variant for the
---  full duration.
---
 --  LEFT variant  (original):
 --    Kicking bone  : b_l_hippiston1
 --    Bracing bone  : b_r_hippiston1
 --
---  RIGHT variant  (mirrored):
---    Kicking bone  : b_r_hippiston1  (angles with Z sign flipped)
---    Bracing bone  : b_l_hippiston1  (angles with Z sign flipped)
+--  RIGHT variant  (mirrored, Z-signs flipped):
+--    Kicking bone  : b_r_hippiston1
+--    Bracing bone  : b_l_hippiston1
+--
+--  Selection: strict toggle (_jkMirror flips on every new pulse).
+--  Starts false (left), becomes true (right) on the 1st pulse,
+--  then alternates: left -> right -> left -> right ...
 --
 --  Pedestal motion is identical for both variants.
---
---  4 phases over JK_DURATION = 1.6 s  (t = 0..1):
---    Phase 1  [0.000 - 0.300]  Preparation
---    Phase 2  [0.300 - 0.550]  Kick + forward hop
---    Phase 3  [0.550 - 1.000]  Falling
---    Phase 4  [1.000 - 1.600]  Smooth recovery
---
---  Mutex key : "JUMPKICK"
---  NW signal : GekkoJumpKickPulse
+--  Mutex key : "JUMPKICK"  |  NW signal : GekkoJumpKickPulse
 -- ============================================================
 local JK_DURATION = 1.6
 local JK_P1_END   = 0.300 / JK_DURATION
@@ -200,24 +191,18 @@ local JK_P2_END   = 0.550 / JK_DURATION
 local JK_P3_END   = 1.000 / JK_DURATION
 
 -- ---- LEFT variant (kicking leg = left) ----
--- Phase 1
 local JK_P1_LHIP  = Angle(58,  0,  -8)
 local JK_P1_RHIP  = Angle(88,  0, -36)
--- Phase 2
 local JK_P2_LHIP  = Angle(56,  0,  79)
 local JK_P2_RHIP  = Angle(88,  0, -36)
--- Phase 3
 local JK_P3_LHIP  = Angle(0,  43,   0)
 
 -- ---- RIGHT variant (kicking leg = right, Z-signs flipped) ----
--- Phase 1
-local JKR_P1_RHIP = Angle(58,  0,   8)   -- JK_P1_LHIP  with Z negated
-local JKR_P1_LHIP = Angle(88,  0,  36)   -- JK_P1_RHIP  with Z negated
--- Phase 2
-local JKR_P2_RHIP = Angle(56,  0, -79)   -- JK_P2_LHIP  with Z negated
-local JKR_P2_LHIP = Angle(88,  0,  36)   -- JK_P2_RHIP  with Z negated
--- Phase 3
-local JKR_P3_RHIP = Angle(0,  43,   0)   -- JK_P3_LHIP  (Y is symmetric)
+local JKR_P1_RHIP = Angle(58,  0,   8)
+local JKR_P1_LHIP = Angle(88,  0,  36)
+local JKR_P2_RHIP = Angle(56,  0, -79)
+local JKR_P2_LHIP = Angle(88,  0,  36)
+local JKR_P3_RHIP = Angle(0,  43,   0)
 
 -- ---- Shared pedestal ----
 local JK_P2_PED_POS = Vector(30, 0, 13)
@@ -1251,10 +1236,8 @@ end
 -- ============================================================
 --  JUMP KICK BONE DRIVER  (mutex: JUMPKICK)
 --
---  On each new pulse a coin flip (math.random(2)==1) is stored
---  in ent._jkMirror.  If true the RIGHT-leg variant plays;
---  otherwise the original LEFT-leg variant plays.
---  Both variants share identical pedestal motion and timing.
+--  _jkMirror toggles on every new pulse (strict alternation).
+--  Starts false so: pulse1=right, pulse2=left, pulse3=right...
 -- ============================================================
 local function GekkoDoJumpKickBone(ent)
     if ent._jkInited == nil then
@@ -1265,14 +1248,14 @@ local function GekkoDoJumpKickBone(ent)
         ent._jkStartTime = -9999
         ent._jkPulseLast = ent:GetNWInt("GekkoJumpKickPulse", 0)
         ent._jkWasActive = false
-        ent._jkMirror    = false
+        ent._jkMirror    = false   -- false = left leg, true = right leg
     end
 
     local pulse = ent:GetNWInt("GekkoJumpKickPulse", 0)
     if pulse ~= ent._jkPulseLast then
         ent._jkPulseLast = pulse
         ent._jkStartTime = CurTime()
-        ent._jkMirror    = (math.random(2) == 1)   -- 50/50 coin flip
+        ent._jkMirror    = not ent._jkMirror   -- strict alternation
         print(string.format("[GekkoJumpKick] pulse=%d  mirror=%s", pulse, tostring(ent._jkMirror)))
     end
 
@@ -1297,11 +1280,8 @@ local function GekkoDoJumpKickBone(ent)
     local t      = elapsed / JK_DURATION
     local mirror = ent._jkMirror
 
-    -- resolve per-variant bone angle tables
-    -- kick leg  = L (original) or R (mirrored)
-    -- brace leg = R (original) or L (mirrored)
-    local P1_KICK,  P1_BRACE
-    local P2_KICK,  P2_BRACE
+    local P1_KICK, P1_BRACE
+    local P2_KICK, P2_BRACE
     local P3_KICK
     if mirror then
         P1_KICK  = JKR_P1_RHIP;  P1_BRACE = JKR_P1_LHIP
