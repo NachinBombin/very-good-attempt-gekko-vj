@@ -677,6 +677,7 @@ local function GekkoDoKickBone(ent)
         ent._kickBoneIdx   = ent:LookupBone(KICK_BONE_NAME) or -1
         ent._kickEndTime   = 0
         ent._kickPulseLast = ent:GetNWInt("GekkoKickPulse", 0)
+        ent._kickWasActive = false
     end
     local pulse = ent:GetNWInt("GekkoKickPulse", 0)
     if pulse ~= ent._kickPulseLast then
@@ -685,11 +686,16 @@ local function GekkoDoKickBone(ent)
     end
     local boneIdx = ent._kickBoneIdx
     if not boneIdx or boneIdx < 0 then return end
-    if CurTime() < ent._kickEndTime then
+    local active = CurTime() < ent._kickEndTime
+    if active then
+        ent._kickWasActive = true
         ent:ManipulateBoneAngles(boneIdx, KICK_BONE_ANGLE, false)
-    else
+    elseif ent._kickWasActive then
+        -- single-frame zero reset, then go silent
+        ent._kickWasActive = false
         ent:ManipulateBoneAngles(boneIdx, KICK_BONE_RESET, false)
     end
+    -- if not active and not _kickWasActive: write nothing
 end
 
 -- ============================================================
@@ -702,6 +708,7 @@ local function GekkoDoHeadbuttBone(ent)
         ent._hbPedestalIdx = ent:LookupBone(HB_PEDESTAL_BONE) or -1
         ent._hbStartTime   = -9999
         ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
+        ent._hbWasActive   = false
     end
     local pulse = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     if pulse ~= ent._hbPulseLast then
@@ -710,11 +717,16 @@ local function GekkoDoHeadbuttBone(ent)
         print(string.format("[GekkoHeadbutt] pulse=%d", pulse))
     end
     local elapsed = CurTime() - ent._hbStartTime
-    if elapsed >= HB_DURATION or elapsed < 0 then
-        if ent._hbSpineIdx    >= 0 then ent:ManipulateBoneAngles(ent._hbSpineIdx, Angle(0, 0, 0), false) end
-        if ent._hbPedestalIdx >= 0 then ent:ManipulateBonePosition(ent._hbPedestalIdx, Vector(0, 0, 0), false) end
+    local active  = elapsed >= 0 and elapsed < HB_DURATION
+    if not active then
+        if ent._hbWasActive then
+            ent._hbWasActive = false
+            if ent._hbSpineIdx    >= 0 then ent:ManipulateBoneAngles(ent._hbSpineIdx,    Angle(0, 0, 0),    false) end
+            if ent._hbPedestalIdx >= 0 then ent:ManipulateBonePosition(ent._hbPedestalIdx, Vector(0, 0, 0), false) end
+        end
         return
     end
+    ent._hbWasActive = true
     local t = elapsed / HB_DURATION
     local env
     if t < HB_PEAK then
@@ -741,6 +753,7 @@ local function GekkoDoFK360Bone(ent)
         ent._fk360StartTime = -9999
         ent._fk360PulseLast = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
         ent._fk360Yaw       = 0
+        ent._fk360WasActive = false
     end
     local pulse = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
     if pulse ~= ent._fk360PulseLast then
@@ -752,11 +765,16 @@ local function GekkoDoFK360Bone(ent)
     local boneIdx = ent._fk360BoneIdx
     if not boneIdx or boneIdx < 0 then return end
     local elapsed = CurTime() - ent._fk360StartTime
-    if elapsed >= fk360Duration or elapsed < 0 then
-        ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
-        ent._fk360Yaw = 0
+    local active  = elapsed >= 0 and elapsed < fk360Duration
+    if not active then
+        if ent._fk360WasActive then
+            ent._fk360WasActive = false
+            ent._fk360Yaw = 0
+            ent:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
+        end
         return
     end
+    ent._fk360WasActive = true
     local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * fk360Duration)
     local t = elapsed / fk360Duration
     local env
@@ -786,6 +804,7 @@ local function GekkoDoSpinKickBone(ent)
         ent._skStartTime = -9999
         ent._skPulseLast = ent:GetNWInt("GekkoSpinKickPulse", 0)
         ent._skYaw       = 0
+        ent._skWasActive = false
     end
     local pulse = ent:GetNWInt("GekkoSpinKickPulse", 0)
     if pulse ~= ent._skPulseLast then
@@ -795,14 +814,19 @@ local function GekkoDoSpinKickBone(ent)
         print(string.format("[GekkoSpinKick] pulse=%d", pulse))
     end
     local elapsed = CurTime() - ent._skStartTime
-    if elapsed >= SK_DURATION or elapsed < 0 then
-        if ent._skPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._skPedIdx,   Angle(0, 0, 0),  false) end
-        if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx, Vector(0, 0, 0), false) end
-        if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,   Angle(0, 0, 0),  false) end
-        if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx,  Angle(0, 0, 0),  false) end
-        ent._skYaw = 0
+    local active  = elapsed >= 0 and elapsed < SK_DURATION
+    if not active then
+        if ent._skWasActive then
+            ent._skWasActive = false
+            ent._skYaw = 0
+            if ent._skPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._skPedIdx,    Angle(0, 0, 0),    false) end
+            if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx,  Vector(0, 0, 0),   false) end
+            if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,    Angle(0, 0, 0),    false) end
+            if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx,   Angle(0, 0, 0),    false) end
+        end
         return
     end
+    ent._skWasActive = true
     local peakSpeed = SK_YAW_TOTAL / ((1.0 - SK_RAMP) * SK_DURATION)
     local t = elapsed / SK_DURATION
     local yawEnv
@@ -833,8 +857,8 @@ local function GekkoDoSpinKickBone(ent)
     end
     local legEnv = (t >= SK_PHASE_HOLD_START) and 1 or 0
     if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx, Vector(0, 0, SK_PEL_DROP * crouchEnv), false) end
-    if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,   Angle(0, 0, SK_HIP_Z  * crouchEnv), false) end
-    if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx,  Angle(SK_ULEG_X * legEnv, 0, 0), false) end
+    if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,   Angle(0, 0, SK_HIP_Z  * crouchEnv),   false) end
+    if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx,  Angle(SK_ULEG_X * legEnv, 0, 0),       false) end
 end
 
 -- ============================================================
@@ -847,6 +871,7 @@ local function GekkoDoFootballKickBone(ent)
         ent._fkRHipIdx   = ent:LookupBone(FK_RHIP_BONE) or -1
         ent._fkStartTime = -9999
         ent._fkPulseLast = ent:GetNWInt("GekkoFootballKickPulse", 0)
+        ent._fkWasActive = false
     end
     local pulse = ent:GetNWInt("GekkoFootballKickPulse", 0)
     if pulse ~= ent._fkPulseLast then
@@ -855,11 +880,16 @@ local function GekkoDoFootballKickBone(ent)
         print(string.format("[GekkoFootballKick] pulse=%d", pulse))
     end
     local elapsed = CurTime() - ent._fkStartTime
-    if elapsed >= FK_DURATION or elapsed < 0 then
-        if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(0, 0, 0), false) end
-        if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(0, 0, 0), false) end
+    local active  = elapsed >= 0 and elapsed < FK_DURATION
+    if not active then
+        if ent._fkWasActive then
+            ent._fkWasActive = false
+            if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(0, 0, 0), false) end
+            if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(0, 0, 0), false) end
+        end
         return
     end
+    ent._fkWasActive = true
     local t = elapsed / FK_DURATION
     local lhipY, lhipX, rhipX
     if t < FK_PHASE_HOLD then
@@ -883,7 +913,7 @@ local function GekkoDoFootballKickBone(ent)
         rhipX = 0
     end
     if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(lhipX, lhipY, 0), false) end
-    if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(rhipX, 0, 0), false) end
+    if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(rhipX, 0, 0),     false) end
 end
 
 -- ============================================================
@@ -896,6 +926,7 @@ local function GekkoDoDiagonalKickBone(ent)
         ent._dgkRHipIdx   = ent:LookupBone(DGK_RHIP_BONE) or -1
         ent._dgkStartTime = -9999
         ent._dgkPulseLast = ent:GetNWInt("GekkoDiagonalKickPulse", 0)
+        ent._dgkWasActive = false
     end
 
     local pulse = ent:GetNWInt("GekkoDiagonalKickPulse", 0)
@@ -906,11 +937,16 @@ local function GekkoDoDiagonalKickBone(ent)
     end
 
     local elapsed = CurTime() - ent._dgkStartTime
-    if elapsed >= DGK_DURATION or elapsed < 0 then
-        if ent._dgkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkLHipIdx, Angle(0, 0, 0), false) end
-        if ent._dgkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkRHipIdx, Angle(0, 0, 0), false) end
+    local active  = elapsed >= 0 and elapsed < DGK_DURATION
+    if not active then
+        if ent._dgkWasActive then
+            ent._dgkWasActive = false
+            if ent._dgkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkLHipIdx, Angle(0, 0, 0), false) end
+            if ent._dgkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkRHipIdx, Angle(0, 0, 0), false) end
+        end
         return
     end
+    ent._dgkWasActive = true
 
     local t     = elapsed / DGK_DURATION
     local lhip, rhip
@@ -962,6 +998,7 @@ local function GekkoDoHeelHookBone(ent)
         ent._hhLToeIdx     = ent:LookupBone("b_l_toe")         or -1
         ent._hhStartTime   = -9999
         ent._hhPulseLast   = ent:GetNWInt("GekkoHeelHookPulse", 0)
+        ent._hhWasActive   = false
     end
 
     local pulse = ent:GetNWInt("GekkoHeelHookPulse", 0)
@@ -972,16 +1009,21 @@ local function GekkoDoHeelHookBone(ent)
     end
 
     local elapsed = CurTime() - ent._hhStartTime
-    if elapsed >= HH_DURATION_CL or elapsed < 0 then
-        if ent._hhPelvisIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhPelvisIdx,  Angle(0, 0, 0), false) end
-        if ent._hhSpine4Idx  >= 0 then ent:ManipulateBoneAngles(ent._hhSpine4Idx,  Angle(0, 0, 0), false) end
-        if ent._hhLHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hhLHipIdx,    Angle(0, 0, 0), false) end
-        if ent._hhLThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhLThighIdx,  Angle(0, 0, 0), false) end
-        if ent._hhLCalfIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLCalfIdx,   Angle(0, 0, 0), false) end
-        if ent._hhLFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLFootIdx,   Angle(0, 0, 0), false) end
-        if ent._hhLToeIdx    >= 0 then ent:ManipulateBoneAngles(ent._hhLToeIdx,    Angle(0, 0, 0), false) end
+    local active  = elapsed >= 0 and elapsed < HH_DURATION_CL
+    if not active then
+        if ent._hhWasActive then
+            ent._hhWasActive = false
+            if ent._hhPelvisIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhPelvisIdx,  Angle(0, 0, 0), false) end
+            if ent._hhSpine4Idx  >= 0 then ent:ManipulateBoneAngles(ent._hhSpine4Idx,  Angle(0, 0, 0), false) end
+            if ent._hhLHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hhLHipIdx,    Angle(0, 0, 0), false) end
+            if ent._hhLThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhLThighIdx,  Angle(0, 0, 0), false) end
+            if ent._hhLCalfIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLCalfIdx,   Angle(0, 0, 0), false) end
+            if ent._hhLFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLFootIdx,   Angle(0, 0, 0), false) end
+            if ent._hhLToeIdx    >= 0 then ent:ManipulateBoneAngles(ent._hhLToeIdx,    Angle(0, 0, 0), false) end
+        end
         return
     end
+    ent._hhWasActive = true
 
     local t = elapsed / HH_DURATION_CL
 
@@ -1049,6 +1091,23 @@ local function GekkoDoHeelHookBone(ent)
 end
 
 -- ============================================================
+--  KICK ACTIVITY GATE
+--  Returns true if any timed kick driver is currently running.
+--  Used to suppress GekkoStompLegs so stomp never overwrites
+--  b_pelvis or b_l/r_hippiston1 during a kick animation.
+-- ============================================================
+local function GekkoAnyKickActive(ent)
+    local now = CurTime()
+    if (ent._hbStartTime   and (now - ent._hbStartTime)   < HB_DURATION)      then return true end
+    if (ent._fk360StartTime and (now - ent._fk360StartTime) < (ent.FK360_DURATION or 0.9)) then return true end
+    if (ent._skStartTime   and (now - ent._skStartTime)   < SK_DURATION)       then return true end
+    if (ent._fkStartTime   and (now - ent._fkStartTime)   < FK_DURATION)       then return true end
+    if (ent._dgkStartTime  and (now - ent._dgkStartTime)  < DGK_DURATION)      then return true end
+    if (ent._hhStartTime   and (now - ent._hhStartTime)   < HH_DURATION_CL)    then return true end
+    return false
+end
+
+-- ============================================================
 --  THINK
 -- ============================================================
 function ENT:Think()
@@ -1065,6 +1124,7 @@ end
 --  Bone driver call order (later wins on shared bones):
 --    1. GekkoUpdateHead          -> b_spine4
 --    2. GekkoStompLegs           -> leg bones, b_pelvis angle, b_l/r_hippiston1
+--                                   (SKIPPED when any kick driver is active)
 --    3. GekkoDoKickBone          -> b_r_upperleg
 --    4. GekkoDoHeadbuttBone      -> b_spine3 angle, b_pedestal position
 --    5. GekkoDoFK360Bone         -> b_pelvis Angle(0,val,0)
@@ -1075,7 +1135,10 @@ end
 --    9. GekkoDoHeelHookBone      -> b_pelvis ang, b_spine4 ang,
 --                                   b_l_hippiston1, b_l_thigh, b_l_calf,
 --                                   b_l_foot, b_l_toe
---       (only one of 7/8/9 fires at a time via their pulse guards)
+--
+--  Each driver writes bones ONLY during its active window.
+--  On the single frame it expires, it writes one zero-reset then goes silent.
+--  Drivers never write zeros every idle frame.
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -1099,7 +1162,9 @@ function ENT:Draw()
 
     local grounded = (jumpState == JUMP_NONE)
     local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
-    if t < stompEnd and grounded then GekkoStompLegs(self) end
+    if t < stompEnd and grounded and not GekkoAnyKickActive(self) then
+        GekkoStompLegs(self)
+    end
 
     GekkoDoKickBone(self)
     GekkoDoHeadbuttBone(self)
