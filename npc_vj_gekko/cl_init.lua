@@ -66,25 +66,25 @@ local FK360_BONE     = "b_pelvis"
 -- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
-local SK_DURATION = 1.4
+local SK_DURATION = 0.9
 local SK_P1_END   = 0.330
 local SK_P2_END   = 0.500
 local SK_P3_END   = 0.670
 local SK_P4_END   = 0.800
 local SK_RAMP       = 0.10
-local SK_YAW_TOTAL  = 420
+local SK_YAW_TOTAL  = 590
 local SK_PED_BONE   = "b_Pedestal"
 local SK_PEL_BONE   = "b_pelvis"
 local SK_HIP_BONE   = "b_r_hippiston1"
 local SK_ULEG_BONE  = "b_r_upperleg"
 local SK_PEL_DROP   = -50
 local SK_HIP_Z      = -22
-local SK_ULEG_X     = 120
+local SK_ULEG_X     = 140
 
 -- ============================================================
 --  FOOTBALL KICK ANIMATION
 -- ============================================================
-local FK_DURATION      = 1.3
+local FK_DURATION      = 1.1
 local FK_PHASE_HOLD    = 0.300 / FK_DURATION
 local FK_PHASE_EXTEND  = 0.550 / FK_DURATION
 local FK_PHASE_RECOVER = 0.700 / FK_DURATION
@@ -98,7 +98,7 @@ local FK_RHIP_BONE     = "b_r_hippiston1"
 -- ============================================================
 --  DIAGONAL KICK ANIMATION
 -- ============================================================
-local DGK_DURATION = 1.4
+local DGK_DURATION = 1.0
 local DGK_P1_END   = 0.300 / DGK_DURATION
 local DGK_P2_END   = 0.600 / DGK_DURATION
 local DGK_P3_END   = 0.750 / DGK_DURATION
@@ -115,8 +115,8 @@ local DGK_RHIP_BONE = "b_r_hippiston1"
 -- ============================================================
 --  HEEL HOOK ANIMATION
 -- ============================================================
-local HH_DURATION_CL        = 1.6
-local HH_HIP_CHAMBER_PITCH  =  55
+local HH_DURATION_CL        = 0.8
+local HH_HIP_CHAMBER_PITCH  =  85
 local HH_HIP_EXTEND_ROLL    =  30
 local HH_HIP_HOOK_YAW       = -35
 local HH_PELVIS_YAW         =  28
@@ -129,7 +129,7 @@ local HH_SPINE_BONE  = "b_spine3"
 -- ============================================================
 --  SIDE HOOK KICK ANIMATION
 -- ============================================================
-local SHK_DURATION = 1.5
+local SHK_DURATION = 1.1
 local SHK_P1_END = 0.200 / SHK_DURATION
 local SHK_P2_END = 0.400 / SHK_DURATION
 local SHK_P3_END = 0.550 / SHK_DURATION
@@ -169,7 +169,7 @@ local SHK_RHIP_BONE = "b_r_hippiston1"
 --  Bones: b_l_hippiston1, b_r_hippiston1, b_spine3
 --  NW signal: GekkoAxeKickPulse
 -- ============================================================
-local AK_DURATION = 1.4
+local AK_DURATION = 1.1
 local AK_P1_END   = 0.350 / AK_DURATION
 local AK_P2_END   = 0.550 / AK_DURATION
 local AK_P3_END   = 0.700 / AK_DURATION
@@ -250,12 +250,12 @@ local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
 local SONAR_DURATION       = 3.0
 local SONAR_PULSE_COUNT    = 3
 local SONAR_PULSE_INTERVAL = 0.6
-local SONAR_RING_THICKNESS = 12
-local SONAR_PEAK_ALPHA     = 220
-local SONAR_TINT_ALPHA     = 80
-local SONAR_R = 0
-local SONAR_G = 200
-local SONAR_B = 255
+local SONAR_RING_THICKNESS = 3
+local SONAR_PEAK_ALPHA     = 100
+local SONAR_TINT_ALPHA     = 40
+local SONAR_R = 200
+local SONAR_G = 0
+local SONAR_B = 0
 local sonar_startTime = nil
 local sonar_active    = false
 
