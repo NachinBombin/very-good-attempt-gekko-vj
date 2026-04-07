@@ -15,6 +15,7 @@ if SERVER then
     util.AddNetworkString("GekkoHeelHookPulse")
     util.AddNetworkString("GekkoSideHookKickPulse")
     util.AddNetworkString("GekkoAxeKickPulse")
+    util.AddNetworkString("GekkoJumpKickPulse")
 end
 
 -- ============================================================
@@ -57,7 +58,7 @@ local function ClaimKickLock(ent, duration)
 end
 
 -- ============================================================
---  CFG  –  general detection constants (few, safe as upvalues)
+--  CFG  -  general detection constants (few, safe as upvalues)
 -- ============================================================
 local CFG = {
     CRUSH_RADIUS    = 96,
@@ -69,25 +70,7 @@ local CFG = {
 }
 
 -- ============================================================
---  ATTACKS  –  one sub-table per attack, keyed by attack name
---
---  Fields used by GeckoCrush_Think:
---    w          = pool weight
---    nwkey      = NW int key name
---    lock       = ClaimKickLock duration (seconds)
---    dmg        = damage
---    impulse    = impulse magnitude
---    hit_t      = timer delay before hull sweep (nil = immediate)
---    sweep_dist = hull sweep distance (nil = sphere/immediate)
---    sweep_half = hull half-size
---    sweep_z    = origin z offset for sweep
---    dir_fwd    = forward component of impulse direction
---    dir_z      = z component of impulse direction (signed)
---    -- FK360 extras:
---    land_radius, land_dmg_max, land_dmg_min, land_impulse
---    -- HeelHook extras:
---    hit_t2, dmg2, impulse2, hook_angle
---    sweep_dir_fn  (optional, computed at fire time)
+--  ATTACKS  -  one sub-table per attack, keyed by attack name
 -- ============================================================
 local ATTACKS = {
     FK360 = {
@@ -138,12 +121,29 @@ local ATTACKS = {
         dmg = 45, impulse = 15000,
         sweep_dist = 155, sweep_half = 55, sweep_z = 90,
     },
+    -- ============================================================
+    --  JUMPKICK
+    --  4 phases:
+    --    Phase 1  preparation  (leg chamber, no movement)
+    --    Phase 2  kick + small forward hop  (hit fires here)
+    --    Phase 3  falling  (body tilts forward, pedestal recentres)
+    --    Phase 4  smooth recovery to rest
+    --
+    --  Forward-cone only (inCone required).
+    --  The Gekko gets a brief forward velocity impulse at hit_t.
+    -- ============================================================
+    JUMPKICK = {
+        w = 20, nwkey = "GekkoJumpKickPulse",
+        duration = 1.6,
+        hit_t    = 0.55,          -- sweep fires mid-phase-2
+        dmg = 42, impulse = 14500,
+        sweep_dist = 160, sweep_half = 55, sweep_z = 75,
+        hop_force = 240,          -- forward units/s applied at kick moment
+    },
 }
 
 -- ============================================================
 --  Per-attack fire helpers
---  (defined as plain locals so they don't add upvalues to
---   GeckoCrush_Think – they only close over ATTACKS/CFG/helpers)
 -- ============================================================
 
 local function FireFK360(self, closestTarget, fwd, dot)
@@ -314,9 +314,53 @@ local function FireAxeKick(self, closestTarget, dot)
 end
 
 -- ============================================================
+--  JUMPKICK fire helper
+--
+--  Phase timing (seconds):
+--    0.00 - 0.30   Phase 1: preparation  (bone anim only, no damage)
+--    0.30 - 0.55   Phase 2: kick + forward hop  (hit_t = 0.55)
+--    0.55 - 1.00   Phase 3: falling
+--    1.00 - 1.60   Phase 4: recovery
+--
+--  Server responsibility:
+--    - ClaimKickLock for full duration
+--    - Apply a brief forward velocity at hit_t (the hop)
+--    - Forward hull sweep at hit_t for damage
+-- ============================================================
+local function FireJumpKick(self, closestTarget, fwd, dot)
+    local A    = ATTACKS.JUMPKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    print(string.format("[GekkoCrush] JUMPKICK  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        -- forward hop velocity
+        local fwdRef = selfRef:GetForward()
+        local curVel = selfRef:GetVelocity()
+        selfRef:SetVelocity(Vector(curVel.x + fwdRef.x * A.hop_force,
+                                   curVel.y + fwdRef.y * A.hop_force,
+                                   curVel.z))
+        -- hull sweep
+        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({
+            start  = origin,
+            endpos = origin + fwdRef * A.sweep_dist,
+            mins   = -half, maxs = half,
+            filter = selfRef, mask = MASK_SHOT_HULL,
+        })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            local impDir = (fwdRef + Vector(0, 0, 0.3)):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
+            print(string.format("[GekkoCrush] JUMPKICK HIT  target=%s  pulse=%d", tr.Entity:GetClass(), next))
+        end
+    end)
+end
+
+-- ============================================================
 --  GeckoCrush_Think
---  Upvalue count is now small: CFG, ATTACKS, + the Fire* locals
---  above, BlastDamage, CrushDamageEnt, ClaimKickLock = ~10 UVs
 -- ============================================================
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
@@ -366,14 +410,15 @@ function ENT:GeckoCrush_Think()
         attack = "SPINKICK"
     else
         local pool = {
-            { name = "FK360",       w = ATTACKS.FK360.w       },
-            { name = "HEADBUTT",    w = ATTACKS.HEADBUTT.w    },
-            { name = "SPINKICK",    w = ATTACKS.SPINKICK.w    },
-            { name = "FOOTBALLKICK",w = ATTACKS.FOOTBALLKICK.w},
-            { name = "DIAGONALKICK",w = ATTACKS.DIAGONALKICK.w},
-            { name = "HEELHOOK",    w = ATTACKS.HEELHOOK.w    },
-            { name = "SIDEHOOKKICK",w = ATTACKS.SIDEHOOKKICK.w},
-            { name = "AXEKICK",     w = ATTACKS.AXEKICK.w     },
+            { name = "FK360",       w = ATTACKS.FK360.w        },
+            { name = "HEADBUTT",    w = ATTACKS.HEADBUTT.w     },
+            { name = "SPINKICK",    w = ATTACKS.SPINKICK.w     },
+            { name = "FOOTBALLKICK",w = ATTACKS.FOOTBALLKICK.w },
+            { name = "DIAGONALKICK",w = ATTACKS.DIAGONALKICK.w },
+            { name = "HEELHOOK",    w = ATTACKS.HEELHOOK.w     },
+            { name = "SIDEHOOKKICK",w = ATTACKS.SIDEHOOKKICK.w },
+            { name = "AXEKICK",     w = ATTACKS.AXEKICK.w      },
+            { name = "JUMPKICK",    w = ATTACKS.JUMPKICK.w     },
         }
         if kickTarget then
             pool[#pool+1] = { name = "KICK", w = ATTACKS.KICK.w }
@@ -399,6 +444,7 @@ function ENT:GeckoCrush_Think()
     elseif attack == "HEELHOOK"     then FireHeelHook(self)
     elseif attack == "SIDEHOOKKICK" then FireSideHookKick(self)
     elseif attack == "AXEKICK"      then FireAxeKick(self, closestTarget, dot)
+    elseif attack == "JUMPKICK"     then FireJumpKick(self, closestTarget, fwd, dot)
     else                                 FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end
