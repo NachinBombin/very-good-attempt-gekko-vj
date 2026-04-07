@@ -143,32 +143,57 @@ local DGK_LHIP_BONE = "b_l_hippiston1"
 local DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
---  HEEL HOOK ANIMATION  (simplified — 3 bones only)
+--  HEEL HOOK ANIMATION
 --
---  Bones: b_l_hippiston1, b_pelvis, b_spine4
---  No feet, no toes, no thigh, no calf/upperleg.
+--  Bones: b_l_hippiston1  (leg lift, outward tilt, hook-back yaw)
+--         b_pelvis         (hip-line rotation — the main power driver)
+--         b_spine3         (torso counterbalance lean)
 --
---  hippiston1 drives the visible leg lift and sweep.
---  pelvis opens the hip line for the hook.
---  spine4 provides a small counterbalance lean.
+--  Timeline (t = 0..1 over HH_DURATION_CL = 1.6 s):
 --
---  Timeline (t = 0..1 over HH_DURATION_CL = 1.6s):
---    0.00 - 0.20  Chamber: hippiston rises (pitch), pelvis begins shift
---    0.20 - 0.45  Hold chamber, pelvis rotates open (yaw)
---    0.45 - 0.65  Extension: hippiston rolls outward (Z), pelvis stabilizes
---    0.65 - 0.80  Hook-back: hippiston yaw sweeps inward
---    0.80 - 1.00  Recover: all bones return to rest
+--    Phase 1  t 0.000-0.200  Chamber
+--               b_l_hippiston1 pitch ramps to HH_HIP_CHAMBER_PITCH (leg lifts)
+--               b_pelvis       yaw ramps toward HH_PELVIS_YAW (hip begins opening)
 --
---  HH_HIP_CHAMBER_PITCH = 55 (NOT 90) — avoids sideways pop on this bone's local axis
+--    Phase 2  t 0.200-0.440  Pivot — chamber held, pelvis finishes rotating open
+--               b_l_hippiston1 held at chamber pitch
+--               b_pelvis       yaw reaches full HH_PELVIS_YAW
+--               b_spine3       lean begins (counterbalance)
+--
+--    Phase 3  t 0.440-0.650  Extension — heel shoots outward across target line
+--               b_l_hippiston1 roll opens to HH_HIP_EXTEND_ROLL (outward tilt)
+--               b_pelvis       yaw stabilises; pitch adds HH_PELVIS_PITCH (slight fwd lean)
+--               b_spine3       lean peaks at HH_SPINE_LEAN
+--               (server HIT 1 fires at 0.62 s = t≈0.39)
+--
+--    Phase 4  t 0.650-0.800  Hook-back — leg sweeps inward on the C-path return
+--               b_l_hippiston1 yaw sweeps to HH_HIP_HOOK_YAW (crosses body inward)
+--               b_pelvis       yaw begins unwinding back toward 0
+--               (server HIT 2 fires at 0.82 s = t≈0.51)
+--
+--    Phase 5  t 0.800-1.000  Recover — all bones lerp back to rest
+--               b_l_hippiston1 -> Angle(0,0,0)
+--               b_pelvis       -> Angle(0,0,0)
+--               b_spine3       -> Angle(0,0,0)
+--
+--  The pelvis yaw is the key addition: it opens the hip line so the
+--  kick travels on a believable anatomical arc instead of pivoting
+--  from a locked pelvis.
+--
+--  HH_HIP_CHAMBER_PITCH = 55  (safe range; avoids sideways pop)
 --  NW signal: GekkoHeelHookPulse
 -- ============================================================
 local HH_DURATION_CL        = 1.6
-local HH_HIP_CHAMBER_PITCH  =  55    -- leg lift, safe range for this bone's local axis
+local HH_HIP_CHAMBER_PITCH  =  55    -- leg lift (pitch), safe range for this bone
 local HH_HIP_EXTEND_ROLL    =  30    -- outward tilt at extension peak
 local HH_HIP_HOOK_YAW       = -35    -- inward sweep on hook-back (crosses body)
-local HH_PELVIS_YAW         =  28    -- opens kicking hip line
+local HH_PELVIS_YAW         =  28    -- opens kicking hip line (THE rotation)
 local HH_PELVIS_PITCH       =   8    -- slight forward tilt during extension
-local HH_SPINE_LEAN         =  12    -- spine leans away from kick for balance
+local HH_SPINE_LEAN         =  12    -- spine3 leans away from kick for balance
+
+local HH_HIP_BONE    = "b_l_hippiston1"
+local HH_PELVIS_BONE = "b_pelvis"
+local HH_SPINE_BONE  = "b_spine3"
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -1061,23 +1086,41 @@ local function GekkoDoDiagonalKickBone(ent)
 end
 
 -- ============================================================
---  HEEL HOOK BONE DRIVER  (simplified — 3 bones only)
+--  HEEL HOOK BONE DRIVER
 --
---  Bones: b_l_hippiston1, b_pelvis, b_spine4
---  hippiston1 drives the visible leg lift and hook sweep.
---  pelvis opens the hip line.
---  spine4 counterbalances.
+--  Bones driven: b_l_hippiston1, b_pelvis, b_spine3
 --
---  HH_HIP_CHAMBER_PITCH = 55 (NOT 90) prevents the sideways pop
---  that occurred when this bone's local axis was over-rotated.
---  NW signal: GekkoHeelHookPulse
+--  5 phases over HH_DURATION_CL = 1.6 s (t = 0..1):
+--
+--    Phase 1  [0.000, 0.200]  Chamber
+--      b_l_hippiston1 pitch ramps to HH_HIP_CHAMBER_PITCH (leg lifts)
+--      b_pelvis       yaw ramps toward HH_PELVIS_YAW * 0.5 (hip begins opening)
+--
+--    Phase 2  [0.200, 0.440]  Pivot — chamber held, pelvis finishes rotating
+--      b_l_hippiston1 held at chamber pitch
+--      b_pelvis       yaw reaches full HH_PELVIS_YAW
+--      b_spine3       lean builds toward HH_SPINE_LEAN
+--
+--    Phase 3  [0.440, 0.650]  Extension — heel shoots outward
+--      b_l_hippiston1 roll opens to HH_HIP_EXTEND_ROLL (outward tilt)
+--      b_pelvis       pitch adds HH_PELVIS_PITCH (slight fwd lean, stabilises)
+--      b_spine3       lean at peak HH_SPINE_LEAN
+--      (server HIT 1 at 0.62 s)
+--
+--    Phase 4  [0.650, 0.800]  Hook-back — leg sweeps inward on C-path
+--      b_l_hippiston1 yaw moves to HH_HIP_HOOK_YAW (crosses body)
+--      b_pelvis       yaw begins unwinding back toward 0
+--      (server HIT 2 at 0.82 s)
+--
+--    Phase 5  [0.800, 1.000]  Recover
+--      All three bones lerp back to Angle(0,0,0) / Vector(0,0,0)
 -- ============================================================
 local function GekkoDoHeelHookBone(ent)
     if ent._hhInited == nil then
         ent._hhInited    = true
-        ent._hhPelvisIdx = ent:LookupBone("b_pelvis")       or -1
-        ent._hhSpineIdx  = ent:LookupBone("b_spine4")       or -1
-        ent._hhLHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
+        ent._hhHipIdx    = ent:LookupBone(HH_HIP_BONE)    or -1
+        ent._hhPelIdx    = ent:LookupBone(HH_PELVIS_BONE) or -1
+        ent._hhSpineIdx  = ent:LookupBone(HH_SPINE_BONE)  or -1
         ent._hhStartTime = -9999
         ent._hhPulseLast = ent:GetNWInt("GekkoHeelHookPulse", 0)
         ent._hhWasActive = false
@@ -1095,118 +1138,143 @@ local function GekkoDoHeelHookBone(ent)
     if not active then
         if ent._hhWasActive then
             ent._hhWasActive = false
-            if ent._hhPelvisIdx >= 0 then ent:ManipulateBoneAngles(ent._hhPelvisIdx, Angle(0,0,0), false) end
-            if ent._hhSpineIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhSpineIdx,  Angle(0,0,0), false) end
-            if ent._hhLHipIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLHipIdx,   Angle(0,0,0), false) end
+            if ent._hhHipIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhHipIdx,   Angle(0, 0, 0), false) end
+            if ent._hhPelIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhPelIdx,   Angle(0, 0, 0), false) end
+            if ent._hhSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0, 0, 0), false) end
         end
         return
     end
     ent._hhWasActive = true
 
-    local t = elapsed / HH_DURATION_CL
+    local t    = elapsed / HH_DURATION_CL
+    local REST = Angle(0, 0, 0)
 
-    local function Ph(tIn, t0, t1)
-        return math.Clamp((tIn - t0) / (t1 - t0), 0, 1)
+    -- Phase boundary helpers (normalized fractions)
+    local P1 = 0.200
+    local P2 = 0.440
+    local P3 = 0.650
+    local P4 = 0.800
+    -- Phase 5 ends at 1.0
+
+    local function PhaseEnv(t0, t1)
+        return Smoothstep(math.Clamp((t - t0) / (t1 - t0), 0, 1))
     end
 
-    local hipPitch = Smoothstep(Ph(t, 0.00, 0.20)) * HH_HIP_CHAMBER_PITCH
-                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_HIP_CHAMBER_PITCH
-    local hipRoll  = Smoothstep(Ph(t, 0.45, 0.65)) * HH_HIP_EXTEND_ROLL
-                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_HIP_EXTEND_ROLL
-    local hipYaw   = Smoothstep(Ph(t, 0.65, 0.80)) * HH_HIP_HOOK_YAW
-                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_HIP_HOOK_YAW
+    -- ── b_l_hippiston1 ──────────────────────────────────────
+    -- pitch: lifts through chamber, returns in recover
+    -- roll:  opens outward in extension, returns in hook/recover
+    -- yaw:   hooks inward in phase 4, returns in recover
+    local hipPitch, hipRoll, hipYaw
 
-    if ent._hhLHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._hhLHipIdx, Angle(hipPitch, hipYaw, hipRoll), false)
+    if t < P1 then
+        -- Chamber: pitch ramps up
+        local env = PhaseEnv(0, P1)
+        hipPitch = HH_HIP_CHAMBER_PITCH * env
+        hipRoll  = 0
+        hipYaw   = 0
+    elseif t < P2 then
+        -- Pivot: chamber held
+        hipPitch = HH_HIP_CHAMBER_PITCH
+        hipRoll  = 0
+        hipYaw   = 0
+    elseif t < P3 then
+        -- Extension: roll opens outward
+        local env = PhaseEnv(P2, P3)
+        hipPitch = HH_HIP_CHAMBER_PITCH
+        hipRoll  = HH_HIP_EXTEND_ROLL * env
+        hipYaw   = 0
+    elseif t < P4 then
+        -- Hook-back: yaw crosses inward
+        local env = PhaseEnv(P3, P4)
+        hipPitch = HH_HIP_CHAMBER_PITCH * (1 - env * 0.3)
+        hipRoll  = HH_HIP_EXTEND_ROLL   * (1 - env)
+        hipYaw   = HH_HIP_HOOK_YAW      * env
+    else
+        -- Recover: all hip values lerp back to 0
+        local env = PhaseEnv(P4, 1.0)
+        hipPitch = HH_HIP_CHAMBER_PITCH * (0.7 - env * 0.7)
+        hipRoll  = 0
+        hipYaw   = HH_HIP_HOOK_YAW      * (1 - env)
     end
 
-    local pelYaw   = Smoothstep(Ph(t, 0.20, 0.45)) * HH_PELVIS_YAW
-                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_PELVIS_YAW
-    local pelPitch = Smoothstep(Ph(t, 0.45, 0.65)) * HH_PELVIS_PITCH
-                   - Smoothstep(Ph(t, 0.65, 1.00)) * HH_PELVIS_PITCH
-
-    if ent._hhPelvisIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._hhPelvisIdx, Angle(pelPitch, pelYaw, 0), false)
+    if ent._hhHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._hhHipIdx, Angle(hipPitch, hipYaw, hipRoll), false)
     end
 
-    local spineLean = Smoothstep(Ph(t, 0.45, 0.65)) * HH_SPINE_LEAN
-                    - Smoothstep(Ph(t, 0.80, 1.00)) * HH_SPINE_LEAN
+    -- ── b_pelvis (THE rotation — opens the hip line) ────────
+    -- yaw:   ramps to HH_PELVIS_YAW during pivot, unwinds in recover
+    -- pitch: small forward lean during extension only
+    local pelYaw, pelPitch
+
+    if t < P1 then
+        -- Chamber: yaw begins opening
+        local env = PhaseEnv(0, P1)
+        pelYaw   = HH_PELVIS_YAW * env * 0.5
+        pelPitch = 0
+    elseif t < P2 then
+        -- Pivot: yaw reaches full open
+        local env = PhaseEnv(P1, P2)
+        pelYaw   = HH_PELVIS_YAW * (0.5 + 0.5 * env)
+        pelPitch = 0
+    elseif t < P3 then
+        -- Extension: yaw stabilises at full; pitch adds slight lean
+        local env = PhaseEnv(P2, P3)
+        pelYaw   = HH_PELVIS_YAW
+        pelPitch = HH_PELVIS_PITCH * env
+    elseif t < P4 then
+        -- Hook-back: yaw begins unwinding
+        local env = PhaseEnv(P3, P4)
+        pelYaw   = HH_PELVIS_YAW * (1 - env * 0.6)
+        pelPitch = HH_PELVIS_PITCH * (1 - env)
+    else
+        -- Recover: yaw and pitch fully return to 0
+        local env = PhaseEnv(P4, 1.0)
+        pelYaw   = HH_PELVIS_YAW * 0.4 * (1 - env)
+        pelPitch = 0
+    end
+
+    if ent._hhPelIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._hhPelIdx, Angle(pelPitch, pelYaw, 0), false)
+    end
+
+    -- ── b_spine3 (counterbalance lean) ──────────────────────
+    -- lean away from kicking leg during extension, returns in recover
+    local spineLean
+
+    if t < P1 then
+        spineLean = 0
+    elseif t < P3 then
+        local env = PhaseEnv(P1, P3)
+        spineLean = HH_SPINE_LEAN * env
+    elseif t < P4 then
+        spineLean = HH_SPINE_LEAN
+    else
+        local env = PhaseEnv(P4, 1.0)
+        spineLean = HH_SPINE_LEAN * (1 - env)
+    end
 
     if ent._hhSpineIdx >= 0 then
+        -- roll leans the torso away from the left kicking leg (positive roll = lean right)
         ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0, 0, spineLean), false)
     end
 end
 
 -- ============================================================
---  KICK ACTIVITY GATE
---  Returns true if any timed kick driver is currently running.
---  Used to suppress GekkoStompLegs so stomp never overwrites
---  b_pelvis or b_l/r_hippiston1 during a kick animation.
+--  ENT:Initialize
 -- ============================================================
-local function GekkoAnyKickActive(ent)
-    local now = CurTime()
-    if (ent._hbStartTime    and (now - ent._hbStartTime)    < HB_DURATION)                   then return true end
-    if (ent._fk360StartTime and (now - ent._fk360StartTime) < (ent.FK360_DURATION or 0.9))   then return true end
-    if (ent._skStartTime    and (now - ent._skStartTime)    < SK_DURATION)                   then return true end
-    if (ent._fkStartTime    and (now - ent._fkStartTime)    < FK_DURATION)                   then return true end
-    if (ent._dgkStartTime   and (now - ent._dgkStartTime)   < DGK_DURATION)                  then return true end
-    if (ent._hhStartTime    and (now - ent._hhStartTime)    < HH_DURATION_CL)                then return true end
-    return false
+function ENT:Initialize()
+    self._spineBone = self:LookupBone("b_spine4") or -1
 end
 
 -- ============================================================
---  THINK
+--  ENT:Think  (client)
 -- ============================================================
 function ENT:Think()
-    GekkoDoJumpDust(self)
-    GekkoDoLandDust(self)
-    GekkoDoFK360LandDust(self)
-    GekkoDoMGFX(self)
-    GekkoDoBloodSplat(self)
-end
+    local dt = FrameTime()
 
--- ============================================================
---  DRAW
---
---  Bone driver call order (later wins on shared bones):
---    1. GekkoUpdateHead          -> b_spine4
---    2. GekkoStompLegs           -> leg bones, b_pelvis, b_l/r_hippiston1
---                                   (SKIPPED when any kick driver is active)
---    3. GekkoDoKickBone          -> b_r_upperleg
---    4. GekkoDoHeadbuttBone      -> b_spine3, b_pedestal pos
---    5. GekkoDoFK360Bone         -> b_pelvis yaw
---    6. GekkoDoSpinKickBone      -> b_Pedestal yaw, b_pelvis pos Z,
---                                   b_r_hippiston1 Z, b_r_upperleg X
---    7. GekkoDoFootballKickBone  -> b_l_hippiston1, b_r_hippiston1
---    8. GekkoDoDiagonalKickBone  -> b_l_hippiston1, b_r_hippiston1
---    9. GekkoDoHeelHookBone      -> b_l_hippiston1, b_pelvis, b_spine4
---
---  Each driver writes bones ONLY during its active window.
---  On the single frame it expires, writes one zero-reset then goes silent.
--- ============================================================
-function ENT:Draw()
-    self:SetupBones()
+    local jumpState = self:GetNWInt("GekkoJumpState", JUMP_NONE)
 
-    if not self._spineBone then
-        self._spineBone = self:LookupBone("b_spine4")
-    end
-
-    local t  = CurTime()
-    local dt = math.Clamp(t - (self._cl_lastT or t), 0, 0.05)
-    self._cl_lastT = t
-
-    local jumpState = self:GetGekkoJumpState()
-    local landing   = (jumpState == JUMP_LAND)
-
-    if not landing then GekkoUpdateHead(self, dt) end
-    if not landing then
-        GekkoSyncFootsteps(self)
-        GekkoFootShake(self)
-    end
-
-    local grounded = (jumpState == JUMP_NONE)
-    local stompEnd = self:GetNWFloat("GekkoStompEnd", 0)
-    if t < stompEnd and grounded and not GekkoAnyKickActive(self) then
+    if jumpState == JUMP_RISING or jumpState == JUMP_FALLING then
         GekkoStompLegs(self)
     end
 
@@ -1218,5 +1286,12 @@ function ENT:Draw()
     GekkoDoDiagonalKickBone(self)
     GekkoDoHeelHookBone(self)
 
-    self:DrawModel()
+    GekkoUpdateHead(self, dt)
+    GekkoSyncFootsteps(self)
+    GekkoFootShake(self)
+    GekkoDoJumpDust(self)
+    GekkoDoLandDust(self)
+    GekkoDoFK360LandDust(self)
+    GekkoDoMGFX(self)
+    GekkoDoBloodSplat(self)
 end
