@@ -1,5 +1,10 @@
 -- ============================================================
 --  npc_vj_gekko / crush_system.lua
+--
+--  All per-attack numeric constants are stored in module-level
+--  tables (CFG, ATTACKS) so that GeckoCrush_Think only closes
+--  over a small number of upvalues and stays within LuaJIT's
+--  hard cap of 60.
 -- ============================================================
 
 if SERVER then
@@ -12,6 +17,9 @@ if SERVER then
     util.AddNetworkString("GekkoAxeKickPulse")
 end
 
+-- ============================================================
+--  Shared helpers
+-- ============================================================
 local function CrushDamageEnt(attacker, target, dmg, impulseVec)
     if not IsValid(target) then return end
     if target == attacker  then return end
@@ -41,8 +49,7 @@ local function BlastDamage(dmgMax, dmgMin, dist, radius)
 end
 
 local function ClaimKickLock(ent, duration)
-    local until_t = CurTime() + duration
-    ent._gekkoSuppressActivity = until_t
+    ent._gekkoSuppressActivity = CurTime() + duration
     ent.PauseAttacks = true
     timer.Create("gekko_kick_pauserelease" .. ent:EntIndex(), duration, 1, function()
         if IsValid(ent) then ent.PauseAttacks = false end
@@ -50,90 +57,267 @@ local function ClaimKickLock(ent, duration)
 end
 
 -- ============================================================
---  Constants
+--  CFG  –  general detection constants (few, safe as upvalues)
 -- ============================================================
-local CRUSH_RADIUS   = 96
-local CRUSH_COOLDOWN = 1.0
-local CONE_DOT       = 0.5
+local CFG = {
+    CRUSH_RADIUS    = 96,
+    CRUSH_COOLDOWN  = 1.0,
+    CONE_DOT        = 0.5,
+    KICK_MIN_DIST   = 48,
+    KICK_SPEED      = 30,
+    WALK_CRUSH_W    = 50,
+}
 
--- FK360
-local FK360_DAMAGE        = 30
-local FK360_IMPULSE       = 10000
-local FK360_W             = 20
-local FK360_LAND_RADIUS   = 160
-local FK360_LAND_DMG_MAX  = 45
-local FK360_LAND_DMG_MIN  = 5
-local FK360_LAND_IMPULSE  = 13000
+-- ============================================================
+--  ATTACKS  –  one sub-table per attack, keyed by attack name
+--
+--  Fields used by GeckoCrush_Think:
+--    w          = pool weight
+--    nwkey      = NW int key name
+--    lock       = ClaimKickLock duration (seconds)
+--    dmg        = damage
+--    impulse    = impulse magnitude
+--    hit_t      = timer delay before hull sweep (nil = immediate)
+--    sweep_dist = hull sweep distance (nil = sphere/immediate)
+--    sweep_half = hull half-size
+--    sweep_z    = origin z offset for sweep
+--    dir_fwd    = forward component of impulse direction
+--    dir_z      = z component of impulse direction (signed)
+--    -- FK360 extras:
+--    land_radius, land_dmg_max, land_dmg_min, land_impulse
+--    -- HeelHook extras:
+--    hit_t2, dmg2, impulse2, hook_angle
+--    sweep_dir_fn  (optional, computed at fire time)
+-- ============================================================
+local ATTACKS = {
+    FK360 = {
+        w = 20, nwkey = "GekkoFrontKick360Pulse",
+        dmg = 30, impulse = 10000,
+        land_radius = 160, land_dmg_max = 45, land_dmg_min = 5, land_impulse = 13000,
+    },
+    HEADBUTT = {
+        w = 20, nwkey = "GekkoHeadbuttPulse",
+        lock = 0.55, dmg = 20, impulse = 7000,
+    },
+    KICK = {
+        w = 20, nwkey = "GekkoKickPulse",
+        lock = 0.5, dmg = 25, impulse = 9000,
+    },
+    SPINKICK = {
+        w = 20, nwkey = "GekkoSpinKickPulse",
+        lock = 0.65, dmg = 35, impulse = 11000,
+    },
+    FOOTBALLKICK = {
+        w = 20, nwkey = "GekkoFootballKickPulse",
+        duration = 1.3, hit_t = 0.55,
+        dmg = 40, impulse = 14000,
+        sweep_dist = 140, sweep_half = 55, sweep_z = 60,
+    },
+    DIAGONALKICK = {
+        w = 20, nwkey = "GekkoDiagonalKickPulse",
+        duration = 1.4, hit_t = 0.60,
+        dmg = 38, impulse = 13000,
+        sweep_dist = 150, sweep_half = 55, sweep_z = 60,
+    },
+    HEELHOOK = {
+        w = 20, nwkey = "GekkoHeelHookPulse",
+        duration = 1.6, hit_t = 0.62, hit_t2 = 0.82,
+        dmg = 35, dmg2 = 28, impulse = 12000, impulse2 = 9500,
+        sweep_dist = 160, sweep_half = 50, sweep_z = 65,
+        hook_angle = 55,
+    },
+    SIDEHOOKKICK = {
+        w = 20, nwkey = "GekkoSideHookKickPulse",
+        duration = 1.5, hit_t = 0.55,
+        dmg = 36, impulse = 12500,
+        sweep_dist = 145, sweep_half = 52, sweep_z = 65,
+    },
+    AXEKICK = {
+        w = 20, nwkey = "GekkoAxeKickPulse",
+        duration = 1.4, hit_t = 0.55,
+        dmg = 45, impulse = 15000,
+        sweep_dist = 155, sweep_half = 55, sweep_z = 90,
+    },
+}
 
--- Headbutt
-local HB_DAMAGE      = 20
-local HB_IMPULSE     = 7000
-local HB_W           = 20
+-- ============================================================
+--  Per-attack fire helpers
+--  (defined as plain locals so they don't add upvalues to
+--   GeckoCrush_Think – they only close over ATTACKS/CFG/helpers)
+-- ============================================================
 
--- Simple Kick
-local KICK_DAMAGE    = 25
-local KICK_IMPULSE   = 9000
-local KICK_W         = 20
-local KICK_MIN_DIST  = 48
-local KICK_SPEED     = 30
-local WALK_CRUSH_WIDTH = 50
+local function FireFK360(self, closestTarget, fwd, dot)
+    local A         = ATTACKS.FK360
+    local fk360Dur  = self.FK360_DURATION or 0.9
+    ClaimKickLock(self, fk360Dur + 0.3)
+    local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * A.impulse
+    CrushDamageEnt(self, closestTarget, A.dmg, impulse)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    print(string.format("[GekkoCrush] FK360 HIT1  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
+    local selfRef = self
+    timer.Simple(fk360Dur, function()
+        if not IsValid(selfRef) then return end
+        local origin = selfRef:GetPos() + Vector(0, 0, 40)
+        for _, ent in ipairs(ents.FindInSphere(origin, A.land_radius)) do
+            if ent == selfRef then continue end
+            if not ent:IsNPC() and not ent:IsPlayer() then continue end
+            local entDist = ent:GetPos():Distance(origin)
+            local dmg     = BlastDamage(A.land_dmg_max, A.land_dmg_min, entDist, A.land_radius)
+            local dir     = (ent:GetPos() - origin):GetNormalized()
+            CrushDamageEnt(selfRef, ent, dmg, (dir + Vector(0,0,0.35)):GetNormalized() * A.land_impulse)
+        end
+        local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
+        selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
+    end)
+end
 
--- SpinKick
-local SK_DAMAGE      = 35
-local SK_IMPULSE     = 11000
-local SK_W           = 20
+local function FireHeadbutt(self, closestTarget, fwd)
+    local A = ATTACKS.HEADBUTT
+    ClaimKickLock(self, A.lock)
+    CrushDamageEnt(self, closestTarget, A.dmg, (fwd + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+end
 
--- Football Kick
-local FB_DAMAGE      = 40
-local FB_IMPULSE     = 14000
-local FB_W           = 20
-local FB_DURATION    = 1.3
-local FB_HIT_T       = 0.55
-local FB_SWEEP_DIST  = 140
-local FB_SWEEP_HALF  = 55
+local function FireKick(self, kickTarget, fwd)
+    local A     = ATTACKS.KICK
+    ClaimKickLock(self, A.lock)
+    local toT  = (kickTarget:GetPos() - self:GetPos()):GetNormalized()
+    local dotT = math.Clamp(fwd:Dot(toT), 0.5, 1.0)
+    CrushDamageEnt(self, kickTarget, A.dmg * dotT, (fwd + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+end
 
--- Diagonal Kick
-local DK_DAMAGE      = 38
-local DK_IMPULSE     = 13000
-local DK_W           = 20
-local DK_DURATION    = 1.4
-local DK_HIT_T       = 0.60
-local DK_SWEEP_DIST  = 150
-local DK_SWEEP_HALF  = 55
+local function FireSpinKick(self, closestTarget, fwd, dot, inCone)
+    local A   = ATTACKS.SPINKICK
+    ClaimKickLock(self, A.lock)
+    local dir = (closestTarget:GetPos() - self:GetPos()):GetNormalized()
+    CrushDamageEnt(self, closestTarget, A.dmg, (dir + Vector(0,0,0.4)):GetNormalized() * A.impulse)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    print(string.format("[GekkoCrush] SPINKICK  target=%s  inCone=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), tostring(inCone), dot, next))
+end
 
--- Heel Hook
-local HH_DAMAGE_1    = 35
-local HH_DAMAGE_2    = 28
-local HH_IMPULSE_1   = 12000
-local HH_IMPULSE_2   = 9500
-local HH_W           = 20
-local HH_DURATION    = 1.6
-local HH_HIT_T1      = 0.62
-local HH_HIT_T2      = 0.82
-local HH_SWEEP_DIST  = 160
-local HH_SWEEP_HALF  = 50
-local HH_HOOK_ANGLE  = 55
+local function FireFootballKick(self)
+    local A    = ATTACKS.FOOTBALLKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef = selfRef:GetForward()
+        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + fwdRef * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, (fwdRef + Vector(0,0,0.25)):GetNormalized() * A.impulse)
+        end
+    end)
+end
 
--- Side Hook Kick
-local SHK_DAMAGE     = 36
-local SHK_IMPULSE    = 12500
-local SHK_W          = 20
-local SHK_DURATION   = 1.5
-local SHK_HIT_T      = 0.55
-local SHK_SWEEP_DIST = 145
-local SHK_SWEEP_HALF = 52
+local function FireDiagonalKick(self)
+    local A    = ATTACKS.DIAGONALKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef   = selfRef:GetForward()
+        local rightRef = selfRef:GetRight()
+        local sweepDir = (fwdRef - rightRef * 0.35):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, (sweepDir + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+        end
+    end)
+end
 
--- Axe Kick
--- Single hit at t=AK_HIT_T (phase 3 onset = leg swings down).
--- Hull sweep forward+down; downward+forward impulse.
-local AK_DAMAGE      = 45
-local AK_IMPULSE     = 15000
-local AK_W           = 20
-local AK_DURATION    = 1.4
-local AK_HIT_T       = 0.55
-local AK_SWEEP_DIST  = 155
-local AK_SWEEP_HALF  = 55
+local function FireHeelHook(self)
+    local A    = ATTACKS.HEELHOOK
+    ClaimKickLock(self, A.duration + 0.3)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef   = selfRef:GetForward()
+        local rightRef = selfRef:GetRight()
+        local sweepDir = (fwdRef + rightRef * 0.6):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, (sweepDir + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+        end
+    end)
+    timer.Simple(A.hit_t2, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef   = selfRef:GetForward()
+        local rightRef = selfRef:GetRight()
+        local hookRad  = math.rad(A.hook_angle)
+        local sweepDir = (fwdRef - rightRef * math.tan(hookRad * 0.5)):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z - 5)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg2, (sweepDir + Vector(0,0,0.4)):GetNormalized() * A.impulse2)
+        end
+    end)
+end
 
+local function FireSideHookKick(self)
+    local A    = ATTACKS.SIDEHOOKKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef   = selfRef:GetForward()
+        local rightRef = selfRef:GetRight()
+        local sweepDir = (fwdRef * 0.4 + rightRef * 0.9):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, (sweepDir + Vector(0,0,0.25)):GetNormalized() * A.impulse)
+        end
+    end)
+end
+
+local function FireAxeKick(self, closestTarget, dot)
+    local A    = ATTACKS.AXEKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    print(string.format("[GekkoCrush] AXEKICK  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef   = selfRef:GetForward()
+        local sweepDir = (fwdRef - Vector(0,0,0.3)):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            local impDir = (fwdRef * 0.4 - Vector(0,0,1) * 0.6):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
+            print(string.format("[GekkoCrush] AXEKICK HIT  target=%s  pulse=%d", tr.Entity:GetClass(), next))
+        end
+    end)
+end
+
+-- ============================================================
+--  GeckoCrush_Think
+--  Upvalue count is now small: CFG, ATTACKS, + the Fire* locals
+--  above, BlastDamage, CrushDamageEnt, ClaimKickLock = ~10 UVs
+-- ============================================================
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
     local now = CurTime()
@@ -147,59 +331,56 @@ function ENT:GeckoCrush_Think()
 
     if not self._crushHitTimes then self._crushHitTimes = {} end
 
-    local sphereTargets = {}
-    for _, ent in ipairs(ents.FindInSphere(pos, CRUSH_RADIUS)) do
+    -- find closest NPC/player in sphere
+    local closestTarget, closestDistSq = nil, math.huge
+    for _, ent in ipairs(ents.FindInSphere(pos, CFG.CRUSH_RADIUS)) do
         if ent == self then continue end
         if not ent:IsNPC() and not ent:IsPlayer() then continue end
-        table.insert(sphereTargets, ent)
-    end
-
-    local closestTarget, closestDistSq = nil, math.huge
-    for _, ent in ipairs(sphereTargets) do
         local dsq = pos:DistToSqr(ent:GetPos())
         if dsq < closestDistSq then closestDistSq = dsq; closestTarget = ent end
     end
     if not IsValid(closestTarget) then return end
 
     local lastHit = self._crushHitTimes[closestTarget] or 0
-    if now - lastHit < CRUSH_COOLDOWN then return end
+    if now - lastHit < CFG.CRUSH_COOLDOWN then return end
 
-    local dist      = math.sqrt(closestDistSq)
-    local toTarget  = (closestTarget:GetPos() - self:GetPos()):GetNormalized()
-    local dot       = fwd:Dot(toTarget)
-    local inCone    = (dot >= CONE_DOT)
+    local dist     = math.sqrt(closestDistSq)
+    local toTarget = (closestTarget:GetPos() - self:GetPos()):GetNormalized()
+    local dot      = fwd:Dot(toTarget)
+    local inCone   = (dot >= CFG.CONE_DOT)
 
+    -- walking kick scan
     local kickTarget = nil
-    if inCone and dist > KICK_MIN_DIST and speed >= KICK_SPEED then
-        local sweep = pos + fwd * CRUSH_RADIUS
-        local half  = Vector(WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH, WALK_CRUSH_WIDTH)
+    if inCone and dist > CFG.KICK_MIN_DIST and speed >= CFG.KICK_SPEED then
+        local sweep = pos + fwd * CFG.CRUSH_RADIUS
+        local half  = Vector(CFG.WALK_CRUSH_W, CFG.WALK_CRUSH_W, CFG.WALK_CRUSH_W)
         local tr = util.TraceHull({ start = pos, endpos = sweep, mins = -half, maxs = half, filter = self, mask = MASK_SHOT_HULL })
         if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
             kickTarget = tr.Entity
         end
     end
 
+    -- attack selection
     local attack
-
     if not inCone then
         attack = "SPINKICK"
     else
-        local pool = {}
-        pool[#pool+1] = { name = "FK360",         w = FK360_W }
-        pool[#pool+1] = { name = "HEADBUTT",       w = HB_W    }
-        pool[#pool+1] = { name = "SPINKICK",       w = SK_W    }
-        pool[#pool+1] = { name = "FOOTBALLKICK",   w = FB_W    }
-        pool[#pool+1] = { name = "DIAGONALKICK",   w = DK_W    }
-        pool[#pool+1] = { name = "HEELHOOK",       w = HH_W    }
-        pool[#pool+1] = { name = "SIDEHOOKKICK",   w = SHK_W   }
-        pool[#pool+1] = { name = "AXEKICK",        w = AK_W    }
+        local pool = {
+            { name = "FK360",       w = ATTACKS.FK360.w       },
+            { name = "HEADBUTT",    w = ATTACKS.HEADBUTT.w    },
+            { name = "SPINKICK",    w = ATTACKS.SPINKICK.w    },
+            { name = "FOOTBALLKICK",w = ATTACKS.FOOTBALLKICK.w},
+            { name = "DIAGONALKICK",w = ATTACKS.DIAGONALKICK.w},
+            { name = "HEELHOOK",    w = ATTACKS.HEELHOOK.w    },
+            { name = "SIDEHOOKKICK",w = ATTACKS.SIDEHOOKKICK.w},
+            { name = "AXEKICK",     w = ATTACKS.AXEKICK.w     },
+        }
         if kickTarget then
-            pool[#pool+1] = { name = "KICK", w = KICK_W }
+            pool[#pool+1] = { name = "KICK", w = ATTACKS.KICK.w }
         end
         local total = 0
         for _, e in ipairs(pool) do total = total + e.w end
-        local roll = math.random() * total
-        local acc  = 0
+        local roll, acc = math.random() * total, 0
         for _, e in ipairs(pool) do
             acc = acc + e.w
             if roll <= acc then attack = e.name; break end
@@ -209,199 +390,51 @@ function ENT:GeckoCrush_Think()
 
     self._crushHitTimes[closestTarget] = now
 
-    if attack == "FK360" then
-        local fk360Dur = self.FK360_DURATION or 0.9
-        ClaimKickLock(self, fk360Dur + 0.3)
-        local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * FK360_IMPULSE
-        CrushDamageEnt(self, closestTarget, FK360_DAMAGE, impulse)
-        local next = (self:GetNWInt("GekkoFrontKick360Pulse", 0) % 254) + 1
-        self:SetNWInt("GekkoFrontKick360Pulse", next)
-        print(string.format("[GekkoCrush] FK360 HIT1  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
-        local selfRef = self
-        timer.Simple(fk360Dur, function()
-            if not IsValid(selfRef) then return end
-            local origin = selfRef:GetPos() + Vector(0, 0, 40)
-            for _, ent in ipairs(ents.FindInSphere(origin, FK360_LAND_RADIUS)) do
-                if ent == selfRef then continue end
-                if not ent:IsNPC() and not ent:IsPlayer() then continue end
-                local entDist = ent:GetPos():Distance(origin)
-                local dmg = BlastDamage(FK360_LAND_DMG_MAX, FK360_LAND_DMG_MIN, entDist, FK360_LAND_RADIUS)
-                local dir = (ent:GetPos() - origin):GetNormalized()
-                CrushDamageEnt(selfRef, ent, dmg, (dir + Vector(0,0,0.35)):GetNormalized() * FK360_LAND_IMPULSE)
-            end
-            local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
-            selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
-        end)
-
-    elseif attack == "HEADBUTT" then
-        ClaimKickLock(self, 0.55)
-        CrushDamageEnt(self, closestTarget, HB_DAMAGE, (fwd + Vector(0,0,0.3)):GetNormalized() * HB_IMPULSE)
-        local next = (self:GetNWInt("GekkoHeadbuttPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoHeadbuttPulse", next)
-
-    elseif attack == "KICK" then
-        ClaimKickLock(self, 0.5)
-        local target  = kickTarget
-        local toT     = (target:GetPos() - self:GetPos()):GetNormalized()
-        local dotT    = math.Clamp(fwd:Dot(toT), 0.5, 1.0)
-        CrushDamageEnt(self, target, KICK_DAMAGE * dotT, (fwd + Vector(0,0,0.3)):GetNormalized() * KICK_IMPULSE)
-        local next = (self:GetNWInt("GekkoKickPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoKickPulse", next)
-
-    elseif attack == "FOOTBALLKICK" then
-        ClaimKickLock(self, FB_DURATION + 0.2)
-        local next = (self:GetNWInt("GekkoFootballKickPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoFootballKickPulse", next)
-        local selfRef = self
-        timer.Simple(FB_HIT_T, function()
-            if not IsValid(selfRef) then return end
-            local fwdRef = selfRef:GetForward()
-            local origin = selfRef:GetPos() + Vector(0,0,60)
-            local half = Vector(FB_SWEEP_HALF, FB_SWEEP_HALF, FB_SWEEP_HALF)
-            local tr = util.TraceHull({ start = origin, endpos = origin + fwdRef * FB_SWEEP_DIST, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
-            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-                CrushDamageEnt(selfRef, tr.Entity, FB_DAMAGE, (fwdRef + Vector(0,0,0.25)):GetNormalized() * FB_IMPULSE)
-            end
-        end)
-
-    elseif attack == "DIAGONALKICK" then
-        ClaimKickLock(self, DK_DURATION + 0.2)
-        local next = (self:GetNWInt("GekkoDiagonalKickPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoDiagonalKickPulse", next)
-        local selfRef = self
-        timer.Simple(DK_HIT_T, function()
-            if not IsValid(selfRef) then return end
-            local fwdRef   = selfRef:GetForward()
-            local rightRef = selfRef:GetRight()
-            local sweepDir = (fwdRef - rightRef * 0.35):GetNormalized()
-            local origin   = selfRef:GetPos() + Vector(0,0,60)
-            local half     = Vector(DK_SWEEP_HALF, DK_SWEEP_HALF, DK_SWEEP_HALF)
-            local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * DK_SWEEP_DIST, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
-            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-                CrushDamageEnt(selfRef, tr.Entity, DK_DAMAGE, (sweepDir + Vector(0,0,0.3)):GetNormalized() * DK_IMPULSE)
-            end
-        end)
-
-    elseif attack == "HEELHOOK" then
-        ClaimKickLock(self, HH_DURATION + 0.3)
-        local next = (self:GetNWInt("GekkoHeelHookPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoHeelHookPulse", next)
-        local selfRef = self
-        timer.Simple(HH_HIT_T1, function()
-            if not IsValid(selfRef) then return end
-            local fwdRef   = selfRef:GetForward()
-            local rightRef = selfRef:GetRight()
-            local sweepDir1 = (fwdRef + rightRef * 0.6):GetNormalized()
-            local origin1   = selfRef:GetPos() + Vector(0,0,65)
-            local half      = Vector(HH_SWEEP_HALF, HH_SWEEP_HALF, HH_SWEEP_HALF)
-            local tr1 = util.TraceHull({ start = origin1, endpos = origin1 + sweepDir1 * HH_SWEEP_DIST, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
-            if IsValid(tr1.Entity) and (tr1.Entity:IsNPC() or tr1.Entity:IsPlayer()) then
-                CrushDamageEnt(selfRef, tr1.Entity, HH_DAMAGE_1, (sweepDir1 + Vector(0,0,0.3)):GetNormalized() * HH_IMPULSE_1)
-            end
-        end)
-        timer.Simple(HH_HIT_T2, function()
-            if not IsValid(selfRef) then return end
-            local fwdRef   = selfRef:GetForward()
-            local rightRef = selfRef:GetRight()
-            local hookRad  = math.rad(HH_HOOK_ANGLE)
-            local sweepDir2 = (fwdRef - rightRef * math.tan(hookRad * 0.5)):GetNormalized()
-            local origin2   = selfRef:GetPos() + Vector(0,0,60)
-            local half      = Vector(HH_SWEEP_HALF, HH_SWEEP_HALF, HH_SWEEP_HALF)
-            local tr2 = util.TraceHull({ start = origin2, endpos = origin2 + sweepDir2 * HH_SWEEP_DIST, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
-            if IsValid(tr2.Entity) and (tr2.Entity:IsNPC() or tr2.Entity:IsPlayer()) then
-                CrushDamageEnt(selfRef, tr2.Entity, HH_DAMAGE_2, (sweepDir2 + Vector(0,0,0.4)):GetNormalized() * HH_IMPULSE_2)
-            end
-        end)
-
-    elseif attack == "SIDEHOOKKICK" then
-        ClaimKickLock(self, SHK_DURATION + 0.2)
-        local next = (self:GetNWInt("GekkoSideHookKickPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoSideHookKickPulse", next)
-        local selfRef = self
-        timer.Simple(SHK_HIT_T, function()
-            if not IsValid(selfRef) then return end
-            local fwdRef   = selfRef:GetForward()
-            local rightRef = selfRef:GetRight()
-            local sweepDir = (fwdRef * 0.4 + rightRef * 0.9):GetNormalized()
-            local origin   = selfRef:GetPos() + Vector(0,0,65)
-            local half     = Vector(SHK_SWEEP_HALF, SHK_SWEEP_HALF, SHK_SWEEP_HALF)
-            local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * SHK_SWEEP_DIST, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
-            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-                CrushDamageEnt(selfRef, tr.Entity, SHK_DAMAGE, (sweepDir + Vector(0,0,0.25)):GetNormalized() * SHK_IMPULSE)
-            end
-        end)
-
-    elseif attack == "AXEKICK" then
-        -- Single hit at AK_HIT_T (phase 3 onset).
-        -- Hull sweep straight forward+slightly down; downward+forward impulse.
-        ClaimKickLock(self, AK_DURATION + 0.2)
-        local next = (self:GetNWInt("GekkoAxeKickPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoAxeKickPulse", next)
-        print(string.format("[GekkoCrush] AXEKICK  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
-        local selfRef = self
-        timer.Simple(AK_HIT_T, function()
-            if not IsValid(selfRef) then return end
-            local fwdRef = selfRef:GetForward()
-            local sweepDir = (fwdRef - Vector(0,0,0.3)):GetNormalized()
-            local origin   = selfRef:GetPos() + Vector(0,0,90)
-            local half     = Vector(AK_SWEEP_HALF, AK_SWEEP_HALF, AK_SWEEP_HALF)
-            local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * AK_SWEEP_DIST, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
-            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-                -- downward + forward impulse: leg axe-chopping down onto target
-                local impDir = (fwdRef * 0.4 - Vector(0,0,1) * 0.6):GetNormalized()
-                CrushDamageEnt(selfRef, tr.Entity, AK_DAMAGE, impDir * AK_IMPULSE)
-                print(string.format("[GekkoCrush] AXEKICK HIT  target=%s  pulse=%d", tr.Entity:GetClass(), next))
-            end
-        end)
-
-    else -- SPINKICK
-        ClaimKickLock(self, 0.65)
-        local dir     = (closestTarget:GetPos() - self:GetPos()):GetNormalized()
-        CrushDamageEnt(self, closestTarget, SK_DAMAGE, (dir + Vector(0,0,0.4)):GetNormalized() * SK_IMPULSE)
-        local next = (self:GetNWInt("GekkoSpinKickPulse", 0) % 254) + 1
-        self:SetNWInt("GekkoSpinKickPulse", next)
-        print(string.format("[GekkoCrush] SPINKICK  target=%s  inCone=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), tostring(inCone), dot, next))
+    -- dispatch
+    if     attack == "FK360"        then FireFK360(self, closestTarget, fwd, dot)
+    elseif attack == "HEADBUTT"     then FireHeadbutt(self, closestTarget, fwd)
+    elseif attack == "KICK"         then FireKick(self, kickTarget, fwd)
+    elseif attack == "FOOTBALLKICK" then FireFootballKick(self)
+    elseif attack == "DIAGONALKICK" then FireDiagonalKick(self)
+    elseif attack == "HEELHOOK"     then FireHeelHook(self)
+    elseif attack == "SIDEHOOKKICK" then FireSideHookKick(self)
+    elseif attack == "AXEKICK"      then FireAxeKick(self, closestTarget, dot)
+    else                                 FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end
 
 -- ============================================================
 --  LAUNCH BLAST
 -- ============================================================
-local LAUNCH_RADIUS     = 220
-local LAUNCH_DAMAGE_MAX = 40
-local LAUNCH_DAMAGE_MIN = 1
-local LAUNCH_IMPULSE    = 18000
+local LAUNCH = { radius = 220, dmg_max = 40, dmg_min = 1, impulse = 18000 }
 
 function ENT:GeckoCrush_LaunchBlast()
     local origin = self:GetPos() + Vector(0, 0, 40)
-    for _, ent in ipairs(ents.FindInSphere(origin, LAUNCH_RADIUS)) do
+    for _, ent in ipairs(ents.FindInSphere(origin, LAUNCH.radius)) do
         if ent == self then continue end
         if not ent:IsNPC() and not ent:IsPlayer() and not IsValid(ent:GetPhysicsObject()) then continue end
-        local dist    = ent:GetPos():Distance(origin)
-        local dmg     = BlastDamage(LAUNCH_DAMAGE_MAX, LAUNCH_DAMAGE_MIN, dist, LAUNCH_RADIUS)
-        local dir     = (ent:GetPos() - origin):GetNormalized()
-        CrushDamageEnt(self, ent, dmg, (dir + Vector(0,0,0.5)):GetNormalized() * LAUNCH_IMPULSE)
+        local dist = ent:GetPos():Distance(origin)
+        local dmg  = BlastDamage(LAUNCH.dmg_max, LAUNCH.dmg_min, dist, LAUNCH.radius)
+        local dir  = (ent:GetPos() - origin):GetNormalized()
+        CrushDamageEnt(self, ent, dmg, (dir + Vector(0,0,0.5)):GetNormalized() * LAUNCH.impulse)
     end
 end
 
 -- ============================================================
 --  LAND BLAST
 -- ============================================================
-local LAND_RADIUS     = 300
-local LAND_DAMAGE_MAX = 60
-local LAND_DAMAGE_MIN = 1
-local LAND_IMPULSE    = 22000
+local LAND = { radius = 300, dmg_max = 60, dmg_min = 1, impulse = 22000 }
 
 function ENT:GeckoCrush_LandBlast()
     local origin   = self:GetPos() + Vector(0, 0, 20)
     local self_ref = self
-    for _, ent in ipairs(ents.FindInSphere(origin, LAND_RADIUS)) do
+    for _, ent in ipairs(ents.FindInSphere(origin, LAND.radius)) do
         if ent == self then continue end
         if not ent:IsNPC() and not ent:IsPlayer() and not IsValid(ent:GetPhysicsObject()) then continue end
-        local dist    = ent:GetPos():Distance(origin)
-        local dmg     = BlastDamage(LAND_DAMAGE_MAX, LAND_DAMAGE_MIN, dist, LAND_RADIUS)
-        local dir     = (ent:GetPos() - origin):GetNormalized()
-        CrushDamageEnt(self, ent, dmg, (dir + Vector(0,0,1.2)):GetNormalized() * LAND_IMPULSE)
+        local dist = ent:GetPos():Distance(origin)
+        local dmg  = BlastDamage(LAND.dmg_max, LAND.dmg_min, dist, LAND.radius)
+        local dir  = (ent:GetPos() - origin):GetNormalized()
+        CrushDamageEnt(self, ent, dmg, (dir + Vector(0,0,1.2)):GetNormalized() * LAND.impulse)
     end
     timer.Simple(0, function()
         if not IsValid(self_ref) then return end
