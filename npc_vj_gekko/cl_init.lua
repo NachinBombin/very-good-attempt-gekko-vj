@@ -170,50 +170,54 @@ local AK_SPINE_BONE = "b_spine3"
 -- ============================================================
 --  JUMP KICK ANIMATION
 --
---  LEFT variant  (original):
---    Kicking bone  : b_l_hippiston1
---    Bracing bone  : b_r_hippiston1
+--  4 phases over JK_DURATION = 1.6 s  (t = 0..1):
 --
---  RIGHT variant  (mirrored, Z-signs flipped):
---    Kicking bone  : b_r_hippiston1
---    Bracing bone  : b_l_hippiston1
+--  Phase 1  [0.000 - 0.300]  Preparation - leg chambers, weight shifts
+--    b_l_hippiston1  -> Angle(58,  0,  -8)   (left leg loads back)
+--    b_r_hippiston1  -> Angle(88,  0, -36)   (right leg braces)
 --
---  Selection: strict toggle (_jkMirror flips on every new pulse).
---  Starts TRUE so: pulse1=left, pulse2=right, pulse3=left...
---  (_jkPulseLast seeded to -1 so pulse 1 is never swallowed.)
+--  Phase 2  [0.300 - 0.550]  Kick + forward hop  (server fires damage at 0.55 s)
+--    b_l_hippiston1  -> Angle(56,  0,  79)   (left leg extends forward/up)
+--    b_r_hippiston1  -> Angle(88,  0, -36)   (right stays braced)
+--    b_pedestal pos  -> Vector(30, 0, 13)    (body hops forward)
 --
---  Pedestal motion is identical for both variants.
---  Mutex key : "JUMPKICK"  |  NW signal : GekkoJumpKickPulse
+--  Phase 3  [0.550 - 1.000]  Falling - body tilts as Gekko descends
+--    b_l_hippiston1  -> Angle(0,  43,  0)    (leg hangs loose)
+--    b_pedestal ang  -> Angle(0,  20,  0)    (body yaws slightly)
+--    b_pedestal pos  -> Vector(0,  0,  0)    (re-centres)
+--
+--  Phase 4  [1.000 - 1.600]  Smooth recovery to rest
+--    All bones lerp back to Angle/Vector(0,0,0).
+--
+--  Mutex key : "JUMPKICK"
+--  NW signal : GekkoJumpKickPulse
 -- ============================================================
 local JK_DURATION = 1.6
-local JK_P1_END   = 0.300 / JK_DURATION
-local JK_P2_END   = 0.550 / JK_DURATION
-local JK_P3_END   = 1.000 / JK_DURATION
+local JK_P1_END   = 0.300 / JK_DURATION   -- ~0.1875
+local JK_P2_END   = 0.550 / JK_DURATION   -- ~0.3438
+local JK_P3_END   = 1.000 / JK_DURATION   -- ~0.6250
+-- Phase 4 ends at 1.0
 
--- ---- LEFT variant (kicking leg = left) ----
+-- Phase 1 peaks
 local JK_P1_LHIP  = Angle(58,  0,  -8)
 local JK_P1_RHIP  = Angle(88,  0, -36)
+
+-- Phase 2 peaks  (kick extension)
 local JK_P2_LHIP  = Angle(56,  0,  79)
-local JK_P2_RHIP  = Angle(88,  0, -36)
-local JK_P3_LHIP  = Angle(0,  43,   0)
-
--- ---- RIGHT variant (kicking leg = right, Z-signs flipped) ----
-local JKR_P1_RHIP = Angle(58,  0,   8)
-local JKR_P1_LHIP = Angle(88,  0,  36)
-local JKR_P2_RHIP = Angle(56,  0, -79)
-local JKR_P2_LHIP = Angle(88,  0,  36)
-local JKR_P3_RHIP = Angle(0,  43,   0)
-
--- ---- Shared pedestal ----
+local JK_P2_RHIP  = Angle(88,  0, -36)   -- unchanged from P1
 local JK_P2_PED_POS = Vector(30, 0, 13)
+
+-- Phase 3 peaks  (falling)
+local JK_P3_LHIP    = Angle(0,  43,  0)
 local JK_P3_PED_ANG = Angle(0,  20,  0)
+local JK_P3_PED_POS = Vector(0,  0,  0)
 
-local JK_REST     = Angle(0, 0, 0)
-local JK_REST_POS = Vector(0, 0, 0)
+local JK_REST       = Angle(0, 0, 0)
+local JK_REST_POS   = Vector(0, 0, 0)
 
-local JK_LHIP_BONE = "b_l_hippiston1"
-local JK_RHIP_BONE = "b_r_hippiston1"
-local JK_PED_BONE  = "b_pedestal"
+local JK_LHIP_BONE  = "b_l_hippiston1"
+local JK_RHIP_BONE  = "b_r_hippiston1"
+local JK_PED_BONE   = "b_pedestal"
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -1236,15 +1240,25 @@ end
 -- ============================================================
 --  JUMP KICK BONE DRIVER  (mutex: JUMPKICK)
 --
---  _jkMirror toggles on every new pulse (strict alternation).
---  Seeded TRUE + _jkPulseLast=-1 so:
---    pulse 1 → flips to false → LEFT leg
---    pulse 2 → flips to true  → RIGHT leg
---    pulse 3 → flips to false → LEFT leg  ...
+--  Drives: b_l_hippiston1, b_r_hippiston1, b_pedestal (ang+pos)
 --
---  Seeding _jkPulseLast to -1 (not the current NW value)
---  guarantees pulse 1 is never silently swallowed even when
---  the NW int already has a non-zero value at spawn time.
+--  Phase 1  [0, JK_P1_END]   Preparation
+--    L hip  ramps to JK_P1_LHIP  Angle(58,  0,  -8)
+--    R hip  ramps to JK_P1_RHIP  Angle(88,  0, -36)
+--
+--  Phase 2  [JK_P1_END, JK_P2_END]  Kick extension + hop
+--    L hip  moves to JK_P2_LHIP  Angle(56,  0,  79)
+--    R hip  holds  JK_P2_RHIP   Angle(88,  0, -36)
+--    Pedestal pos ramps to JK_P2_PED_POS  Vector(30, 0, 13)
+--
+--  Phase 3  [JK_P2_END, JK_P3_END]  Falling
+--    L hip  moves to JK_P3_LHIP  Angle(0,  43,  0)
+--    R hip  returns to REST
+--    Pedestal ang ramps to JK_P3_PED_ANG  Angle(0, 20, 0)
+--    Pedestal pos returns to Vector(0, 0, 0)
+--
+--  Phase 4  [JK_P3_END, 1.0]  Smooth recovery
+--    All bones lerp back to rest.
 -- ============================================================
 local function GekkoDoJumpKickBone(ent)
     if ent._jkInited == nil then
@@ -1253,17 +1267,15 @@ local function GekkoDoJumpKickBone(ent)
         ent._jkRHipIdx   = ent:LookupBone(JK_RHIP_BONE) or -1
         ent._jkPedIdx    = ent:LookupBone(JK_PED_BONE)  or -1
         ent._jkStartTime = -9999
-        ent._jkPulseLast = -1     -- seed to -1: pulse 1 is never swallowed
+        ent._jkPulseLast = ent:GetNWInt("GekkoJumpKickPulse", 0)
         ent._jkWasActive = false
-        ent._jkMirror    = true   -- seed true: flip on pulse 1 → false → LEFT
     end
 
     local pulse = ent:GetNWInt("GekkoJumpKickPulse", 0)
     if pulse ~= ent._jkPulseLast then
         ent._jkPulseLast = pulse
         ent._jkStartTime = CurTime()
-        ent._jkMirror    = not ent._jkMirror   -- strict alternation
-        print(string.format("[GekkoJumpKick] pulse=%d  mirror=%s", pulse, tostring(ent._jkMirror)))
+        print(string.format("[GekkoJumpKick] pulse=%d", pulse))
     end
 
     local elapsed = CurTime() - ent._jkStartTime
@@ -1273,10 +1285,10 @@ local function GekkoDoJumpKickBone(ent)
         if ent._jkWasActive then
             ent._jkWasActive = false
             ReleaseHips(ent, "JUMPKICK")
-            if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,   JK_REST,     false) end
-            if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,   JK_REST,     false) end
-            if ent._jkPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._jkPedIdx,    JK_REST,     false) end
-            if ent._jkPedIdx  >= 0 then ent:ManipulateBonePosition(ent._jkPedIdx,  JK_REST_POS, false) end
+            if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,    JK_REST,     false) end
+            if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,    JK_REST,     false) end
+            if ent._jkPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._jkPedIdx,     JK_REST,     false) end
+            if ent._jkPedIdx  >= 0 then ent:ManipulateBonePosition(ent._jkPedIdx,   JK_REST_POS, false) end
         end
         return
     end
@@ -1284,38 +1296,23 @@ local function GekkoDoJumpKickBone(ent)
     if not ClaimHips(ent, "JUMPKICK") then return end
     ent._jkWasActive = true
 
-    local t      = elapsed / JK_DURATION
-    local mirror = ent._jkMirror
+    local t = elapsed / JK_DURATION
 
-    local P1_KICK, P1_BRACE
-    local P2_KICK, P2_BRACE
-    local P3_KICK
-    if mirror then
-        P1_KICK  = JKR_P1_RHIP;  P1_BRACE = JKR_P1_LHIP
-        P2_KICK  = JKR_P2_RHIP;  P2_BRACE = JKR_P2_LHIP
-        P3_KICK  = JKR_P3_RHIP
-    else
-        P1_KICK  = JK_P1_LHIP;   P1_BRACE = JK_P1_RHIP
-        P2_KICK  = JK_P2_LHIP;   P2_BRACE = JK_P2_RHIP
-        P3_KICK  = JK_P3_LHIP
-    end
-
-    local kickIdx  = mirror and ent._jkRHipIdx or ent._jkLHipIdx
-    local braceIdx = mirror and ent._jkLHipIdx or ent._jkRHipIdx
-
-    local kick, brace, pedAng, pedPos
+    local lhip, rhip, pedAng, pedPos
 
     if t < JK_P1_END then
+        -- Phase 1: preparation
         local env = Smoothstep(t / JK_P1_END)
-        kick   = LerpAngle(JK_REST, P1_KICK,  env)
-        brace  = LerpAngle(JK_REST, P1_BRACE, env)
+        lhip   = LerpAngle(JK_REST,      JK_P1_LHIP,    env)
+        rhip   = LerpAngle(JK_REST,      JK_P1_RHIP,    env)
         pedAng = JK_REST
         pedPos = JK_REST_POS
 
     elseif t < JK_P2_END then
+        -- Phase 2: kick + hop
         local env = Smoothstep((t - JK_P1_END) / (JK_P2_END - JK_P1_END))
-        kick   = LerpAngle(P1_KICK,  P2_KICK,  env)
-        brace  = P2_BRACE
+        lhip   = LerpAngle(JK_P1_LHIP, JK_P2_LHIP,    env)
+        rhip   = JK_P2_RHIP
         pedAng = JK_REST
         pedPos = Vector(
             Lerp(env, 0, JK_P2_PED_POS.x),
@@ -1324,10 +1321,11 @@ local function GekkoDoJumpKickBone(ent)
         )
 
     elseif t < JK_P3_END then
+        -- Phase 3: falling
         local env = Smoothstep((t - JK_P2_END) / (JK_P3_END - JK_P2_END))
-        kick   = LerpAngle(P2_KICK,  P3_KICK,  env)
-        brace  = LerpAngle(P2_BRACE, JK_REST,  env)
-        pedAng = LerpAngle(JK_REST,  JK_P3_PED_ANG, env)
+        lhip   = LerpAngle(JK_P2_LHIP, JK_P3_LHIP,    env)
+        rhip   = LerpAngle(JK_P2_RHIP, JK_REST,        env)
+        pedAng = LerpAngle(JK_REST,     JK_P3_PED_ANG,  env)
         pedPos = Vector(
             Lerp(env, JK_P2_PED_POS.x, 0),
             0,
@@ -1335,17 +1333,18 @@ local function GekkoDoJumpKickBone(ent)
         )
 
     else
+        -- Phase 4: recovery
         local env = Smoothstep((t - JK_P3_END) / (1.0 - JK_P3_END))
-        kick   = LerpAngle(P3_KICK,       JK_REST, env)
-        brace  = JK_REST
-        pedAng = LerpAngle(JK_P3_PED_ANG, JK_REST, env)
+        lhip   = LerpAngle(JK_P3_LHIP,    JK_REST,     env)
+        rhip   = JK_REST
+        pedAng = LerpAngle(JK_P3_PED_ANG, JK_REST,     env)
         pedPos = JK_REST_POS
     end
 
-    if kickIdx  >= 0 then ent:ManipulateBoneAngles(kickIdx,   kick,   false) end
-    if braceIdx >= 0 then ent:ManipulateBoneAngles(braceIdx,  brace,  false) end
-    if ent._jkPedIdx >= 0 then ent:ManipulateBoneAngles(ent._jkPedIdx,   pedAng, false) end
-    if ent._jkPedIdx >= 0 then ent:ManipulateBonePosition(ent._jkPedIdx, pedPos, false) end
+    if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,   lhip,   false) end
+    if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,   rhip,   false) end
+    if ent._jkPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._jkPedIdx,    pedAng, false) end
+    if ent._jkPedIdx  >= 0 then ent:ManipulateBonePosition(ent._jkPedIdx,  pedPos, false) end
 end
 
 -- ============================================================
