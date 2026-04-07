@@ -101,26 +101,41 @@ local FK_RHIP_BONE     = "b_r_hippiston1"
 -- ============================================================
 local DGK_DURATION       = 1.4
 
-local DGK_P1_END         = 0.300 / DGK_DURATION   -- ~0.214
-local DGK_P2_END         = 0.600 / DGK_DURATION   -- ~0.429
-local DGK_P3_END         = 0.750 / DGK_DURATION   -- ~0.536
-local DGK_P4_END         = 0.950 / DGK_DURATION   -- ~0.679
--- Phase 5 runs from DGK_P4_END to 1.0
+local DGK_P1_END         = 0.300 / DGK_DURATION
+local DGK_P2_END         = 0.600 / DGK_DURATION
+local DGK_P3_END         = 0.750 / DGK_DURATION
+local DGK_P4_END         = 0.950 / DGK_DURATION
 
--- Phase 1 peak targets
 local DGK_P1_LHIP  = Angle( -8, -22,  43)
 local DGK_P1_RHIP  = Angle(-32,   0,   0)
-
--- Phase 3 sweep targets
 local DGK_P3_LHIP  = Angle( -8, -22, 105)
 local DGK_P3_RHIP  = Angle(109,   0,   0)
-
--- Phase 4 inertia targets
 local DGK_P4_LHIP  = Angle(136,   0,  12)
 local DGK_P4_RHIP  = Angle(  0,   0,   0)
 
 local DGK_LHIP_BONE = "b_l_hippiston1"
 local DGK_RHIP_BONE = "b_r_hippiston1"
+
+-- ============================================================
+--  HEEL HOOK ANIMATION
+--
+--  7 poses over HH_DURATION_CL = 1.6 s:
+--
+--    t 0.00  Stance   — pelvis neutral, all bones rest
+--    t 0.12  Chamber  — knee rises, shin tucks, torso leans back slightly
+--    t 0.28  Pivot    — pelvis yaw opens kicking hip ~30 deg, chamber held
+--    t 0.42  Extend   — lower leg shoots outward, heel leads
+--    t 0.56  Hook     — foot sweeps across target line, C-path arc
+--    t 0.70  Retract  — knee folds back, foot returns under body
+--    t 1.00  Recover  — all bones return to rest
+--
+--  Bones used: b_pelvis (yaw+pitch), b_spine4 (pitch counterbalance),
+--              b_l_hippiston1 (lift+outward), b_l_thigh (roll),
+--              b_l_calf (tuck/extend/hook), b_l_foot (dorsiflex/heel),
+--              b_l_toe (compact curl).
+--  NW signal: GekkoHeelHookPulse
+-- ============================================================
+local HH_DURATION_CL = 1.6
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -873,14 +888,6 @@ end
 
 -- ============================================================
 --  DIAGONAL KICK BONE DRIVER
---
---  Phase 1  t 0.000-DGK_P1_END   ramp to DGK_P1_LHIP / DGK_P1_RHIP
---  Phase 2  t DGK_P1_END-DGK_P2_END  hold
---  Phase 3  t DGK_P2_END-DGK_P3_END  sweep to DGK_P3_LHIP / DGK_P3_RHIP
---  Phase 4  t DGK_P3_END-DGK_P4_END  inertia to DGK_P4_LHIP / DGK_P4_RHIP
---  Phase 5  t DGK_P4_END-1.0         recovery back to Angle(0,0,0)
---
---  NW signal: GekkoDiagonalKickPulse
 -- ============================================================
 local function GekkoDoDiagonalKickBone(ent)
     if ent._dgkInited == nil then
@@ -913,21 +920,17 @@ local function GekkoDoDiagonalKickBone(ent)
         local env = Smoothstep(t / DGK_P1_END)
         lhip = LerpAngle(REST,       DGK_P1_LHIP, env)
         rhip = LerpAngle(REST,       DGK_P1_RHIP, env)
-
     elseif t < DGK_P2_END then
         lhip = DGK_P1_LHIP
         rhip = DGK_P1_RHIP
-
     elseif t < DGK_P3_END then
         local env = Smoothstep((t - DGK_P2_END) / (DGK_P3_END - DGK_P2_END))
         lhip = LerpAngle(DGK_P1_LHIP, DGK_P3_LHIP, env)
         rhip = LerpAngle(DGK_P1_RHIP, DGK_P3_RHIP, env)
-
     elseif t < DGK_P4_END then
         local env = Smoothstep((t - DGK_P3_END) / (DGK_P4_END - DGK_P3_END))
         lhip = LerpAngle(DGK_P3_LHIP, DGK_P4_LHIP, env)
         rhip = LerpAngle(DGK_P3_RHIP, DGK_P4_RHIP, env)
-
     else
         local env = Smoothstep((t - DGK_P4_END) / (1.0 - DGK_P4_END))
         lhip = LerpAngle(DGK_P4_LHIP, REST, env)
@@ -936,6 +939,113 @@ local function GekkoDoDiagonalKickBone(ent)
 
     if ent._dgkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkLHipIdx, lhip, false) end
     if ent._dgkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkRHipIdx, rhip, false) end
+end
+
+-- ============================================================
+--  HEEL HOOK BONE DRIVER
+--
+--  Drives: b_pelvis (yaw+pitch), b_spine4 (pitch counterbalance),
+--          b_l_hippiston1 (lift+outward drive), b_l_thigh (roll),
+--          b_l_calf (tuck/extend/hook), b_l_foot (dorsiflex/heel lead),
+--          b_l_toe (compact curl on hook-back).
+--  NW signal: GekkoHeelHookPulse
+-- ============================================================
+local function GekkoDoHeelHookBone(ent)
+    if ent._hhInited == nil then
+        ent._hhInited      = true
+        ent._hhPelvisIdx   = ent:LookupBone("b_pelvis")        or -1
+        ent._hhSpine4Idx   = ent:LookupBone("b_spine4")        or -1
+        ent._hhLHipIdx     = ent:LookupBone("b_l_hippiston1")  or -1
+        ent._hhLThighIdx   = ent:LookupBone("b_l_thigh")       or -1
+        ent._hhLCalfIdx    = ent:LookupBone("b_l_calf")        or -1
+        ent._hhLFootIdx    = ent:LookupBone("b_l_foot")        or -1
+        ent._hhLToeIdx     = ent:LookupBone("b_l_toe")         or -1
+        ent._hhStartTime   = -9999
+        ent._hhPulseLast   = ent:GetNWInt("GekkoHeelHookPulse", 0)
+    end
+
+    local pulse = ent:GetNWInt("GekkoHeelHookPulse", 0)
+    if pulse ~= ent._hhPulseLast then
+        ent._hhPulseLast = pulse
+        ent._hhStartTime = CurTime()
+        print(string.format("[GekkoHeelHook] pulse=%d", pulse))
+    end
+
+    local elapsed = CurTime() - ent._hhStartTime
+    if elapsed >= HH_DURATION_CL or elapsed < 0 then
+        if ent._hhPelvisIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhPelvisIdx,  Angle(0, 0, 0), false) end
+        if ent._hhSpine4Idx  >= 0 then ent:ManipulateBoneAngles(ent._hhSpine4Idx,  Angle(0, 0, 0), false) end
+        if ent._hhLHipIdx    >= 0 then ent:ManipulateBoneAngles(ent._hhLHipIdx,    Angle(0, 0, 0), false) end
+        if ent._hhLThighIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhLThighIdx,  Angle(0, 0, 0), false) end
+        if ent._hhLCalfIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLCalfIdx,   Angle(0, 0, 0), false) end
+        if ent._hhLFootIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLFootIdx,   Angle(0, 0, 0), false) end
+        if ent._hhLToeIdx    >= 0 then ent:ManipulateBoneAngles(ent._hhLToeIdx,    Angle(0, 0, 0), false) end
+        return
+    end
+
+    local t = elapsed / HH_DURATION_CL
+
+    local function Phase(tIn, t0, t1)
+        return math.Clamp((tIn - t0) / (t1 - t0), 0, 1)
+    end
+
+    -- b_pelvis: yaw opens kicking hip, slight pitch back during extension
+    if ent._hhPelvisIdx >= 0 then
+        local pivotFwd  = Smoothstep(Phase(t, 0.12, 0.38))
+        local pivotBack = Smoothstep(Phase(t, 0.55, 1.0))
+        local pelYaw    = Lerp(pivotFwd, 0, 30) - Lerp(pivotBack, 0, 30)
+        local pelPitch  = Smoothstep(Phase(t, 0.28, 0.56)) * 8
+                        - Smoothstep(Phase(t, 0.62, 1.0))  * 8
+        ent:ManipulateBoneAngles(ent._hhPelvisIdx, Angle(pelPitch, pelYaw, 0), false)
+    end
+
+    -- b_spine4: slight lean back during extension, returns on recover
+    if ent._hhSpine4Idx >= 0 then
+        local leanBack = Smoothstep(Phase(t, 0.28, 0.55)) * 7
+        local leanFwd  = Smoothstep(Phase(t, 0.62, 1.0))  * 7
+        ent:ManipulateBoneAngles(ent._hhSpine4Idx, Angle(leanBack - leanFwd, 0, 0), false)
+    end
+
+    -- b_l_hippiston1: lifts knee, drives outward on extension, retracts
+    if ent._hhLHipIdx >= 0 then
+        local chamberUp   = Smoothstep(Phase(t, 0.10, 0.28)) * 45
+        local extendOut   = Smoothstep(Phase(t, 0.38, 0.55)) * 15
+        local retractDown = Smoothstep(Phase(t, 0.68, 0.95)) * 60
+        ent:ManipulateBoneAngles(ent._hhLHipIdx,
+            Angle(chamberUp - retractDown, 0, extendOut), false)
+    end
+
+    -- b_l_thigh: roll so knee points across body in chamber, opens outward in extension
+    if ent._hhLThighIdx >= 0 then
+        local chamberRoll = Smoothstep(Phase(t, 0.10, 0.30)) * 20
+        local extendRoll  = Smoothstep(Phase(t, 0.38, 0.55)) * -20
+        ent:ManipulateBoneAngles(ent._hhLThighIdx, Angle(0, 0, chamberRoll + extendRoll), false)
+    end
+
+    -- b_l_calf: tuck (chamber) -> extend (heel leads) -> hook-back -> retract
+    if ent._hhLCalfIdx >= 0 then
+        local tuck     = Smoothstep(Phase(t, 0.10, 0.30)) * 70
+        local extend   = Smoothstep(Phase(t, 0.38, 0.56)) * 60
+        local hookBack = Smoothstep(Phase(t, 0.56, 0.72)) * 30
+        local retract  = Smoothstep(Phase(t, 0.70, 0.95)) * 40
+        ent:ManipulateBoneAngles(ent._hhLCalfIdx,
+            Angle(-tuck + extend - hookBack - retract, 0, 0), false)
+    end
+
+    -- b_l_foot: dorsiflex in chamber, heel leads on extension, relaxes in retract
+    if ent._hhLFootIdx >= 0 then
+        local dorsiflex = Smoothstep(Phase(t, 0.10, 0.40)) * 18
+        local heelLead  = Smoothstep(Phase(t, 0.42, 0.60)) * 12
+        local relax     = Smoothstep(Phase(t, 0.65, 1.0))  * 30
+        ent:ManipulateBoneAngles(ent._hhLFootIdx,
+            Angle(dorsiflex - heelLead - relax, 0, 0), false)
+    end
+
+    -- b_l_toe: stays compact, slight curl during hook-back
+    if ent._hhLToeIdx >= 0 then
+        local curl = Smoothstep(Phase(t, 0.50, 0.75)) * 10
+        ent:ManipulateBoneAngles(ent._hhLToeIdx, Angle(curl, 0, 0), false)
+    end
 end
 
 -- ============================================================
@@ -961,7 +1071,11 @@ end
 --    6. GekkoDoSpinKickBone      -> b_Pedestal yaw, b_pelvis pos Z,
 --                                   b_r_hippiston1 Z, b_r_upperleg X
 --    7. GekkoDoFootballKickBone  -> b_l_hippiston1, b_r_hippiston1
---    8. GekkoDoDiagonalKickBone  -> b_l_hippiston1, b_r_hippiston1 (no conflict with #7; only one fires at a time)
+--    8. GekkoDoDiagonalKickBone  -> b_l_hippiston1, b_r_hippiston1
+--    9. GekkoDoHeelHookBone      -> b_pelvis ang, b_spine4 ang,
+--                                   b_l_hippiston1, b_l_thigh, b_l_calf,
+--                                   b_l_foot, b_l_toe
+--       (only one of 7/8/9 fires at a time via their pulse guards)
 -- ============================================================
 function ENT:Draw()
     self:SetupBones()
@@ -993,6 +1107,7 @@ function ENT:Draw()
     GekkoDoSpinKickBone(self)
     GekkoDoFootballKickBone(self)
     GekkoDoDiagonalKickBone(self)
+    GekkoDoHeelHookBone(self)
 
     self:DrawModel()
 end
