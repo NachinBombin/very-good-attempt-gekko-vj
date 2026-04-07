@@ -117,29 +117,32 @@ local DGK_LHIP_BONE = "b_l_hippiston1"
 local DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
---  HEEL HOOK ANIMATION
+--  HEEL HOOK ANIMATION  (simplified — 3 bones only)
 --
---  7 poses over HH_DURATION_CL = 1.6 s.
---  Real Gekko left-leg bone chain (confirmed from GekkoStompLegs):
---    b_l_hippiston1  hip socket / pivot
---    b_l_thigh       upper thigh (forward pitch = knee raise)
---    b_l_upperleg    lower thigh / knee extension (MAIN extension bone)
---    b_l_calf        shin (fold/extend)
---    b_l_foot        foot (dorsiflex / heel lead)
---    b_l_toe         toes (compact curl)
+--  Bones: b_l_hippiston1, b_pelvis, b_spine4
+--  No feet, no toes, no thigh, no calf/upperleg.
 --
---  Pose timeline:
---    t 0.00  Stance   — all bones rest
---    t 0.12  Chamber  — hippiston lifts, thigh raises, upperleg tucks, torso leans
---    t 0.28  Pivot    — pelvis yaw ~45deg opens kicking hip, chamber held
---    t 0.42  Extend   — upperleg shoots outward to ~110deg, heel leads
---    t 0.56  Hook     — foot sweeps across, C-path arc begins
---    t 0.70  Retract  — knee folds, foot returns
---    t 1.00  Recover  — all bones return to rest
+--  hippiston1 drives the visible leg lift and sweep.
+--  pelvis opens the hip line for the hook.
+--  spine4 provides a small counterbalance lean.
 --
+--  Timeline (t = 0..1 over HH_DURATION_CL = 1.6s):
+--    0.00 - 0.20  Chamber: hippiston rises (pitch), pelvis begins shift
+--    0.20 - 0.45  Hold chamber, pelvis rotates open (yaw)
+--    0.45 - 0.65  Extension: hippiston rolls outward (Z), pelvis stabilizes
+--    0.65 - 0.80  Hook-back: hippiston yaw sweeps inward
+--    0.80 - 1.00  Recover: all bones return to rest
+--
+--  HH_HIP_CHAMBER_PITCH = 55 (NOT 90) — avoids sideways pop on this bone's local axis
 --  NW signal: GekkoHeelHookPulse
 -- ============================================================
-local HH_DURATION_CL = 1.6
+local HH_DURATION_CL        = 1.6
+local HH_HIP_CHAMBER_PITCH  =  55    -- leg lift, safe range for this bone's local axis
+local HH_HIP_EXTEND_ROLL    =  30    -- outward tilt at extension peak
+local HH_HIP_HOOK_YAW       = -35    -- inward sweep on hook-back (crosses body)
+local HH_PELVIS_YAW         =  28    -- opens kicking hip line
+local HH_PELVIS_PITCH       =   8    -- slight forward tilt during extension
+local HH_SPINE_LEAN         =  12    -- spine leans away from kick for balance
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -980,34 +983,26 @@ local function GekkoDoDiagonalKickBone(ent)
 end
 
 -- ============================================================
---  HEEL HOOK BONE DRIVER
+--  HEEL HOOK BONE DRIVER  (simplified — 3 bones only)
 --
---  Confirmed bone chain from GekkoStompLegs:
---    b_l_hippiston1  -> hip socket (drives lift, Z-roll for outward)
---    b_l_thigh       -> upper thigh (forward pitch = knee raise)
---    b_l_upperleg    -> lower thigh / knee extension (MAIN extension bone)
---    b_l_calf        -> shin fold/extend
---    b_l_foot        -> foot dorsiflex / heel lead
---    b_l_toe         -> toe curl
+--  Bones: b_l_hippiston1, b_pelvis, b_spine4
+--  hippiston1 drives the visible leg lift and hook sweep.
+--  pelvis opens the hip line.
+--  spine4 counterbalances.
 --
---  Angle magnitudes matched to stomp driver scale (amp=55, upperleg peak ~38deg).
---  All values scaled up 2-3x from previous version which was invisible.
+--  HH_HIP_CHAMBER_PITCH = 55 (NOT 90) prevents the sideways pop
+--  that occurred when this bone's local axis was over-rotated.
 --  NW signal: GekkoHeelHookPulse
 -- ============================================================
 local function GekkoDoHeelHookBone(ent)
     if ent._hhInited == nil then
-        ent._hhInited       = true
-        ent._hhPelvisIdx    = ent:LookupBone("b_pelvis")       or -1
-        ent._hhSpine4Idx    = ent:LookupBone("b_spine4")       or -1
-        ent._hhLHipIdx      = ent:LookupBone("b_l_hippiston1") or -1
-        ent._hhLThighIdx    = ent:LookupBone("b_l_thigh")      or -1
-        ent._hhLUlegIdx     = ent:LookupBone("b_l_upperleg")   or -1
-        ent._hhLCalfIdx     = ent:LookupBone("b_l_calf")       or -1
-        ent._hhLFootIdx     = ent:LookupBone("b_l_foot")       or -1
-        ent._hhLToeIdx      = ent:LookupBone("b_l_toe")        or -1
-        ent._hhStartTime    = -9999
-        ent._hhPulseLast    = ent:GetNWInt("GekkoHeelHookPulse", 0)
-        ent._hhWasActive    = false
+        ent._hhInited    = true
+        ent._hhPelvisIdx = ent:LookupBone("b_pelvis")       or -1
+        ent._hhSpineIdx  = ent:LookupBone("b_spine4")       or -1
+        ent._hhLHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
+        ent._hhStartTime = -9999
+        ent._hhPulseLast = ent:GetNWInt("GekkoHeelHookPulse", 0)
+        ent._hhWasActive = false
     end
 
     local pulse = ent:GetNWInt("GekkoHeelHookPulse", 0)
@@ -1022,14 +1017,9 @@ local function GekkoDoHeelHookBone(ent)
     if not active then
         if ent._hhWasActive then
             ent._hhWasActive = false
-            if ent._hhPelvisIdx >= 0 then ent:ManipulateBoneAngles(ent._hhPelvisIdx, Angle(0, 0, 0), false) end
-            if ent._hhSpine4Idx >= 0 then ent:ManipulateBoneAngles(ent._hhSpine4Idx, Angle(0, 0, 0), false) end
-            if ent._hhLHipIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLHipIdx,   Angle(0, 0, 0), false) end
-            if ent._hhLThighIdx >= 0 then ent:ManipulateBoneAngles(ent._hhLThighIdx, Angle(0, 0, 0), false) end
-            if ent._hhLUlegIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhLUlegIdx,  Angle(0, 0, 0), false) end
-            if ent._hhLCalfIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhLCalfIdx,  Angle(0, 0, 0), false) end
-            if ent._hhLFootIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhLFootIdx,  Angle(0, 0, 0), false) end
-            if ent._hhLToeIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLToeIdx,   Angle(0, 0, 0), false) end
+            if ent._hhPelvisIdx >= 0 then ent:ManipulateBoneAngles(ent._hhPelvisIdx, Angle(0,0,0), false) end
+            if ent._hhSpineIdx  >= 0 then ent:ManipulateBoneAngles(ent._hhSpineIdx,  Angle(0,0,0), false) end
+            if ent._hhLHipIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhLHipIdx,   Angle(0,0,0), false) end
         end
         return
     end
@@ -1037,86 +1027,45 @@ local function GekkoDoHeelHookBone(ent)
 
     local t = elapsed / HH_DURATION_CL
 
-    local function Phase(tIn, t0, t1)
+    local function Ph(tIn, t0, t1)
         return math.Clamp((tIn - t0) / (t1 - t0), 0, 1)
     end
 
-    -- ── b_pelvis: yaw opens kicking hip ~45deg, slight pitch during extension
+    -- ── b_l_hippiston1
+    -- Chamber (0.00-0.20): pitch rises — leg lifts forward
+    -- Extension (0.45-0.65): roll tilts outward
+    -- Hook-back (0.65-0.80): yaw sweeps inward (C-path)
+    -- Recover (0.80-1.00): all return to 0
+    local hipPitch = Smoothstep(Ph(t, 0.00, 0.20)) * HH_HIP_CHAMBER_PITCH
+                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_HIP_CHAMBER_PITCH
+    local hipRoll  = Smoothstep(Ph(t, 0.45, 0.65)) * HH_HIP_EXTEND_ROLL
+                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_HIP_EXTEND_ROLL
+    local hipYaw   = Smoothstep(Ph(t, 0.65, 0.80)) * HH_HIP_HOOK_YAW
+                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_HIP_HOOK_YAW
+
+    if ent._hhLHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._hhLHipIdx, Angle(hipPitch, hipYaw, hipRoll), false)
+    end
+
+    -- ── b_pelvis
+    -- Opens hip line (yaw) during chamber-hold (0.20-0.45), unwinds on recover
+    -- Small forward pitch during extension for weight shift
+    local pelYaw   = Smoothstep(Ph(t, 0.20, 0.45)) * HH_PELVIS_YAW
+                   - Smoothstep(Ph(t, 0.80, 1.00)) * HH_PELVIS_YAW
+    local pelPitch = Smoothstep(Ph(t, 0.45, 0.65)) * HH_PELVIS_PITCH
+                   - Smoothstep(Ph(t, 0.65, 1.00)) * HH_PELVIS_PITCH
+
     if ent._hhPelvisIdx >= 0 then
-        local pivotFwd  = Smoothstep(Phase(t, 0.12, 0.38))
-        local pivotBack = Smoothstep(Phase(t, 0.55, 1.0))
-        local pelYaw    = Lerp(pivotFwd, 0, 45) - Lerp(pivotBack, 0, 45)
-        local pelPitch  = Smoothstep(Phase(t, 0.28, 0.56)) * 12
-                        - Smoothstep(Phase(t, 0.62, 1.0))  * 12
         ent:ManipulateBoneAngles(ent._hhPelvisIdx, Angle(pelPitch, pelYaw, 0), false)
     end
 
-    -- ── b_spine4: leans back during extension, returns on recover
-    if ent._hhSpine4Idx >= 0 then
-        local leanBack = Smoothstep(Phase(t, 0.28, 0.55)) * 18
-        local leanFwd  = Smoothstep(Phase(t, 0.62, 1.0))  * 18
-        ent:ManipulateBoneAngles(ent._hhSpine4Idx, Angle(leanBack - leanFwd, 0, 0), false)
-    end
+    -- ── b_spine4
+    -- Leans (roll) opposite to pelvis yaw during extension, returns on recover
+    local spineLean = Smoothstep(Ph(t, 0.45, 0.65)) * HH_SPINE_LEAN
+                    - Smoothstep(Ph(t, 0.80, 1.00)) * HH_SPINE_LEAN
 
-    -- ── b_l_hippiston1: hip socket lifts and tilts outward
-    --    Chamber: pitches up 90deg (lifts whole leg)
-    --    Extension: rolls outward 25deg so the heel can sweep sideways
-    --    Retract: returns to rest
-    if ent._hhLHipIdx >= 0 then
-        local chamberUp   = Smoothstep(Phase(t, 0.10, 0.28)) * 90
-        local extendRoll  = Smoothstep(Phase(t, 0.38, 0.56)) * 25
-        local retractDown = Smoothstep(Phase(t, 0.68, 0.95)) * 90
-        ent:ManipulateBoneAngles(ent._hhLHipIdx,
-            Angle(chamberUp - retractDown, 0, extendRoll), false)
-    end
-
-    -- ── b_l_thigh: knee raise (forward pitch) during chamber, slight outward roll
-    if ent._hhLThighIdx >= 0 then
-        local kneeUp   = Smoothstep(Phase(t, 0.10, 0.30)) * 75
-        local kneeDown = Smoothstep(Phase(t, 0.68, 0.95)) * 75
-        local rollOut  = Smoothstep(Phase(t, 0.28, 0.55)) * 22
-        ent:ManipulateBoneAngles(ent._hhLThighIdx,
-            Angle(kneeUp - kneeDown, 0, rollOut), false)
-    end
-
-    -- ── b_l_upperleg: THE main extension bone.
-    --    Chamber: folds back ~80deg (shin tucked, knee high)
-    --    Extension: drives forward to ~110deg (heel shoots out, matches SK_ULEG_X=120)
-    --    Hook-back: pulls back inward ~40deg (C-path hook)
-    --    Retract: folds under again
-    if ent._hhLUlegIdx >= 0 then
-        local tuck     = Smoothstep(Phase(t, 0.10, 0.30)) * 80
-        local extend   = Smoothstep(Phase(t, 0.38, 0.58)) * 110
-        local hookBack = Smoothstep(Phase(t, 0.58, 0.72)) * 40
-        local retract  = Smoothstep(Phase(t, 0.70, 0.95)) * 80
-        -- tuck folds back (negative), extend opens forward (positive), hookBack pulls in
-        ent:ManipulateBoneAngles(ent._hhLUlegIdx,
-            Angle(-tuck + extend - hookBack - retract, 0, 0), false)
-    end
-
-    -- ── b_l_calf: shin fold/extend refinement
-    --    Follows upperleg but with a slight lag (offset phases)
-    if ent._hhLCalfIdx >= 0 then
-        local calfTuck    = Smoothstep(Phase(t, 0.12, 0.35)) * 55
-        local calfExtend  = Smoothstep(Phase(t, 0.42, 0.60)) * 45
-        local calfRetract = Smoothstep(Phase(t, 0.72, 0.95)) * 55
-        ent:ManipulateBoneAngles(ent._hhLCalfIdx,
-            Angle(-calfTuck + calfExtend - calfRetract, 0, 0), false)
-    end
-
-    -- ── b_l_foot: dorsiflex (toes back) in chamber, heel leads on extension
-    if ent._hhLFootIdx >= 0 then
-        local dorsiflex = Smoothstep(Phase(t, 0.10, 0.40)) * 35
-        local heelLead  = Smoothstep(Phase(t, 0.42, 0.60)) * 20
-        local relax     = Smoothstep(Phase(t, 0.65, 1.0))  * 40
-        ent:ManipulateBoneAngles(ent._hhLFootIdx,
-            Angle(dorsiflex - heelLead - relax, 0, 0), false)
-    end
-
-    -- ── b_l_toe: compact curl during hook-back
-    if ent._hhLToeIdx >= 0 then
-        local curl = Smoothstep(Phase(t, 0.50, 0.75)) * 18
-        ent:ManipulateBoneAngles(ent._hhLToeIdx, Angle(curl, 0, 0), false)
+    if ent._hhSpineIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0, 0, spineLean), false)
     end
 end
 
@@ -1162,9 +1111,7 @@ end
 --                                   b_r_hippiston1 Z, b_r_upperleg X
 --    7. GekkoDoFootballKickBone  -> b_l_hippiston1, b_r_hippiston1
 --    8. GekkoDoDiagonalKickBone  -> b_l_hippiston1, b_r_hippiston1
---    9. GekkoDoHeelHookBone      -> b_pelvis, b_spine4,
---                                   b_l_hippiston1, b_l_thigh, b_l_upperleg,
---                                   b_l_calf, b_l_foot, b_l_toe
+--    9. GekkoDoHeelHookBone      -> b_l_hippiston1, b_pelvis, b_spine4
 --
 --  Each driver writes bones ONLY during its active window.
 --  On the single frame it expires, writes one zero-reset then goes silent.
