@@ -16,13 +16,14 @@
 --         OUTSIDE cone  ->  force SPINKICK (b_Pedestal yaw, any dir)
 --
 --         INSIDE cone   ->  weighted roll:
---                             FK360        ~14%  (b_pelvis flip, front only)
---                             HEADBUTT     ~14%
---                             KICK         ~14%  (only if dist+speed gates pass)
---                             SPINKICK     ~14%
---                             FOOTBALLKICK ~14%  (b_l_hippiston1 forward kick)
---                             DIAGONALKICK ~14%  (b_l_hippiston1 diagonal sweep)
---                             HEELHOOK     ~14%  (two-phase C-path hook kick)
+--                             FK360           ~13%  (b_pelvis flip, front only)
+--                             HEADBUTT        ~13%
+--                             KICK            ~13%  (only if dist+speed gates pass)
+--                             SPINKICK        ~13%
+--                             FOOTBALLKICK    ~13%  (b_l_hippiston1 forward kick)
+--                             DIAGONALKICK    ~13%  (b_l_hippiston1 diagonal sweep)
+--                             HEELHOOK        ~13%  (two-phase C-path hook kick)
+--                             SIDEHOOKKICK    ~13%  (b_r_hippiston1 side snap, front cone)
 --
 --         If Kick is excluded from pool its weight redistributes
 --         proportionally among the remaining entries.
@@ -50,6 +51,11 @@
 --    Two hull sweeps at different angles; hit 2 catches targets
 --    slightly behind the initial contact point.
 --
+--  SIDE HOOK KICK HIT TIMING:
+--    Single hit at t=SHK_HIT_T (phase 4 = snap release).
+--    Hull sweep to the right side; side-forward impulse.
+--    Front cone only.
+--
 --  LAUNCH BLAST  — sphere damage at jump takeoff.
 --  LAND BLAST    — sphere damage + knockup on landing.
 -- ============================================================
@@ -60,6 +66,7 @@ if SERVER then
     util.AddNetworkString("GekkoFootballKickPulse")  -- left-leg football kick
     util.AddNetworkString("GekkoDiagonalKickPulse")  -- left-leg diagonal sweep kick
     util.AddNetworkString("GekkoHeelHookPulse")      -- two-phase heel hook kick
+    util.AddNetworkString("GekkoSideHookKickPulse")  -- right-leg side hook snap kick
 end
 
 -- ============================================================
@@ -181,6 +188,17 @@ local HH_SWEEP_DIST  = 160
 local HH_SWEEP_HALF  = 50
 local HH_HOOK_ANGLE  = 55
 
+-- Side Hook Kick  (b_r_hippiston1 side snap; front-cone only)
+-- Single hit at phase 4 onset (t=SHK_HIT_T).
+-- Hull sweep fires to the right side. Side+forward impulse.
+local SHK_DAMAGE     = 36
+local SHK_IMPULSE    = 12500
+local SHK_W          = 20
+local SHK_DURATION   = 1.5
+local SHK_HIT_T      = 0.55
+local SHK_SWEEP_DIST = 145
+local SHK_SWEEP_HALF = 52
+
 function ENT:GeckoCrush_Think()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
 
@@ -241,12 +259,13 @@ function ENT:GeckoCrush_Think()
         attack = "SPINKICK"
     else
         local pool = {}
-        pool[#pool+1] = { name = "FK360",        w = FK360_W }
-        pool[#pool+1] = { name = "HEADBUTT",      w = HB_W    }
-        pool[#pool+1] = { name = "SPINKICK",      w = SK_W    }
-        pool[#pool+1] = { name = "FOOTBALLKICK",  w = FB_W    }
-        pool[#pool+1] = { name = "DIAGONALKICK",  w = DK_W    }
-        pool[#pool+1] = { name = "HEELHOOK",      w = HH_W    }
+        pool[#pool+1] = { name = "FK360",         w = FK360_W }
+        pool[#pool+1] = { name = "HEADBUTT",       w = HB_W    }
+        pool[#pool+1] = { name = "SPINKICK",       w = SK_W    }
+        pool[#pool+1] = { name = "FOOTBALLKICK",   w = FB_W    }
+        pool[#pool+1] = { name = "DIAGONALKICK",   w = DK_W    }
+        pool[#pool+1] = { name = "HEELHOOK",       w = HH_W    }
+        pool[#pool+1] = { name = "SIDEHOOKKICK",   w = SHK_W   }
         if kickTarget then
             pool[#pool+1] = { name = "KICK", w = KICK_W }
         end
@@ -424,6 +443,37 @@ function ENT:GeckoCrush_Think()
                 CrushDamageEnt(selfRef, tr2.Entity, HH_DAMAGE_2, impDir2 * HH_IMPULSE_2)
                 print(string.format("[GekkoCrush] HEELHOOK HIT2 (hook-back)  target=%s  pulse=%d",
                     tr2.Entity:GetClass(), next))
+            end
+        end)
+
+    elseif attack == "SIDEHOOKKICK" then
+        ClaimKickLock(self, SHK_DURATION + 0.2)
+        local next = (self:GetNWInt("GekkoSideHookKickPulse", 0) % 254) + 1
+        self:SetNWInt("GekkoSideHookKickPulse", next)
+        print(string.format("[GekkoCrush] SIDEHOOKKICK  target=%s  dot=%.2f  pulse=%d",
+            closestTarget:GetClass(), dot, next))
+
+        local selfRef = self
+        -- HIT: phase 4 onset — the violent side snap
+        timer.Simple(SHK_HIT_T, function()
+            if not IsValid(selfRef) then return end
+            local fwdRef   = selfRef:GetForward()
+            local rightRef = selfRef:GetRight()
+            -- Sweep sweeps to the right side, slightly forward
+            local sweepDir = (fwdRef * 0.4 + rightRef * 0.9):GetNormalized()
+            local origin   = selfRef:GetPos() + Vector(0, 0, 65)
+            local sweep    = origin + sweepDir * SHK_SWEEP_DIST
+            local half     = Vector(SHK_SWEEP_HALF, SHK_SWEEP_HALF, SHK_SWEEP_HALF)
+            local tr = util.TraceHull({
+                start  = origin, endpos = sweep,
+                mins   = -half,  maxs   =  half,
+                filter = selfRef, mask  = MASK_SHOT_HULL,
+            })
+            if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+                local impDir = (sweepDir + Vector(0, 0, 0.25)):GetNormalized()
+                CrushDamageEnt(selfRef, tr.Entity, SHK_DAMAGE, impDir * SHK_IMPULSE)
+                print(string.format("[GekkoCrush] SIDEHOOKKICK HIT  target=%s  pulse=%d",
+                    tr.Entity:GetClass(), next))
             end
         end)
 
