@@ -148,32 +148,11 @@ local SHK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
 --  AXE KICK ANIMATION
---
---  4 phases over AK_DURATION = 1.4 s (t = 0..1):
---
---    Phase 1  t 0.000-0.350  Leg rise + head tilt
---               b_l_hippiston1 -> Angle(0, -133, 0)   (leg lifts high forward)
---               b_spine3       -> Angle(5,  -12, -39) (torso tilts into it)
---
---    Phase 2  t 0.350-0.550  Hold pose
---               All bones locked at Phase 1 peaks.
---
---    Phase 3  t 0.550-0.700  AXE DOWN  (HIT fires at t=0.55 s)
---               b_l_hippiston1 -> Angle(0,  -5, 0)
---               b_r_hippiston1 -> Angle(0, -31, 0)
---               b_spine3       -> Angle(-17, 0, 0)
---
---    Phase 4  t 0.700-1.400  Slow recovery to rest
---               All bones lerp back to Angle(0,0,0).
---
---  Bones: b_l_hippiston1, b_r_hippiston1, b_spine3
---  NW signal: GekkoAxeKickPulse
 -- ============================================================
 local AK_DURATION = 1.1
 local AK_P1_END   = 0.350 / AK_DURATION
 local AK_P2_END   = 0.550 / AK_DURATION
 local AK_P3_END   = 0.700 / AK_DURATION
--- Phase 4 ends at 1.0
 
 local AK_P1_LHIP   = Angle(  0, -133,   0)
 local AK_P1_SPINE  = Angle(  5,  -12, -39)
@@ -187,6 +166,58 @@ local AK_REST      = Angle(0, 0, 0)
 local AK_LHIP_BONE  = "b_l_hippiston1"
 local AK_RHIP_BONE  = "b_r_hippiston1"
 local AK_SPINE_BONE = "b_spine3"
+
+-- ============================================================
+--  JUMP KICK ANIMATION
+--
+--  4 phases over JK_DURATION = 1.6 s  (t = 0..1):
+--
+--  Phase 1  [0.000 - 0.300]  Preparation - leg chambers, weight shifts
+--    b_l_hippiston1  -> Angle(58,  0,  -8)   (left leg loads back)
+--    b_r_hippiston1  -> Angle(88,  0, -36)   (right leg braces)
+--
+--  Phase 2  [0.300 - 0.550]  Kick + forward hop  (server fires damage at 0.55 s)
+--    b_l_hippiston1  -> Angle(56,  0,  79)   (left leg extends forward/up)
+--    b_r_hippiston1  -> Angle(88,  0, -36)   (right stays braced)
+--    b_pedestal pos  -> Vector(30, 0, 13)    (body hops forward)
+--
+--  Phase 3  [0.550 - 1.000]  Falling - body tilts as Gekko descends
+--    b_l_hippiston1  -> Angle(0,  43,  0)    (leg hangs loose)
+--    b_pedestal ang  -> Angle(0,  20,  0)    (body yaws slightly)
+--    b_pedestal pos  -> Vector(0,  0,  0)    (re-centres)
+--
+--  Phase 4  [1.000 - 1.600]  Smooth recovery to rest
+--    All bones lerp back to Angle/Vector(0,0,0).
+--
+--  Mutex key : "JUMPKICK"
+--  NW signal : GekkoJumpKickPulse
+-- ============================================================
+local JK_DURATION = 1.6
+local JK_P1_END   = 0.300 / JK_DURATION   -- ~0.1875
+local JK_P2_END   = 0.550 / JK_DURATION   -- ~0.3438
+local JK_P3_END   = 1.000 / JK_DURATION   -- ~0.6250
+-- Phase 4 ends at 1.0
+
+-- Phase 1 peaks
+local JK_P1_LHIP  = Angle(58,  0,  -8)
+local JK_P1_RHIP  = Angle(88,  0, -36)
+
+-- Phase 2 peaks  (kick extension)
+local JK_P2_LHIP  = Angle(56,  0,  79)
+local JK_P2_RHIP  = Angle(88,  0, -36)   -- unchanged from P1
+local JK_P2_PED_POS = Vector(30, 0, 13)
+
+-- Phase 3 peaks  (falling)
+local JK_P3_LHIP    = Angle(0,  43,  0)
+local JK_P3_PED_ANG = Angle(0,  20,  0)
+local JK_P3_PED_POS = Vector(0,  0,  0)
+
+local JK_REST       = Angle(0, 0, 0)
+local JK_REST_POS   = Vector(0, 0, 0)
+
+local JK_LHIP_BONE  = "b_l_hippiston1"
+local JK_RHIP_BONE  = "b_r_hippiston1"
+local JK_PED_BONE   = "b_pedestal"
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -1140,24 +1171,6 @@ end
 
 -- ============================================================
 --  AXE KICK BONE DRIVER
---
---  Phase 1 [0, AK_P1_END]  Leg rise + head tilt
---    b_l_hippiston1 ramps to AK_P1_LHIP  Angle(0, -133, 0)
---    b_spine3       ramps to AK_P1_SPINE  Angle(5, -12, -39)
---
---  Phase 2 [AK_P1_END, AK_P2_END]  Hold
---    All bones locked at Phase 1 peaks.
---
---  Phase 3 [AK_P2_END, AK_P3_END]  AXE DOWN  (fast Smoothstep)
---    b_l_hippiston1 -> AK_P3_LHIP  Angle(0,  -5, 0)
---    b_r_hippiston1 -> AK_P3_RHIP  Angle(0, -31, 0)
---    b_spine3       -> AK_P3_SPINE Angle(-17, 0, 0)
---
---  Phase 4 [AK_P3_END, 1.0]  Slow recovery
---    All bones lerp back to Angle(0,0,0).
---
---  Mutex key: "AXEKICK"
---  NW signal: GekkoAxeKickPulse
 -- ============================================================
 local function GekkoDoAxeKickBone(ent)
     if ent._akInited == nil then
@@ -1199,27 +1212,20 @@ local function GekkoDoAxeKickBone(ent)
     local lhip, rhip, spine
 
     if t < AK_P1_END then
-        -- Phase 1: rise
         local env = Smoothstep(t / AK_P1_END)
         lhip  = LerpAngle(REST,        AK_P1_LHIP,  env)
         rhip  = REST
         spine = LerpAngle(REST,        AK_P1_SPINE, env)
-
     elseif t < AK_P2_END then
-        -- Phase 2: hold
         lhip  = AK_P1_LHIP
         rhip  = REST
         spine = AK_P1_SPINE
-
     elseif t < AK_P3_END then
-        -- Phase 3: axe down (fast snap)
         local env = Smoothstep(Smoothstep((t - AK_P2_END) / (AK_P3_END - AK_P2_END)))
         lhip  = LerpAngle(AK_P1_LHIP,  AK_P3_LHIP,  env)
         rhip  = LerpAngle(REST,         AK_P3_RHIP,  env)
         spine = LerpAngle(AK_P1_SPINE,  AK_P3_SPINE, env)
-
     else
-        -- Phase 4: slow recovery
         local env = Smoothstep((t - AK_P3_END) / (1.0 - AK_P3_END))
         lhip  = LerpAngle(AK_P3_LHIP,  REST, env)
         rhip  = LerpAngle(AK_P3_RHIP,  REST, env)
@@ -1229,6 +1235,116 @@ local function GekkoDoAxeKickBone(ent)
     if ent._akLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akLHipIdx,  lhip,  false) end
     if ent._akRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akRHipIdx,  rhip,  false) end
     if ent._akSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akSpineIdx, spine, false) end
+end
+
+-- ============================================================
+--  JUMP KICK BONE DRIVER  (mutex: JUMPKICK)
+--
+--  Drives: b_l_hippiston1, b_r_hippiston1, b_pedestal (ang+pos)
+--
+--  Phase 1  [0, JK_P1_END]   Preparation
+--    L hip  ramps to JK_P1_LHIP  Angle(58,  0,  -8)
+--    R hip  ramps to JK_P1_RHIP  Angle(88,  0, -36)
+--
+--  Phase 2  [JK_P1_END, JK_P2_END]  Kick extension + hop
+--    L hip  moves to JK_P2_LHIP  Angle(56,  0,  79)
+--    R hip  holds  JK_P2_RHIP   Angle(88,  0, -36)
+--    Pedestal pos ramps to JK_P2_PED_POS  Vector(30, 0, 13)
+--
+--  Phase 3  [JK_P2_END, JK_P3_END]  Falling
+--    L hip  moves to JK_P3_LHIP  Angle(0,  43,  0)
+--    R hip  returns to REST
+--    Pedestal ang ramps to JK_P3_PED_ANG  Angle(0, 20, 0)
+--    Pedestal pos returns to Vector(0, 0, 0)
+--
+--  Phase 4  [JK_P3_END, 1.0]  Smooth recovery
+--    All bones lerp back to rest.
+-- ============================================================
+local function GekkoDoJumpKickBone(ent)
+    if ent._jkInited == nil then
+        ent._jkInited    = true
+        ent._jkLHipIdx   = ent:LookupBone(JK_LHIP_BONE) or -1
+        ent._jkRHipIdx   = ent:LookupBone(JK_RHIP_BONE) or -1
+        ent._jkPedIdx    = ent:LookupBone(JK_PED_BONE)  or -1
+        ent._jkStartTime = -9999
+        ent._jkPulseLast = ent:GetNWInt("GekkoJumpKickPulse", 0)
+        ent._jkWasActive = false
+    end
+
+    local pulse = ent:GetNWInt("GekkoJumpKickPulse", 0)
+    if pulse ~= ent._jkPulseLast then
+        ent._jkPulseLast = pulse
+        ent._jkStartTime = CurTime()
+        print(string.format("[GekkoJumpKick] pulse=%d", pulse))
+    end
+
+    local elapsed = CurTime() - ent._jkStartTime
+    local active  = elapsed >= 0 and elapsed < JK_DURATION
+
+    if not active then
+        if ent._jkWasActive then
+            ent._jkWasActive = false
+            ReleaseHips(ent, "JUMPKICK")
+            if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,    JK_REST,     false) end
+            if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,    JK_REST,     false) end
+            if ent._jkPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._jkPedIdx,     JK_REST,     false) end
+            if ent._jkPedIdx  >= 0 then ent:ManipulateBonePosition(ent._jkPedIdx,   JK_REST_POS, false) end
+        end
+        return
+    end
+
+    if not ClaimHips(ent, "JUMPKICK") then return end
+    ent._jkWasActive = true
+
+    local t = elapsed / JK_DURATION
+
+    local lhip, rhip, pedAng, pedPos
+
+    if t < JK_P1_END then
+        -- Phase 1: preparation
+        local env = Smoothstep(t / JK_P1_END)
+        lhip   = LerpAngle(JK_REST,      JK_P1_LHIP,    env)
+        rhip   = LerpAngle(JK_REST,      JK_P1_RHIP,    env)
+        pedAng = JK_REST
+        pedPos = JK_REST_POS
+
+    elseif t < JK_P2_END then
+        -- Phase 2: kick + hop
+        local env = Smoothstep((t - JK_P1_END) / (JK_P2_END - JK_P1_END))
+        lhip   = LerpAngle(JK_P1_LHIP, JK_P2_LHIP,    env)
+        rhip   = JK_P2_RHIP
+        pedAng = JK_REST
+        pedPos = Vector(
+            Lerp(env, 0, JK_P2_PED_POS.x),
+            0,
+            Lerp(env, 0, JK_P2_PED_POS.z)
+        )
+
+    elseif t < JK_P3_END then
+        -- Phase 3: falling
+        local env = Smoothstep((t - JK_P2_END) / (JK_P3_END - JK_P2_END))
+        lhip   = LerpAngle(JK_P2_LHIP, JK_P3_LHIP,    env)
+        rhip   = LerpAngle(JK_P2_RHIP, JK_REST,        env)
+        pedAng = LerpAngle(JK_REST,     JK_P3_PED_ANG,  env)
+        pedPos = Vector(
+            Lerp(env, JK_P2_PED_POS.x, 0),
+            0,
+            Lerp(env, JK_P2_PED_POS.z, 0)
+        )
+
+    else
+        -- Phase 4: recovery
+        local env = Smoothstep((t - JK_P3_END) / (1.0 - JK_P3_END))
+        lhip   = LerpAngle(JK_P3_LHIP,    JK_REST,     env)
+        rhip   = JK_REST
+        pedAng = LerpAngle(JK_P3_PED_ANG, JK_REST,     env)
+        pedPos = JK_REST_POS
+    end
+
+    if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,   lhip,   false) end
+    if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,   rhip,   false) end
+    if ent._jkPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._jkPedIdx,    pedAng, false) end
+    if ent._jkPedIdx  >= 0 then ent:ManipulateBonePosition(ent._jkPedIdx,  pedPos, false) end
 end
 
 -- ============================================================
@@ -1253,6 +1369,7 @@ function ENT:Think()
     GekkoDoHeelHookBone(self)
     GekkoDoSideHookKickBone(self)
     GekkoDoAxeKickBone(self)
+    GekkoDoJumpKickBone(self)
 
     GekkoUpdateHead(self, dt)
     GekkoSyncFootsteps(self)
