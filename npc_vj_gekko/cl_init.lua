@@ -49,39 +49,35 @@ local FK360_BONE     = "b_pelvis"
 -- ============================================================
 --  SPINKICK ANIMATION
 --
---  5 phases over SK_DURATION = 1.4 s:
+--  5 phases over SK_DURATION seconds.
+--  Phase boundaries are NORMALIZED (0..1) fractions of the total
+--  duration, so changing SK_DURATION does not alter the shape.
 --
---    Phase 1  t 0.000-0.330  Pre-spin: Pedestal yaw ramps up.
+--    Phase 1  t 0.000 - SK_P1_END   Pre-spin: Pedestal yaw ramps up.
 --               No crouch yet, leg stays neutral.
---    Phase 2  t 0.330-0.500  Crouch + kick extension:
+--    Phase 2  t SK_P1_END - SK_P2_END  Crouch + kick extension:
 --               b_pelvis Z drops, b_r_hippiston1 Z tucks,
 --               b_r_upperleg X extends. Yaw at full speed.
---    Phase 3  t 0.500-0.670  Hold:
+--    Phase 3  t SK_P2_END - SK_P3_END  Hold:
 --               All bones locked at peak values.
---    Phase 4  t 0.670-0.800  Slow decel begins (double-smoothstep):
+--    Phase 4  t SK_P3_END - SK_P4_END  Slow decel (double-smoothstep):
 --               Yaw spin starts dying, pelvis begins rising,
 --               leg/hip start returning. Very lazy easing.
---    Phase 5  t 0.800-1.000  Near-freeze return (triple-smoothstep):
---               Final drift back to rest — almost imperceptible
---               movement, near-static. Everything decelerates together.
+--    Phase 5  t SK_P4_END - 1.000  Near-freeze return (triple-smoothstep):
+--               Final drift back to rest.
 --
 --  Bones used: b_Pedestal (yaw), b_pelvis (pos Z),
 --              b_r_hippiston1 (ang Z), b_r_upperleg (ang X).
 --  NW signal: GekkoSpinKickPulse
 -- ============================================================
-local SK_DURATION = 1.4
+local SK_DURATION = 1.4   -- change freely; phase shape is preserved
 
-local SK_P1_END   = 0.330 / SK_DURATION * SK_DURATION  -- = 0.330 (normalized)
-local SK_P2_END   = 0.500 / SK_DURATION * SK_DURATION  -- = 0.500
-local SK_P3_END   = 0.670 / SK_DURATION * SK_DURATION  -- = 0.670
-local SK_P4_END   = 0.800 / SK_DURATION * SK_DURATION  -- = 0.800
+-- Normalized phase boundaries (fractions of 1.0, duration-independent)
+local SK_P1_END   = 0.330
+local SK_P2_END   = 0.500
+local SK_P3_END   = 0.670
+local SK_P4_END   = 0.800
 -- Phase 5 ends at 1.0
-
--- Normalize to t range 0..1
-SK_P1_END = 0.330
-SK_P2_END = 0.500
-SK_P3_END = 0.670
-SK_P4_END = 0.800
 
 local SK_RAMP       = 0.10
 local SK_YAW_TOTAL  = 420
@@ -829,29 +825,30 @@ end
 -- ============================================================
 --  SPINKICK BONE DRIVER
 --
---  5 phases (t = 0..1 over SK_DURATION = 1.4 s):
+--  5 phases (t = 0..1 normalized, driven by SK_DURATION):
 --
---    Phase 1  [0.000, SK_P1_END=0.330]  Pre-spin
+--    Phase 1  [0.000,    SK_P1_END]  Pre-spin
 --      Pedestal yaw ramps up. Leg neutral.
 --
---    Phase 2  [SK_P1_END, SK_P2_END=0.500]  Crouch + kick extension
+--    Phase 2  [SK_P1_END, SK_P2_END]  Crouch + kick extension
 --      b_pelvis Z drops to SK_PEL_DROP.
 --      b_r_hippiston1 Z tucks to SK_HIP_Z.
 --      b_r_upperleg X snaps to SK_ULEG_X.
 --      Yaw remains at full speed.
 --
---    Phase 3  [SK_P2_END, SK_P3_END=0.670]  Hold
+--    Phase 3  [SK_P2_END, SK_P3_END]  Hold
 --      All bones locked at peak. Yaw at full speed.
 --
---    Phase 4  [SK_P3_END, SK_P4_END=0.800]  Slow decel  (double-smoothstep)
+--    Phase 4  [SK_P3_END, SK_P4_END]  Slow decel  (double-smoothstep)
 --      Yaw spin starts dying. Pelvis, hip, leg all begin returning.
---      Easing: Smoothstep(Smoothstep(localT)) — extreme ease-out,
---      motion is very lazy right from the start of this phase.
+--      Easing: Smoothstep(Smoothstep(localT)) — extreme ease-out.
 --
 --    Phase 5  [SK_P4_END, 1.000]  Near-freeze return  (triple-smoothstep)
 --      Final drift to rest. Almost imperceptible movement.
---      Easing: Smoothstep(Smoothstep(Smoothstep(localT))) — near-static.
 --      Everything decelerates together: yaw, pelvis, hip, leg.
+--
+--  Changing SK_DURATION only affects real-world timing.
+--  The proportional shape of all 5 phases is always preserved.
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
@@ -894,28 +891,19 @@ local function GekkoDoSpinKickBone(ent)
     ent._skLastT = CurTime()
 
     -- ── Yaw speed envelope ──────────────────────────────────
-    -- Phases 1-3: full speed with a small ramp-in at the very start
-    -- Phase 4: double-smoothstep ease-out  (lazy decel)
-    -- Phase 5: triple-smoothstep near-zero (near-freeze)
     local peakSpeed = SK_YAW_TOTAL / ((1.0 - SK_RAMP) * SK_DURATION)
     local yawEnv
 
     if t < SK_RAMP then
-        -- ramp-in at the start of phase 1
         yawEnv = Smoothstep(t / SK_RAMP)
     elseif t < SK_P3_END then
-        -- phases 1-3: full speed
         yawEnv = 1.0
     elseif t < SK_P4_END then
-        -- phase 4: double-smoothstep  (1 → 0, extreme ease-out)
         local localT = (t - SK_P3_END) / (SK_P4_END - SK_P3_END)
         yawEnv = 1.0 - Smoothstep(Smoothstep(localT))
     else
-        -- phase 5: triple-smoothstep  (near-freeze)
         local localT = (t - SK_P4_END) / (1.0 - SK_P4_END)
-        yawEnv = 1.0 - Smoothstep(Smoothstep(Smoothstep(localT)))
-        -- already near zero by phase 5, but we still accumulate any remainder
-        yawEnv = yawEnv * 0.08  -- scale down so it truly near-stops
+        yawEnv = (1.0 - Smoothstep(Smoothstep(Smoothstep(localT)))) * 0.08
     end
 
     ent._skYaw = ent._skYaw + peakSpeed * yawEnv * dt
@@ -925,11 +913,6 @@ local function GekkoDoSpinKickBone(ent)
     end
 
     -- ── Crouch / leg envelope ───────────────────────────────
-    -- Phase 1: 0
-    -- Phase 2: ramp IN  (standard smoothstep)
-    -- Phase 3: hold at 1
-    -- Phase 4: ramp OUT via double-smoothstep  (lazy)
-    -- Phase 5: ramp OUT via triple-smoothstep  (near-freeze)
     local crouchEnv
 
     if t < SK_P1_END then
@@ -944,19 +927,15 @@ local function GekkoDoSpinKickBone(ent)
         crouchEnv = 1.0 - Smoothstep(Smoothstep(localT))
     else
         local localT = (t - SK_P4_END) / (1.0 - SK_P4_END)
-        crouchEnv = (1.0 - Smoothstep(Smoothstep(Smoothstep(localT)))) * 0.08
-        crouchEnv = math.max(crouchEnv, 0)
+        crouchEnv = math.max((1.0 - Smoothstep(Smoothstep(Smoothstep(localT)))) * 0.08, 0)
     end
 
-    -- legEnv: 0 during phase 1, snaps to 1 from phase 2 onward,
-    -- then follows crouchEnv's decay in phases 4-5
     local legEnv
     if t < SK_P1_END then
         legEnv = 0
     elseif t < SK_P3_END then
         legEnv = 1.0
     else
-        -- mirror crouchEnv for the return
         legEnv = crouchEnv
     end
 
