@@ -48,17 +48,25 @@ end
 -- ============================================================
 function ENT:GekkoLegs_GroundToFloor()
     local mins, maxs = self:GetCollisionBounds()
-    local start      = self:GetPos() + Vector(0, 0, 20)
+
+    -- Start the trace from the middle of the hull downwards quite far to
+    -- guarantee we find real world geometry even if nav / physics nudged
+    -- the NPC slightly upward.
+    local halfHeight = (maxs.z - mins.z) * 0.5
+    local start      = self:GetPos() + Vector(0, 0, halfHeight)
+
     local tr = util.TraceHull({
         start  = start,
-        endpos = start - Vector(0, 0, 200),
+        endpos = start - Vector(0, 0, halfHeight + 256),
         mins   = mins,
         maxs   = maxs,
-        mask   = MASK_SOLID,
+        mask   = MASK_PLAYERSOLID,
         filter = self,
     })
+
     if tr.Hit then
-        self:SetPos(tr.HitPos)
+        -- Nudge a tiny bit up to avoid z-fighting / clipping.
+        self:SetPos(tr.HitPos + Vector(0, 0, 2))
     end
 end
 
@@ -144,6 +152,10 @@ end
 -- ============================================================
 function ENT:GekkoLegs_Think()
     if not self._gekkoLegsDisabled then return end
+
+    -- Continuously keep the origin snapped to floor in case nav / physics
+    -- tries to float the NPC up again.
+    self:GekkoLegs_GroundToFloor()
 
     -- Keep pose locked every tick so other systems cannot override it
     self:GekkoLegs_ApplyPose()
