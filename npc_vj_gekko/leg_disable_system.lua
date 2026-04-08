@@ -43,13 +43,30 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
 end
 
 -- ============================================================
---  Helper: force zero locomotion speeds
+--  Helper: hard-lock all locomotion — called every tick
 -- ============================================================
-local function ZeroSpeeds(ent)
-    ent.MoveSpeed  = 0
-    ent.RunSpeed   = 0
-    ent.WalkSpeed  = 0
-    ent:SetVelocity(Vector(0, 0, 0))
+local function HardLockMovement(ent)
+    -- Zero VJ Base speed fields so it cannot feed them to the nav system
+    ent.MoveSpeed    = 0
+    ent.RunSpeed     = 0
+    ent.WalkSpeed    = 0
+    ent.MaxWalkSpeed = 0
+    ent.MaxRunSpeed  = 0
+
+    -- Kill any residual physics velocity
+    local vel = ent:GetVelocity()
+    if vel:LengthSqr() > 1 then
+        ent:SetVelocity(-vel)   -- impulse to cancel, works on MOVETYPE_STEP
+    end
+
+    -- Force the NPC to stand still — override whatever schedule VJ restored
+    if ent:GetCurrentSchedule() ~= SCHED_IDLE_STAND then
+        ent:SetSchedule(SCHED_IDLE_STAND)
+    end
+
+    -- Stop navigation
+    ent:TaskComplete()
+    if ent.StopMoving then ent:StopMoving() end
 end
 
 -- ============================================================
@@ -85,7 +102,7 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
 
     -- Hard stop
     self:SetMoveType(MOVETYPE_STEP)
-    ZeroSpeeds(self)
+    HardLockMovement(self)
     self:SetSchedule(SCHED_IDLE_STAND)
     self.VJ_IsBeingCrouched = false
 
@@ -125,7 +142,7 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         self:GekkoGib_OnDamage(self.StartHealth or 900, dmginfo)
     end
 
-    print("[GekkoLegs] Entered grounded state (legs disabled, speed zeroed)")
+    print("[GekkoLegs] Entered grounded state (legs disabled, movement hard-locked)")
 end
 
 -- ============================================================
@@ -150,8 +167,8 @@ end
 function ENT:GekkoLegs_Think()
     if not self._gekkoLegsDisabled then return end
 
-    -- Enforce zero speed every tick (VJ Base may try to restore it)
-    ZeroSpeeds(self)
+    -- Re-enforce movement lock every tick (VJ Base tries to restore speeds)
+    HardLockMovement(self)
 
     self:GekkoLegs_GroundToFloor()
     self:GekkoLegs_ApplyPose()
