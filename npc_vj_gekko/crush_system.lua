@@ -11,6 +11,7 @@ if SERVER then
     util.AddNetworkString("GekkoCrushHit")
     util.AddNetworkString("GekkoSpinKickPulse")
     util.AddNetworkString("GekkoFootballKickPulse")
+    util.AddNetworkString("GekkoRFootballKickPulse")
     util.AddNetworkString("GekkoDiagonalKickPulse")
     util.AddNetworkString("GekkoHeelHookPulse")
     util.AddNetworkString("GekkoSideHookKickPulse")
@@ -92,6 +93,20 @@ local ATTACKS = {
     },
     FOOTBALLKICK = {
         w = 20, nwkey = "GekkoFootballKickPulse",
+        duration = 1.3, hit_t = 0.55,
+        dmg = 40, impulse = 14000,
+        sweep_dist = 140, sweep_half = 55, sweep_z = 60,
+    },
+    -- ============================================================
+    --  RFOOTBALLKICK  -  mirrored football kick (right leg)
+    --  Identical stats to FOOTBALLKICK; sweep direction is straight
+    --  forward (the original uses the same hull sweep direction, so
+    --  the mirror is behaviorally symmetric).  The only difference
+    --  is that the client bone driver uses b_r_hippiston1 as the
+    --  kicking leg and b_l_hippiston1 as the brace.
+    -- ============================================================
+    RFOOTBALLKICK = {
+        w = 20, nwkey = "GekkoRFootballKickPulse",
         duration = 1.3, hit_t = 0.55,
         dmg = 40, impulse = 14000,
         sweep_dist = 140, sweep_half = 55, sweep_z = 60,
@@ -202,6 +217,29 @@ end
 
 local function FireFootballKick(self)
     local A    = ATTACKS.FOOTBALLKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef = selfRef:GetForward()
+        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + fwdRef * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, (fwdRef + Vector(0,0,0.25)):GetNormalized() * A.impulse)
+        end
+    end)
+end
+
+-- ============================================================
+--  RFOOTBALLKICK fire helper
+--  Identical hull sweep to FOOTBALLKICK; NW key is different so
+--  the client bone driver knows which leg to animate.
+-- ============================================================
+local function FireRFootballKick(self)
+    local A    = ATTACKS.RFOOTBALLKICK
     ClaimKickLock(self, A.duration + 0.2)
     local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
     self:SetNWInt(A.nwkey, next)
@@ -410,15 +448,16 @@ function ENT:GeckoCrush_Think()
         attack = "SPINKICK"
     else
         local pool = {
-            { name = "FK360",       w = ATTACKS.FK360.w        },
-            { name = "HEADBUTT",    w = ATTACKS.HEADBUTT.w     },
-            { name = "SPINKICK",    w = ATTACKS.SPINKICK.w     },
-            { name = "FOOTBALLKICK",w = ATTACKS.FOOTBALLKICK.w },
-            { name = "DIAGONALKICK",w = ATTACKS.DIAGONALKICK.w },
-            { name = "HEELHOOK",    w = ATTACKS.HEELHOOK.w     },
-            { name = "SIDEHOOKKICK",w = ATTACKS.SIDEHOOKKICK.w },
-            { name = "AXEKICK",     w = ATTACKS.AXEKICK.w      },
-            { name = "JUMPKICK",    w = ATTACKS.JUMPKICK.w     },
+            { name = "FK360",          w = ATTACKS.FK360.w          },
+            { name = "HEADBUTT",       w = ATTACKS.HEADBUTT.w       },
+            { name = "SPINKICK",       w = ATTACKS.SPINKICK.w       },
+            { name = "FOOTBALLKICK",   w = ATTACKS.FOOTBALLKICK.w   },
+            { name = "RFOOTBALLKICK",  w = ATTACKS.RFOOTBALLKICK.w  },
+            { name = "DIAGONALKICK",   w = ATTACKS.DIAGONALKICK.w   },
+            { name = "HEELHOOK",       w = ATTACKS.HEELHOOK.w       },
+            { name = "SIDEHOOKKICK",   w = ATTACKS.SIDEHOOKKICK.w   },
+            { name = "AXEKICK",        w = ATTACKS.AXEKICK.w        },
+            { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
         }
         if kickTarget then
             pool[#pool+1] = { name = "KICK", w = ATTACKS.KICK.w }
@@ -436,16 +475,17 @@ function ENT:GeckoCrush_Think()
     self._crushHitTimes[closestTarget] = now
 
     -- dispatch
-    if     attack == "FK360"        then FireFK360(self, closestTarget, fwd, dot)
-    elseif attack == "HEADBUTT"     then FireHeadbutt(self, closestTarget, fwd)
-    elseif attack == "KICK"         then FireKick(self, kickTarget, fwd)
-    elseif attack == "FOOTBALLKICK" then FireFootballKick(self)
-    elseif attack == "DIAGONALKICK" then FireDiagonalKick(self)
-    elseif attack == "HEELHOOK"     then FireHeelHook(self)
-    elseif attack == "SIDEHOOKKICK" then FireSideHookKick(self)
-    elseif attack == "AXEKICK"      then FireAxeKick(self, closestTarget, dot)
-    elseif attack == "JUMPKICK"     then FireJumpKick(self, closestTarget, fwd, dot)
-    else                                 FireSpinKick(self, closestTarget, fwd, dot, inCone)
+    if     attack == "FK360"           then FireFK360(self, closestTarget, fwd, dot)
+    elseif attack == "HEADBUTT"        then FireHeadbutt(self, closestTarget, fwd)
+    elseif attack == "KICK"            then FireKick(self, kickTarget, fwd)
+    elseif attack == "FOOTBALLKICK"    then FireFootballKick(self)
+    elseif attack == "RFOOTBALLKICK"   then FireRFootballKick(self)
+    elseif attack == "DIAGONALKICK"    then FireDiagonalKick(self)
+    elseif attack == "HEELHOOK"        then FireHeelHook(self)
+    elseif attack == "SIDEHOOKKICK"    then FireSideHookKick(self)
+    elseif attack == "AXEKICK"         then FireAxeKick(self, closestTarget, dot)
+    elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
+    else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end
 
