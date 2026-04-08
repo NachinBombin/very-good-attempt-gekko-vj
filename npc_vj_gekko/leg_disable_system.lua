@@ -55,8 +55,6 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetVelocity(Vector(0, 0, 0))
     self:SetSchedule(SCHED_IDLE_STAND)
-    self.DisableChasingEnemy = true
-    self.VJ_RunToEnemy       = false
     self.VJ_IsBeingCrouched  = false
 
     -- Cancel jump state and jet FX if any
@@ -128,12 +126,4 @@ function ENT:GekkoLegs_Think()
 
     -- Keep pose locked every tick so other systems cannot override it
     self:GekkoLegs_ApplyPose()
-
-    -- Freeze locomotion metadata
-    self:SetNWFloat("GekkoSpeed", 0)
-    self._gekkoLastPos  = self:GetPos()
-    self._gekkoLastTime = CurTime()
-    self:SetPlaybackRate(0)
-    self.VJ_IsMoving     = false
-    self.VJ_CanMoveThink = false
 end

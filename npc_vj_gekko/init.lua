@@ -471,12 +471,21 @@ function ENT:OnTakeDamage(dmginfo)
     local headZ   = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
     if hitPos.z > headZ then dmginfo:ScaleDamage(1 / 3) end
     local rawDmg  = dmginfo:GetDamage()
-    local doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
+
+    local doSplat
+    if self._gekkoLegsDisabled then
+        -- Grounded state: highly prone to bleeding, almost every hit splats
+        doSplat = true
+    else
+        doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
+    end
+
     if doSplat then
         self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
         local variant = math.random(1, 5)
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
     end
+
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
@@ -489,7 +498,6 @@ end
 function ENT:OnThink()
     if self._gekkoLegsDisabled then
         self:GekkoLegs_Think()
-        return
     end
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
