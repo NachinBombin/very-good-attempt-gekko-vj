@@ -124,10 +124,10 @@ local FKR_DURATION      = 1.1
 local FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
 local FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
 local FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
-local FKR_RHIP_Y_PREP   = -105   -- mirrored: negative Y
+local FKR_RHIP_Y_PREP   = 105   -- mirrored: negative Y
 local FKR_RHIP_X_PREP   =   36
 local FKR_LHIP_X_PREP   =   36
-local FKR_RHIP_Y_EXT    =  105   -- mirrored: positive Y on extension
+local FKR_RHIP_Y_EXT    =  -105   -- mirrored: positive Y on extension
 local FKR_RHIP_BONE     = "b_r_hippiston1"
 local FKR_LHIP_BONE     = "b_l_hippiston1"
 
