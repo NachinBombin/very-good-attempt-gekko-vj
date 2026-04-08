@@ -11,6 +11,7 @@ include("crush_system.lua")
 include("jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
+include("leg_disable_system.lua")
 
 -- ============================================================
 --  Net message pool
@@ -403,6 +404,7 @@ function ENT:Init()
     SafeInitVJTables(self)
     self:GekkoJump_Init()
     self:GeckoCrouch_Init()
+    self:GekkoLegs_Init()
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -475,6 +477,7 @@ function ENT:OnTakeDamage(dmginfo)
         local variant = math.random(1, 5)
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
     end
+    self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
@@ -484,6 +487,10 @@ end
 --  Think
 -- ============================================================
 function ENT:OnThink()
+    if self._gekkoLegsDisabled then
+        self:GekkoLegs_Think()
+        return
+    end
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
         self:SetNWBool("GekkoMGFiring", false)
@@ -711,6 +718,7 @@ end
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
+    if self._gekkoLegsDisabled then return true end
     if not IsValid(enemy) then return true end
     local choice = RollWeapon()
     self._lastWeaponChoice = choice

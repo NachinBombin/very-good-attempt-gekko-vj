@@ -215,3 +215,27 @@ function ENT:GekkoGib_OnDamage(dmg, dmginfo)
 
     print(string.format("[GekkoGib] Spawned %d gibs (dmg=%.1f)", count, dmg))
 end
+
+-- ────────────────────────────────────────────────────────────
+--  ENT:GekkoGib_BigBurst
+--  Forced large gib event with beefier explosion, used by leg-disable
+-- ────────────────────────────────────────────────────────────
+function ENT:GekkoGib_BigBurst(hitPos, hitNormal)
+    hitPos    = hitPos    or (self:GetPos() + Vector(0, 0, 100))
+    hitNormal = hitNormal or Vector(0, 0, 1)
+
+    local count = math.random(GIB_COUNT_MAX + 3, GIB_COUNT_MAX * 2)
+    for _ = 1, count do
+        SpawnSingleGib(hitPos, hitNormal)
+    end
+
+    local eexp = EffectData()
+    eexp:SetOrigin(hitPos)
+    eexp:SetNormal(hitNormal)
+    eexp:SetScale(1.0)
+    eexp:SetMagnitude(2)
+    eexp:SetRadius(192)
+    util.Effect(GIB_EXPLOSION_EFFECT, eexp)
+
+    util.ScreenShake(hitPos, 14, 8, 0.9, 900)
+end
