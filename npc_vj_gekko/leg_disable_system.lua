@@ -3,12 +3,12 @@
 --  Gekko VJ NPC — Leg disabling / grounded state
 -- ============================================================
 
-local GROUNDED_HEALTH_FRACTION = 0.90   -- 90% of max/StartHealth
-local GROUNDED_CHANCE          = 0.30   -- 30% chance on crossing threshold
+local GROUNDED_HEALTH_FRACTION = 0.90
+local GROUNDED_CHANCE          = 0.30
 
 local PELVIS_OFFSET_Z = -125
-local L_THIGH_ANG     = Angle(0, 0, -50)          -- Z -50
-local R_THIGH_ANG     = Angle(126, -105, 0)       -- X 126, Y -105
+local L_THIGH_ANG     = Angle(0, 0, -50)
+local R_THIGH_ANG     = Angle(126, -105, 0)
 
 -- ============================================================
 --  Init
@@ -32,7 +32,6 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
     local baseMax = self.StartHealth or self:GetMaxHealth() or curHP
     local thresh  = baseMax * GROUNDED_HEALTH_FRACTION
 
-    -- Only trigger when crossing from above → below threshold
     if curHP <= thresh then return end
 
     local newHP = math.max(curHP - dmginfo:GetDamage(), 0)
@@ -44,20 +43,26 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
 end
 
 -- ============================================================
---  Helper: snap origin down to floor under current position
+--  Helper: force zero locomotion speeds
+-- ============================================================
+local function ZeroSpeeds(ent)
+    ent.MoveSpeed  = 0
+    ent.RunSpeed   = 0
+    ent.WalkSpeed  = 0
+    ent:SetVelocity(Vector(0, 0, 0))
+end
+
+-- ============================================================
+--  Helper: snap origin down to floor
 -- ============================================================
 function ENT:GekkoLegs_GroundToFloor()
     local mins, maxs = self:GetCollisionBounds()
-
-    -- Start the trace from the middle of the hull downwards quite far to
-    -- guarantee we find real world geometry even if nav / physics nudged
-    -- the NPC slightly upward.
     local halfHeight = (maxs.z - mins.z) * 0.5
     local start      = self:GetPos() + Vector(0, 0, halfHeight)
 
     local tr = util.TraceHull({
         start  = start,
-        endpos = start - Vector(0, 0, halfHeight + 256),
+        endpos  = start - Vector(0, 0, halfHeight + 256),
         mins   = mins,
         maxs   = maxs,
         mask   = MASK_PLAYERSOLID,
@@ -65,7 +70,6 @@ function ENT:GekkoLegs_GroundToFloor()
     })
 
     if tr.Hit then
-        -- Nudge a tiny bit up to avoid z-fighting / clipping.
         self:SetPos(tr.HitPos + Vector(0, 0, 2))
     end
 end
@@ -79,39 +83,35 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._gekkoLegsDisabled   = true
     self._gekkoLegsTriggeredT = CurTime()
 
-    -- Stop jump / crouch systems, but leave VJ locomotion flags alone
+    -- Hard stop
     self:SetMoveType(MOVETYPE_STEP)
-    self:SetVelocity(Vector(0, 0, 0))
+    ZeroSpeeds(self)
     self:SetSchedule(SCHED_IDLE_STAND)
-    self.VJ_IsBeingCrouched  = false
+    self.VJ_IsBeingCrouched = false
 
-    -- Cancel jump state and jet FX if any
+    -- Cancel jump
     if self.SetGekkoJumpState then
         self:SetGekkoJumpState(self.JUMP_NONE or 0)
         self:SetGekkoJumpTimer(0)
     end
-    if self.GekkoJump_StopJetFX then
-        self:GekkoJump_StopJetFX()
-    end
+    if self.GekkoJump_StopJetFX then self:GekkoJump_StopJetFX() end
     self._jumpStateLOCAL   = 0
     self._jumpCooldown     = CurTime() + 9999
     self._jumpLandCooldown = CurTime() + 9999
 
-    -- Force standing hull and clear crouch flag so it cannot crouch again
+    -- Force standing hull, no crouch
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching = false
 
-    -- Snap origin down to floor, then apply the "collapsed" pose once
     self:GekkoLegs_GroundToFloor()
     self:GekkoLegs_ApplyPose()
 
-    -- Drive a large gib burst + explosion using the gib system
+    -- Gib burst
     local hitPos = dmginfo:GetDamagePosition()
     if (not hitPos) or hitPos == vector_origin then
         hitPos = self:GetPos() + Vector(0, 0, 80)
     end
-
     local attacker  = dmginfo:GetAttacker()
     local hitNormal = Vector(0, 0, 1)
     if IsValid(attacker) then
@@ -119,15 +119,13 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         hitNormal.z = math.Clamp(hitNormal.z, -0.3, 0.3)
         hitNormal:Normalize()
     end
-
     if self.GekkoGib_BigBurst then
         self:GekkoGib_BigBurst(hitPos, hitNormal)
     else
-        -- Fallback: at least try to spawn normal gibs
         self:GekkoGib_OnDamage(self.StartHealth or 900, dmginfo)
     end
 
-    print("[GekkoLegs] Entered grounded state (legs disabled)")
+    print("[GekkoLegs] Entered grounded state (legs disabled, speed zeroed)")
 end
 
 -- ============================================================
@@ -135,7 +133,6 @@ end
 -- ============================================================
 function ENT:GekkoLegs_ApplyPose()
     if not self._gekkoLegsDisabled then return end
-
     if self.GekkoPelvisBone and self.GekkoPelvisBone >= 0 then
         self:ManipulateBonePosition(self.GekkoPelvisBone, Vector(0, 0, PELVIS_OFFSET_Z))
     end
@@ -153,14 +150,13 @@ end
 function ENT:GekkoLegs_Think()
     if not self._gekkoLegsDisabled then return end
 
-    -- Continuously keep the origin snapped to floor in case nav / physics
-    -- tries to float the NPC up again.
-    self:GekkoLegs_GroundToFloor()
+    -- Enforce zero speed every tick (VJ Base may try to restore it)
+    ZeroSpeeds(self)
 
-    -- Keep pose locked every tick so other systems cannot override it
+    self:GekkoLegs_GroundToFloor()
     self:GekkoLegs_ApplyPose()
 
-    -- Passive bleeding while grounded: periodic blood splats even without hits
+    -- Passive bleeding
     local now = CurTime()
     if now >= (self._gekkoLegsBleedNextT or 0) then
         self._gekkoLegsBleedNextT = now + math.Rand(0.4, 0.9)
