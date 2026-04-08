@@ -13,15 +13,11 @@ if SERVER then
     util.AddNetworkString("GekkoFootballKickPulse")
     util.AddNetworkString("GekkoRFootballKickPulse")
     util.AddNetworkString("GekkoDiagonalKickPulse")
-    util.AddNetworkString("GekkoRDiagonalKickPulse")
     util.AddNetworkString("GekkoHeelHookPulse")
-    util.AddNetworkString("GekkoRHeelHookPulse")
     util.AddNetworkString("GekkoSideHookKickPulse")
-    util.AddNetworkString("GekkoRSideHookKickPulse")
     util.AddNetworkString("GekkoAxeKickPulse")
     util.AddNetworkString("GekkoRAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
-    util.AddNetworkString("GekkoRJumpKickPulse")
     util.AddNetworkString("GekkoLKickPulse")
 end
 
@@ -120,14 +116,6 @@ local ATTACKS = {
         sweep_dist = 140, sweep_half = 55, sweep_z = 60,
     },
 
-    -- ============================================================
-    --  RFOOTBALLKICK  -  mirrored football kick (right leg)
-    --  Identical stats to FOOTBALLKICK; sweep direction is straight
-    --  forward (the original uses the same hull sweep direction, so
-    --  the mirror is behaviorally symmetric).  The only difference
-    --  is that the client bone driver uses b_r_hippiston1 as the
-    --  kicking leg and b_l_hippiston1 as the brace.
-    -- ============================================================
     RFOOTBALLKICK = {
         w = 20, nwkey = "GekkoRFootballKickPulse",
         duration = 1.3, hit_t = 0.55,
@@ -144,14 +132,6 @@ local ATTACKS = {
         sweep_dist = 150, sweep_half = 55, sweep_z = 60,
     },
 
-    RDIAGONALKICK = {
-        w = 20, nwkey = "GekkoRDiagonalKickPulse",
-        duration = 1.4, hit_t = 0.60,
-
-        dmg = 38, impulse = 13000,
-        sweep_dist = 150, sweep_half = 55, sweep_z = 60,
-    },
-
     HEELHOOK = {
         w = 20, nwkey = "GekkoHeelHookPulse",
         duration = 1.6, hit_t = 0.62, hit_t2 = 0.82,
@@ -161,25 +141,8 @@ local ATTACKS = {
         hook_angle = 55,
     },
 
-    RHEELHOOK = {
-        w = 20, nwkey = "GekkoRHeelHookPulse",
-        duration = 1.6, hit_t = 0.62, hit_t2 = 0.82,
-
-        dmg = 35, dmg2 = 28, impulse = 12000, impulse2 = 9500,
-        sweep_dist = 160, sweep_half = 50, sweep_z = 65,
-        hook_angle = 55,
-    },
-
     SIDEHOOKKICK = {
         w = 20, nwkey = "GekkoSideHookKickPulse",
-        duration = 1.5, hit_t = 0.55,
-
-        dmg = 36, impulse = 12500,
-        sweep_dist = 145, sweep_half = 52, sweep_z = 65,
-    },
-
-    RSIDEHOOKKICK = {
-        w = 20, nwkey = "GekkoRSideHookKickPulse",
         duration = 1.5, hit_t = 0.55,
 
         dmg = 36, impulse = 12500,
@@ -202,31 +165,8 @@ local ATTACKS = {
         sweep_dist = 155, sweep_half = 55, sweep_z = 90,
     },
 
-    -- ============================================================
-    --  JUMPKICK
-    --  4 phases:
-    --    Phase 1  preparation  (leg chamber, no movement)
-    --    Phase 2  kick + small forward hop  (hit fires here)
-    --    Phase 3  falling  (body tilts forward, pedestal recentres)
-    --    Phase 4  smooth recovery to rest
-    --
-    --  Forward-cone only (inCone required).
-    --  The Gekko gets a brief forward velocity impulse at hit_t.
-    -- ============================================================
     JUMPKICK = {
         w = 20, nwkey = "GekkoJumpKickPulse",
-
-        duration = 1.6,
-        hit_t    = 0.55,          -- sweep fires mid-phase-2
-
-        dmg = 42, impulse = 14500,
-        sweep_dist = 160, sweep_half = 55, sweep_z = 75,
-
-        hop_force = 240,          -- forward units/s applied at kick moment
-    },
-
-    RJUMPKICK = {
-        w = 20, nwkey = "GekkoRJumpKickPulse",
 
         duration = 1.6,
         hit_t    = 0.55,
@@ -362,11 +302,6 @@ local function FireFootballKick(self)
     end)
 end
 
--- ============================================================
---  RFOOTBALLKICK fire helper
---  Identical hull sweep to FOOTBALLKICK; NW key is different so
---  the client bone driver knows which leg to animate.
--- ============================================================
 local function FireRFootballKick(self)
     local A    = ATTACKS.RFOOTBALLKICK
 
@@ -399,39 +334,6 @@ end
 
 local function FireDiagonalKick(self)
     local A    = ATTACKS.DIAGONALKICK
-
-    ClaimKickLock(self, A.duration + 0.2)
-
-    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
-    self:SetNWInt(A.nwkey, next)
-
-    local selfRef = self
-    timer.Simple(A.hit_t, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef   = selfRef:GetForward()
-        local rightRef = selfRef:GetRight()
-        local sweepDir = (fwdRef - rightRef * 0.35):GetNormalized()
-
-        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
-        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + sweepDir * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg,
-                (sweepDir + Vector(0,0,0.3)):GetNormalized() * A.impulse)
-        end
-    end)
-end
-
-local function FireRDiagonalKick(self)
-    local A    = ATTACKS.RDIAGONALKICK
 
     ClaimKickLock(self, A.duration + 0.2)
 
@@ -520,98 +422,8 @@ local function FireHeelHook(self)
     end)
 end
 
-local function FireRHeelHook(self)
-    local A    = ATTACKS.RHEELHOOK
-
-    ClaimKickLock(self, A.duration + 0.3)
-
-    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
-    self:SetNWInt(A.nwkey, next)
-
-    local selfRef = self
-    timer.Simple(A.hit_t, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef   = selfRef:GetForward()
-        local rightRef = selfRef:GetRight()
-        local sweepDir = (fwdRef + rightRef * 0.6):GetNormalized()
-
-        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
-        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + sweepDir * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg,
-                (sweepDir + Vector(0,0,0.3)):GetNormalized() * A.impulse)
-        end
-    end)
-
-    timer.Simple(A.hit_t2, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef   = selfRef:GetForward()
-        local rightRef = selfRef:GetRight()
-        local hookRad  = math.rad(A.hook_angle)
-        local sweepDir = (fwdRef - rightRef * math.tan(hookRad * 0.5)):GetNormalized()
-
-        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z - 5)
-        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + sweepDir * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg2,
-                (sweepDir + Vector(0,0,0.4)):GetNormalized() * A.impulse2)
-        end
-    end)
-end
-
 local function FireSideHookKick(self)
     local A    = ATTACKS.SIDEHOOKKICK
-
-    ClaimKickLock(self, A.duration + 0.2)
-
-    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
-    self:SetNWInt(A.nwkey, next)
-
-    local selfRef = self
-    timer.Simple(A.hit_t, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef   = selfRef:GetForward()
-        local rightRef = selfRef:GetRight()
-        local sweepDir = (fwdRef * 0.4 + rightRef * 0.9):GetNormalized()
-
-        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
-        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + sweepDir * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg,
-                (sweepDir + Vector(0,0,0.25)):GetNormalized() * A.impulse)
-        end
-    end)
-end
-
-local function FireRSideHookKick(self)
-    local A    = ATTACKS.RSIDEHOOKKICK
 
     ClaimKickLock(self, A.duration + 0.2)
 
@@ -719,20 +531,6 @@ local function FireRAxeKick(self, closestTarget, dot)
     end)
 end
 
--- ============================================================
---  JUMPKICK fire helper
---
---  Phase timing (seconds):
---    0.00 - 0.30   Phase 1: preparation  (bone anim only, no damage)
---    0.30 - 0.55   Phase 2: kick + forward hop  (hit_t = 0.55)
---    0.55 - 1.00   Phase 3: falling
---    1.00 - 1.60   Phase 4: recovery
---
---  Server responsibility:
---    - ClaimKickLock for full duration
---    - Apply a brief forward velocity at hit_t (the hop)
---    - Forward hull sweep at hit_t for damage
--- ============================================================
 local function FireJumpKick(self, closestTarget, fwd, dot)
     local A    = ATTACKS.JUMPKICK
 
@@ -748,14 +546,12 @@ local function FireJumpKick(self, closestTarget, fwd, dot)
     timer.Simple(A.hit_t, function()
         if not IsValid(selfRef) then return end
 
-        -- forward hop velocity
         local fwdRef = selfRef:GetForward()
         local curVel = selfRef:GetVelocity()
         selfRef:SetVelocity(Vector(curVel.x + fwdRef.x * A.hop_force,
                                    curVel.y + fwdRef.y * A.hop_force,
                                    curVel.z))
 
-        -- hull sweep
         local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
         local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
 
@@ -771,47 +567,6 @@ local function FireJumpKick(self, closestTarget, fwd, dot)
             CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
 
             print(string.format("[GekkoCrush] JUMPKICK HIT  target=%s  pulse=%d",
-                tr.Entity:GetClass(), next))
-        end
-    end)
-end
-
-local function FireRJumpKick(self, closestTarget, fwd, dot)
-    local A    = ATTACKS.RJUMPKICK
-
-    ClaimKickLock(self, A.duration + 0.2)
-
-    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
-    self:SetNWInt(A.nwkey, next)
-
-    print(string.format("[GekkoCrush] RJUMPKICK  target=%s  dot=%.2f  pulse=%d",
-        closestTarget:GetClass(), dot, next))
-
-    local selfRef = self
-    timer.Simple(A.hit_t, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef = selfRef:GetForward()
-        local curVel = selfRef:GetVelocity()
-        selfRef:SetVelocity(Vector(curVel.x + fwdRef.x * A.hop_force,
-                                   curVel.y + fwdRef.y * A.hop_force,
-                                   curVel.z))
-
-        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
-        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + fwdRef * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            local impDir = (fwdRef + Vector(0, 0, 0.3)):GetNormalized()
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
-
-            print(string.format("[GekkoCrush] RJUMPKICK HIT  target=%s  pulse=%d",
                 tr.Entity:GetClass(), next))
         end
     end)
@@ -888,15 +643,11 @@ function ENT:GeckoCrush_Think()
             { name = "FOOTBALLKICK",   w = ATTACKS.FOOTBALLKICK.w   },
             { name = "RFOOTBALLKICK",  w = ATTACKS.RFOOTBALLKICK.w  },
             { name = "DIAGONALKICK",   w = ATTACKS.DIAGONALKICK.w   },
-            { name = "RDIAGONALKICK",  w = ATTACKS.RDIAGONALKICK.w  },
             { name = "HEELHOOK",       w = ATTACKS.HEELHOOK.w       },
-            { name = "RHEELHOOK",      w = ATTACKS.RHEELHOOK.w      },
             { name = "SIDEHOOKKICK",   w = ATTACKS.SIDEHOOKKICK.w   },
-            { name = "RSIDEHOOKKICK",  w = ATTACKS.RSIDEHOOKKICK.w  },
             { name = "AXEKICK",        w = ATTACKS.AXEKICK.w        },
             { name = "RAXEKICK",       w = ATTACKS.RAXEKICK.w       },
             { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
-            { name = "RJUMPKICK",      w = ATTACKS.RJUMPKICK.w      },
         }
 
         if kickTarget then
@@ -930,15 +681,11 @@ function ENT:GeckoCrush_Think()
     elseif attack == "FOOTBALLKICK"    then FireFootballKick(self)
     elseif attack == "RFOOTBALLKICK"   then FireRFootballKick(self)
     elseif attack == "DIAGONALKICK"    then FireDiagonalKick(self)
-    elseif attack == "RDIAGONALKICK"   then FireRDiagonalKick(self)
     elseif attack == "HEELHOOK"        then FireHeelHook(self)
-    elseif attack == "RHEELHOOK"       then FireRHeelHook(self)
     elseif attack == "SIDEHOOKKICK"    then FireSideHookKick(self)
-    elseif attack == "RSIDEHOOKKICK"   then FireRSideHookKick(self)
     elseif attack == "AXEKICK"         then FireAxeKick(self, closestTarget, dot)
     elseif attack == "RAXEKICK"        then FireRAxeKick(self, closestTarget, dot)
     elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
-    elseif attack == "RJUMPKICK"       then FireRJumpKick(self, closestTarget, fwd, dot)
     else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end
