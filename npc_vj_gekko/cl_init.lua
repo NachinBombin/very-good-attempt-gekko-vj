@@ -16,17 +16,17 @@ end
 -- ============================================================
 --  JUMP STATE CONSTANTS  (mirror shared.lua)
 -- ============================================================
-local JUMP_NONE    = 0
-local JUMP_RISING  = 1
-local JUMP_FALLING = 2
-local JUMP_LAND    = 3
+JUMP_NONE    = 0
+JUMP_RISING  = 1
+JUMP_FALLING = 2
+JUMP_LAND    = 3
 
 -- ============================================================
 --  GROUNDED POSE CONSTANTS  (must match leg_disable_system.lua)
 -- ============================================================
-local GND_PELVIS_OFFSET_Z = -125
-local GND_L_THIGH_ANG     = Angle(0,   0,   -50)
-local GND_R_THIGH_ANG     = Angle(126, -105,  0)
+GND_PELVIS_OFFSET_Z = -125
+GND_L_THIGH_ANG     = Angle(0,   0,   -50)
+GND_R_THIGH_ANG     = Angle(126, -105,  0)
 
 local function GekkoApplyGroundedPose(ent)
     local pelBone = ent:LookupBone("b_pelvis")
@@ -65,194 +65,194 @@ end
 -- ============================================================
 --  KICK ANIMATION  (b_r_upperleg)
 -- ============================================================
-local KICK_WINDOW     = 1.0
-local KICK_BONE_NAME  = "b_r_upperleg"
-local KICK_BONE_ANGLE = Angle(112, 0, 0)
-local KICK_BONE_RESET = Angle(0,   0, 0)
+KICK_WINDOW     = 1.0
+KICK_BONE_NAME  = "b_r_upperleg"
+KICK_BONE_ANGLE = Angle(112, 0, 0)
+KICK_BONE_RESET = Angle(0,   0, 0)
 
 -- mirrored basic kick (left upper leg)
-local KICK_L_BONE_NAME  = "b_l_upperleg"
-local KICK_L_BONE_ANGLE = KICK_BONE_ANGLE
-local KICK_L_BONE_RESET = KICK_BONE_RESET
+KICK_L_BONE_NAME  = "b_l_upperleg"
+KICK_L_BONE_ANGLE = KICK_BONE_ANGLE
+KICK_L_BONE_RESET = KICK_BONE_RESET
 
 -- ============================================================
 --  HEADBUTT ANIMATION
 -- ============================================================
-local HB_DURATION       = 0.8
-local HB_PEAK           = 0.4
-local HB_SPINE3_ANG_X   = -60
-local HB_PEDESTAL_POS_X =  70
-local HB_PEDESTAL_POS_Z = -45
-local HB_SPINE3_BONE    = "b_spine3"
-local HB_PEDESTAL_BONE  = "b_pedestal"
+HB_DURATION       = 0.8
+HB_PEAK           = 0.4
+HB_SPINE3_ANG_X   = -60
+HB_PEDESTAL_POS_X =  70
+HB_PEDESTAL_POS_Z = -45
+HB_SPINE3_BONE    = "b_spine3"
+HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- ============================================================
 --  FK360 ANIMATION
 -- ============================================================
-local FK360_RAMP     = 0.15
-local FK360_BONE     = "b_pelvis"
+FK360_RAMP     = 0.15
+FK360_BONE     = "b_pelvis"
 
 -- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
-local SK_DURATION = 0.9
-local SK_P1_END   = 0.330
-local SK_P2_END   = 0.500
-local SK_P3_END   = 0.670
-local SK_P4_END   = 0.800
+SK_DURATION = 0.9
+SK_P1_END   = 0.330
+SK_P2_END   = 0.500
+SK_P3_END   = 0.670
+SK_P4_END   = 0.800
 
-local SK_RAMP       = 0.10
-local SK_YAW_TOTAL  = 590
-local SK_PED_BONE   = "b_Pedestal"
-local SK_PEL_BONE   = "b_pelvis"
-local SK_HIP_BONE   = "b_r_hippiston1"
-local SK_ULEG_BONE  = "b_r_upperleg"
-local SK_PEL_DROP   = -50
-local SK_HIP_Z      = -22
-local SK_ULEG_X     = 140
+SK_RAMP       = 0.10
+SK_YAW_TOTAL  = 590
+SK_PED_BONE   = "b_Pedestal"
+SK_PEL_BONE   = "b_pelvis"
+SK_HIP_BONE   = "b_r_hippiston1"
+SK_ULEG_BONE  = "b_r_upperleg"
+SK_PEL_DROP   = -50
+SK_HIP_Z      = -22
+SK_ULEG_X     = 140
 
 -- ============================================================
 --  FOOTBALL KICK ANIMATION  (left leg)
 -- ============================================================
-local FK_DURATION      = 1.1
-local FK_PHASE_HOLD    = 0.300 / FK_DURATION
-local FK_PHASE_EXTEND  = 0.550 / FK_DURATION
-local FK_PHASE_RECOVER = 0.700 / FK_DURATION
+FK_DURATION      = 1.1
+FK_PHASE_HOLD    = 0.300 / FK_DURATION
+FK_PHASE_EXTEND  = 0.550 / FK_DURATION
+FK_PHASE_RECOVER = 0.700 / FK_DURATION
 
-local FK_LHIP_Y_PREP   =  105
-local FK_LHIP_X_PREP   =   36
-local FK_RHIP_X_PREP   =   36
-local FK_LHIP_Y_EXT    = -105
+FK_LHIP_Y_PREP   =  105
+FK_LHIP_X_PREP   =   36
+FK_RHIP_X_PREP   =   36
+FK_LHIP_Y_EXT    = -105
 
-local FK_LHIP_BONE     = "b_l_hippiston1"
-local FK_RHIP_BONE     = "b_r_hippiston1"
+FK_LHIP_BONE     = "b_l_hippiston1"
+FK_RHIP_BONE     = "b_r_hippiston1"
 
 -- ============================================================
 --  FOOTBALL KICK MIRRORED ANIMATION  (right leg)
 -- ============================================================
-local FKR_DURATION      = 1.1
-local FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
-local FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
-local FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
+FKR_DURATION      = 1.1
+FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
+FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
+FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
 
-local FKR_RHIP_Y_PREP   = 105
-local FKR_RHIP_X_PREP   =   36
-local FKR_LHIP_X_PREP   =   36
-local FKR_RHIP_Y_EXT    = -105
+FKR_RHIP_Y_PREP   = 105
+FKR_RHIP_X_PREP   =   36
+FKR_LHIP_X_PREP   =   36
+FKR_RHIP_Y_EXT    = -105
 
-local FKR_RHIP_BONE     = "b_r_hippiston1"
-local FKR_LHIP_BONE     = "b_l_hippiston1"
+FKR_RHIP_BONE     = "b_r_hippiston1"
+FKR_LHIP_BONE     = "b_l_hippiston1"
 
 -- ============================================================
 --  DIAGONAL KICK ANIMATION
 -- ============================================================
-local DGK_DURATION = 1.0
-local DGK_P1_END   = 0.300 / DGK_DURATION
-local DGK_P2_END   = 0.600 / DGK_DURATION
-local DGK_P3_END   = 0.750 / DGK_DURATION
-local DGK_P4_END   = 0.950 / DGK_DURATION
+DGK_DURATION = 1.0
+DGK_P1_END   = 0.300 / DGK_DURATION
+DGK_P2_END   = 0.600 / DGK_DURATION
+DGK_P3_END   = 0.750 / DGK_DURATION
+DGK_P4_END   = 0.950 / DGK_DURATION
 
-local DGK_P1_LHIP  = Angle( -8, -22,  43)
-local DGK_P1_RHIP  = Angle(-32,   0,   0)
-local DGK_P3_LHIP  = Angle( -8, -22, 105)
-local DGK_P3_RHIP  = Angle(109,   0,   0)
-local DGK_P4_LHIP  = Angle(136,   0,  12)
-local DGK_P4_RHIP  = Angle(  0,   0,   0)
+DGK_P1_LHIP  = Angle( -8, -22,  43)
+DGK_P1_RHIP  = Angle(-32,   0,   0)
+DGK_P3_LHIP  = Angle( -8, -22, 105)
+DGK_P3_RHIP  = Angle(109,   0,   0)
+DGK_P4_LHIP  = Angle(136,   0,  12)
+DGK_P4_RHIP  = Angle(  0,   0,   0)
 
-local DGK_LHIP_BONE = "b_l_hippiston1"
-local DGK_RHIP_BONE = "b_r_hippiston1"
+DGK_LHIP_BONE = "b_l_hippiston1"
+DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- mirrored DIAGONAL KICK (swap leg bones)
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
 -- ============================================================
-local HH_DURATION_CL        = 0.8
-local HH_HIP_CHAMBER_PITCH  =  85
-local HH_HIP_EXTEND_ROLL    =  30
-local HH_HIP_HOOK_YAW       = -35
-local HH_PELVIS_YAW         =  28
-local HH_PELVIS_PITCH       =   8
-local HH_SPINE_LEAN         =  12
+HH_DURATION_CL        = 0.8
+HH_HIP_CHAMBER_PITCH  =  85
+HH_HIP_EXTEND_ROLL    =  30
+HH_HIP_HOOK_YAW       = -35
+HH_PELVIS_YAW         =  28
+HH_PELVIS_PITCH       =   8
+HH_SPINE_LEAN         =  12
 
-local HH_HIP_BONE    = "b_l_hippiston1"
-local HH_PELVIS_BONE = "b_pelvis"
-local HH_SPINE_BONE  = "b_spine3"
+HH_HIP_BONE    = "b_l_hippiston1"
+HH_PELVIS_BONE = "b_pelvis"
+HH_SPINE_BONE  = "b_spine3"
 
 -- mirrored HEEL HOOK (swap leg bones)
 
 -- ============================================================
 --  SIDE HOOK KICK ANIMATION
 -- ============================================================
-local SHK_DURATION = 1.1
-local SHK_P1_END = 0.200 / SHK_DURATION
-local SHK_P2_END = 0.400 / SHK_DURATION
-local SHK_P3_END = 0.550 / SHK_DURATION
-local SHK_P4_END = 0.700 / SHK_DURATION
+SHK_DURATION = 1.1
+SHK_P1_END = 0.200 / SHK_DURATION
+SHK_P2_END = 0.400 / SHK_DURATION
+SHK_P3_END = 0.550 / SHK_DURATION
+SHK_P4_END = 0.700 / SHK_DURATION
 
-local SHK_P1_LHIP = Angle(-74,  0,   0)
-local SHK_P1_RHIP = Angle(-102, 0,   0)
-local SHK_P2_LHIP = Angle(-25,  0,   0)
-local SHK_P2_RHIP = Angle( -8,  0, -64)
-local SHK_P3_LHIP = Angle(-25,  0,   0)
-local SHK_P3_RHIP = Angle(  0,  0, -120)
-local SHK_P4_LHIP = Angle(-57,  0, -29)
-local SHK_P4_RHIP = Angle(-12,  0, -25)
-local SHK_REST    = Angle(0, 0, 0)
+SHK_P1_LHIP = Angle(-74,  0,   0)
+SHK_P1_RHIP = Angle(-102, 0,   0)
+SHK_P2_LHIP = Angle(-25,  0,   0)
+SHK_P2_RHIP = Angle( -8,  0, -64)
+SHK_P3_LHIP = Angle(-25,  0,   0)
+SHK_P3_RHIP = Angle(  0,  0, -120)
+SHK_P4_LHIP = Angle(-57,  0, -29)
+SHK_P4_RHIP = Angle(-12,  0, -25)
+SHK_REST    = Angle(0, 0, 0)
 
-local SHK_LHIP_BONE = "b_l_hippiston1"
-local SHK_RHIP_BONE = "b_r_hippiston1"
+SHK_LHIP_BONE = "b_l_hippiston1"
+SHK_RHIP_BONE = "b_r_hippiston1"
 
 -- mirrored SIDE HOOK KICK (swap leg bones)
 
 -- ============================================================
 --  AXE KICK ANIMATION
 -- ============================================================
-local AK_DURATION = 1.1
-local AK_P1_END   = 0.350 / AK_DURATION
-local AK_P2_END   = 0.550 / AK_DURATION
-local AK_P3_END   = 0.700 / AK_DURATION
+AK_DURATION = 1.1
+AK_P1_END   = 0.350 / AK_DURATION
+AK_P2_END   = 0.550 / AK_DURATION
+AK_P3_END   = 0.700 / AK_DURATION
 
-local AK_P1_LHIP   = Angle(  0, -133,   0)
-local AK_P1_SPINE  = Angle(  5,  -12, -39)
+AK_P1_LHIP   = Angle(  0, -133,   0)
+AK_P1_SPINE  = Angle(  5,  -12, -39)
 
-local AK_P3_LHIP   = Angle(  0,   -5,   0)
-local AK_P3_RHIP   = Angle(  0,  -31,   0)
-local AK_P3_SPINE  = Angle(-17,    0,   0)
+AK_P3_LHIP   = Angle(  0,   -5,   0)
+AK_P3_RHIP   = Angle(  0,  -31,   0)
+AK_P3_SPINE  = Angle(-17,    0,   0)
 
-local AK_REST      = Angle(0, 0, 0)
+AK_REST      = Angle(0, 0, 0)
 
-local AK_LHIP_BONE  = "b_l_hippiston1"
-local AK_RHIP_BONE  = "b_r_hippiston1"
-local AK_SPINE_BONE = "b_spine3"
+AK_LHIP_BONE  = "b_l_hippiston1"
+AK_RHIP_BONE  = "b_r_hippiston1"
+AK_SPINE_BONE = "b_spine3"
 
 -- mirrored AXE KICK (right leg primary, reuse same angles)
 
 -- ============================================================
 --  JUMP KICK ANIMATION
 -- ============================================================
-local JK_DURATION = 1.6
-local JK_P1_END   = 0.300 / JK_DURATION
-local JK_P2_END   = 0.550 / JK_DURATION
-local JK_P3_END   = 1.000 / JK_DURATION
+JK_DURATION = 1.6
+JK_P1_END   = 0.300 / JK_DURATION
+JK_P2_END   = 0.550 / JK_DURATION
+JK_P3_END   = 1.000 / JK_DURATION
 
-local JK_P1_LHIP  = Angle(58,  0,  -8)
-local JK_P1_RHIP  = Angle(88,  0, -36)
+JK_P1_LHIP  = Angle(58,  0,  -8)
+JK_P1_RHIP  = Angle(88,  0, -36)
 
-local JK_P2_LHIP  = Angle(56,  0,  79)
-local JK_P2_RHIP  = Angle(88,  0, -36)
-local JK_P2_PED_POS = Vector(30, 0, 13)
+JK_P2_LHIP  = Angle(56,  0,  79)
+JK_P2_RHIP  = Angle(88,  0, -36)
+JK_P2_PED_POS = Vector(30, 0, 13)
 
-local JK_P3_LHIP    = Angle(0,  43,  0)
-local JK_P3_PED_ANG = Angle(0,  20,  0)
-local JK_P3_PED_POS = Vector(0,  0,  0)
+JK_P3_LHIP    = Angle(0,  43,  0)
+JK_P3_PED_ANG = Angle(0,  20,  0)
+JK_P3_PED_POS = Vector(0,  0,  0)
 
-local JK_REST       = Angle(0, 0, 0)
-local JK_REST_POS   = Vector(0, 0, 0)
+JK_REST       = Angle(0, 0, 0)
+JK_REST_POS   = Vector(0, 0, 0)
 
-local JK_LHIP_BONE  = "b_l_hippiston1"
-local JK_RHIP_BONE  = "b_r_hippiston1"
-local JK_PED_BONE   = "b_pedestal"
+JK_LHIP_BONE  = "b_l_hippiston1"
+JK_RHIP_BONE  = "b_r_hippiston1"
+JK_PED_BONE   = "b_pedestal"
 
 -- mirrored JUMP KICK (swap leg bones, same pedestal)
 
@@ -275,7 +275,7 @@ end
 -- ============================================================
 --  CRUSH HIT
 -- ============================================================
-local CRUSH_IMPACT_SOUNDS = {
+CRUSH_IMPACT_SOUNDS = {
     "physics/body/body_medium_impact_hard1.wav",
     "physics/body/body_medium_impact_hard2.wav",
     "physics/body/body_medium_impact_hard3.wav",
@@ -284,7 +284,7 @@ local CRUSH_IMPACT_SOUNDS = {
     "physics/body/body_medium_impact_hard6.wav",
 }
 
-local CRUSH_SHAKE_RADIUS = 900
+CRUSH_SHAKE_RADIUS = 900
 
 net.Receive("GekkoCrushHit", function()
     local hitPos   = net.ReadVector()
@@ -317,17 +317,17 @@ end)
 -- ============================================================
 --  SONAR LOCK
 -- ============================================================
-local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
-local SONAR_DURATION       = 3.0
-local SONAR_PULSE_COUNT    = 3
-local SONAR_PULSE_INTERVAL = 0.6
-local SONAR_RING_THICKNESS = 3
-local SONAR_PEAK_ALPHA     = 100
-local SONAR_TINT_ALPHA     = 40
+SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
+SONAR_DURATION       = 3.0
+SONAR_PULSE_COUNT    = 3
+SONAR_PULSE_INTERVAL = 0.6
+SONAR_RING_THICKNESS = 3
+SONAR_PEAK_ALPHA     = 100
+SONAR_TINT_ALPHA     = 40
 
-local SONAR_R = 200
-local SONAR_G = 0
-local SONAR_B = 0
+SONAR_R = 200
+SONAR_G = 0
+SONAR_B = 0
 
 local sonar_startTime = nil
 local sonar_active    = false
@@ -432,7 +432,7 @@ end)
 -- ============================================================
 --  FOOTSTEP SYNC
 -- ============================================================
-local STEP_SOUNDS = {
+STEP_SOUNDS = {
     "physics/metal/metal_box_impact_hard1.wav",
     "physics/metal/metal_box_impact_hard2.wav",
     "physics/metal/metal_box_impact_hard3.wav",
@@ -473,9 +473,9 @@ end
 -- ============================================================
 --  FOOTSTEP CAMERA SHAKE
 -- ============================================================
-local SHAKE_NEAR_DIST = 350
-local SHAKE_FAR_DIST  = 750
-local SHAKE_MIN_SPEED = 8
+SHAKE_NEAR_DIST = 350
+SHAKE_FAR_DIST  = 750
+SHAKE_MIN_SPEED = 8
 
 local function GekkoFootShake(ent)
     local ply = LocalPlayer()
@@ -514,10 +514,10 @@ end
 -- ============================================================
 --  HEAD DRIVER
 -- ============================================================
-local HEAD_LIMIT       =  50
-local HEAD_PITCH_UP    = -60
-local HEAD_PITCH_DOWN  =  60
-local HEAD_SPEED       =  30
+HEAD_LIMIT       =  50
+HEAD_PITCH_UP    = -60
+HEAD_PITCH_DOWN  =  60
+HEAD_SPEED       =  30
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -564,7 +564,7 @@ end
 -- ============================================================
 --  JUMP DUST
 -- ============================================================
-local ATT_MACHINEGUN = 3
+ATT_MACHINEGUN = 3
 
 local function GekkoDoJumpDust(ent)
     local pulse = ent:GetNWInt("GekkoJumpDust", 0)
@@ -622,7 +622,7 @@ end
 -- ============================================================
 --  MG FIRING FX
 -- ============================================================
-local SHELL_INTERVAL = 0.09
+SHELL_INTERVAL = 0.09
 
 local function GekkoDoMGFX(ent)
     if not ent:GetNWBool("GekkoMGFiring", false) then
@@ -668,9 +668,9 @@ end
 -- ============================================================
 --  BLOOD SPLATTER
 -- ============================================================
-local BLOOD_SIZE   = 0.35
-local BLOOD_DECAL  = "Blood"
-local BLOOD_DECAL2 = "YellowBlood"
+BLOOD_SIZE   = 0.35
+BLOOD_DECAL  = "Blood"
+BLOOD_DECAL2 = "YellowBlood"
 
 local function RandBiasedDir(dir, bias)
     local r = Vector(
