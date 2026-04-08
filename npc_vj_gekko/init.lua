@@ -105,6 +105,7 @@ local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 local HEAD_Z_FRACTION  = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
+local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- ============================================================
 --  Helpers
@@ -474,8 +475,8 @@ function ENT:OnTakeDamage(dmginfo)
 
     local doSplat
     if self._gekkoLegsDisabled then
-        -- Grounded state: highly prone to bleeding, almost every hit splats
-        doSplat = true
+        -- Grounded state: highly prone to bleeding (high probability per hit)
+        doSplat = (math.Rand(0, 1) < GROUNDED_BLEED_CHANCE)
     else
         doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
     end
@@ -726,7 +727,6 @@ end
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
-    if self._gekkoLegsDisabled then return true end
     if not IsValid(enemy) then return true end
     local choice = RollWeapon()
     self._lastWeaponChoice = choice

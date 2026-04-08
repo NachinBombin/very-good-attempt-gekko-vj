@@ -14,11 +14,12 @@ local R_THIGH_ANG     = Angle(126, -105, 0)       -- X 126, Y -105
 --  Init
 -- ============================================================
 function ENT:GekkoLegs_Init()
-    self._gekkoLegsDisabled   = false
-    self._gekkoLegsTriggeredT = 0
-    self.GekkoPelvisBone      = self:LookupBone("b_pelvis")   or -1
-    self.GekkoLThighBone      = self:LookupBone("b_l_thigh")  or -1
-    self.GekkoRThighBone      = self:LookupBone("b_r_thigh")  or -1
+    self._gekkoLegsDisabled    = false
+    self._gekkoLegsTriggeredT  = 0
+    self._gekkoLegsBleedNextT  = 0
+    self.GekkoPelvisBone       = self:LookupBone("b_pelvis")   or -1
+    self.GekkoLThighBone       = self:LookupBone("b_l_thigh")  or -1
+    self.GekkoRThighBone       = self:LookupBone("b_r_thigh")  or -1
 end
 
 -- ============================================================
@@ -43,6 +44,25 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
 end
 
 -- ============================================================
+--  Helper: snap origin down to floor under current position
+-- ============================================================
+function ENT:GekkoLegs_GroundToFloor()
+    local mins, maxs = self:GetCollisionBounds()
+    local start      = self:GetPos() + Vector(0, 0, 20)
+    local tr = util.TraceHull({
+        start  = start,
+        endpos = start - Vector(0, 0, 200),
+        mins   = mins,
+        maxs   = maxs,
+        mask   = MASK_SOLID,
+        filter = self,
+    })
+    if tr.Hit then
+        self:SetPos(tr.HitPos)
+    end
+end
+
+-- ============================================================
 --  Grounded trigger — one-way transition
 -- ============================================================
 function ENT:GekkoLegs_TriggerGrounded(dmginfo)
@@ -51,7 +71,7 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._gekkoLegsDisabled   = true
     self._gekkoLegsTriggeredT = CurTime()
 
-    -- Hard stop movement and special mobility
+    -- Stop jump / crouch systems, but leave VJ locomotion flags alone
     self:SetMoveType(MOVETYPE_STEP)
     self:SetVelocity(Vector(0, 0, 0))
     self:SetSchedule(SCHED_IDLE_STAND)
@@ -74,7 +94,8 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching = false
 
-    -- Apply the "collapsed" pose once immediately
+    -- Snap origin down to floor, then apply the "collapsed" pose once
+    self:GekkoLegs_GroundToFloor()
     self:GekkoLegs_ApplyPose()
 
     -- Drive a large gib burst + explosion using the gib system
@@ -126,4 +147,13 @@ function ENT:GekkoLegs_Think()
 
     -- Keep pose locked every tick so other systems cannot override it
     self:GekkoLegs_ApplyPose()
+
+    -- Passive bleeding while grounded: periodic blood splats even without hits
+    local now = CurTime()
+    if now >= (self._gekkoLegsBleedNextT or 0) then
+        self._gekkoLegsBleedNextT = now + math.Rand(0.4, 0.9)
+        self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
+        local variant = math.random(1, 5)
+        self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
+    end
 end
