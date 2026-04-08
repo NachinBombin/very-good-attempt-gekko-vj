@@ -163,8 +163,6 @@ local DGK_LHIP_BONE = "b_l_hippiston1"
 local DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- mirrored DIAGONAL KICK (swap leg bones)
-local DGKR_LHIP_BONE = "b_r_hippiston1"
-local DGKR_RHIP_BONE = "b_l_hippiston1"
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
@@ -182,9 +180,6 @@ local HH_PELVIS_BONE = "b_pelvis"
 local HH_SPINE_BONE  = "b_spine3"
 
 -- mirrored HEEL HOOK (swap leg bones)
-local HHR_HIP_BONE    = "b_r_hippiston1"
-local HHR_PELVIS_BONE = "b_pelvis"
-local HHR_SPINE_BONE  = "b_spine3"
 
 -- ============================================================
 --  SIDE HOOK KICK ANIMATION
@@ -209,8 +204,6 @@ local SHK_LHIP_BONE = "b_l_hippiston1"
 local SHK_RHIP_BONE = "b_r_hippiston1"
 
 -- mirrored SIDE HOOK KICK (swap leg bones)
-local SHKR_LHIP_BONE = "b_r_hippiston1"
-local SHKR_RHIP_BONE = "b_l_hippiston1"
 
 -- ============================================================
 --  AXE KICK ANIMATION
@@ -234,9 +227,6 @@ local AK_RHIP_BONE  = "b_r_hippiston1"
 local AK_SPINE_BONE = "b_spine3"
 
 -- mirrored AXE KICK (right leg primary, reuse same angles)
-local AKR_LHIP_BONE  = "b_r_hippiston1"
-local AKR_RHIP_BONE  = "b_l_hippiston1"
-local AKR_SPINE_BONE = "b_spine3"
 
 -- ============================================================
 --  JUMP KICK ANIMATION
@@ -265,9 +255,6 @@ local JK_RHIP_BONE  = "b_r_hippiston1"
 local JK_PED_BONE   = "b_pedestal"
 
 -- mirrored JUMP KICK (swap leg bones, same pedestal)
-local JKR_LHIP_BONE = "b_r_hippiston1"
-local JKR_RHIP_BONE = "b_l_hippiston1"
-local JKR_PED_BONE  = "b_pedestal"
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -1409,8 +1396,8 @@ end
 local function GekkoDoDiagonalKickRBone(ent)
     if ent._dgkrInited == nil then
         ent._dgkrInited    = true
-        ent._dgkrLHipIdx   = ent:LookupBone(DGKR_LHIP_BONE) or -1
-        ent._dgkrRHipIdx   = ent:LookupBone(DGKR_RHIP_BONE) or -1
+        ent._dgkrLHipIdx   = ent:LookupBone("b_r_hippiston1") or -1
+        ent._dgkrRHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
         ent._dgkrStartTime = -9999
         ent._dgkrPulseLast = ent:GetNWInt("GekkoRDiagonalKickPulse", 0)
         ent._dgkrWasActive = false
@@ -1614,9 +1601,9 @@ end
 local function GekkoDoHeelHookRBone(ent)
     if ent._hhrInited == nil then
         ent._hhrInited    = true
-        ent._hhrHipIdx    = ent:LookupBone(HHR_HIP_BONE)    or -1
-        ent._hhrPelIdx    = ent:LookupBone(HHR_PELVIS_BONE) or -1
-        ent._hhrSpineIdx  = ent:LookupBone(HHR_SPINE_BONE)  or -1
+        ent._hhrHipIdx    = ent:LookupBone("b_r_hippiston1") or -1
+        ent._hhrPelIdx    = ent:LookupBone(HH_PELVIS_BONE)   or -1
+        ent._hhrSpineIdx  = ent:LookupBone(HH_SPINE_BONE)    or -1
         ent._hhrStartTime = -9999
         ent._hhrPulseLast = ent:GetNWInt("GekkoRHeelHookPulse", 0)
         ent._hhrWasActive = false
@@ -1820,8 +1807,8 @@ end
 local function GekkoDoSideHookKickRBone(ent)
     if ent._shkrInited == nil then
         ent._shkrInited    = true
-        ent._shkrLHipIdx   = ent:LookupBone(SHKR_LHIP_BONE) or -1
-        ent._shkrRHipIdx   = ent:LookupBone(SHKR_RHIP_BONE) or -1
+        ent._shkrLHipIdx   = ent:LookupBone("b_r_hippiston1") or -1
+        ent._shkrRHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
         ent._shkrStartTime = -9999
         ent._shkrPulseLast = ent:GetNWInt("GekkoRSideHookKickPulse", 0)
         ent._shkrWasActive = false
@@ -1978,9 +1965,9 @@ end
 local function GekkoDoAxeKickRBone(ent)
     if ent._akrInited == nil then
         ent._akrInited    = true
-        ent._akrLHipIdx   = ent:LookupBone(AKR_LHIP_BONE)  or -1
-        ent._akrRHipIdx   = ent:LookupBone(AKR_RHIP_BONE)  or -1
-        ent._akrSpineIdx  = ent:LookupBone(AKR_SPINE_BONE) or -1
+        ent._akrLHipIdx   = ent:LookupBone("b_r_hippiston1") or -1
+        ent._akrRHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
+        ent._akrSpineIdx  = ent:LookupBone(AK_SPINE_BONE)     or -1
         ent._akrStartTime = -9999
         ent._akrPulseLast = ent:GetNWInt("GekkoRAxeKickPulse", 0)
         ent._akrWasActive = false
@@ -2157,9 +2144,9 @@ end
 local function GekkoDoJumpKickRBone(ent)
     if ent._jkrInited == nil then
         ent._jkrInited    = true
-        ent._jkrLHipIdx   = ent:LookupBone(JKR_LHIP_BONE) or -1
-        ent._jkrRHipIdx   = ent:LookupBone(JKR_RHIP_BONE) or -1
-        ent._jkrPedIdx    = ent:LookupBone(JKR_PED_BONE)  or -1
+        ent._jkrLHipIdx   = ent:LookupBone("b_r_hippiston1") or -1
+        ent._jkrRHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
+        ent._jkrPedIdx    = ent:LookupBone(JK_PED_BONE)       or -1
         ent._jkrStartTime = -9999
         ent._jkrPulseLast = ent:GetNWInt("GekkoRJumpKickPulse", 0)
         ent._jkrWasActive = false
