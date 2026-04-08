@@ -68,6 +68,11 @@ local KICK_BONE_NAME  = "b_r_upperleg"
 local KICK_BONE_ANGLE = Angle(112, 0, 0)
 local KICK_BONE_RESET = Angle(0,   0, 0)
 
+-- mirrored basic kick (left upper leg)
+local KICK_L_BONE_NAME  = "b_l_upperleg"
+local KICK_L_BONE_ANGLE = KICK_BONE_ANGLE
+local KICK_L_BONE_RESET = KICK_BONE_RESET
+
 -- ============================================================
 --  HEADBUTT ANIMATION
 -- ============================================================
@@ -202,6 +207,11 @@ local AK_REST      = Angle(0, 0, 0)
 local AK_LHIP_BONE  = "b_l_hippiston1"
 local AK_RHIP_BONE  = "b_r_hippiston1"
 local AK_SPINE_BONE = "b_spine3"
+
+-- mirrored AXE KICK (right leg primary, reuse same angles)
+local AKR_LHIP_BONE  = "b_r_hippiston1"
+local AKR_RHIP_BONE  = "b_l_hippiston1"
+local AKR_SPINE_BONE = "b_spine3"
 
 -- ============================================================
 --  JUMP KICK ANIMATION
@@ -733,7 +743,7 @@ local function GekkoDoBloodSplat(ent)
 end
 
 -- ============================================================
---  KICK BONE DRIVER
+--  KICK BONE DRIVER (right leg)
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -756,6 +766,33 @@ local function GekkoDoKickBone(ent)
     elseif ent._kickWasActive then
         ent._kickWasActive = false
         ent:ManipulateBoneAngles(boneIdx, KICK_BONE_RESET, false)
+    end
+end
+
+-- ============================================================
+--  KICK BONE DRIVER (left leg mirror)
+-- ============================================================
+local function GekkoDoKickLBone(ent)
+    if ent._kickLBoneIdx == nil then
+        ent._kickLBoneIdx   = ent:LookupBone(KICK_L_BONE_NAME) or -1
+        ent._kickLEndTime   = 0
+        ent._kickLPulseLast = ent:GetNWInt("GekkoLKickPulse", 0)
+        ent._kickLWasActive = false
+    end
+    local pulse = ent:GetNWInt("GekkoLKickPulse", 0)
+    if pulse ~= ent._kickLPulseLast then
+        ent._kickLPulseLast = pulse
+        ent._kickLEndTime   = math.max(ent._kickLEndTime, CurTime() + KICK_WINDOW)
+    end
+    local boneIdx = ent._kickLBoneIdx
+    if not boneIdx or boneIdx < 0 then return end
+    local active = CurTime() < ent._kickLEndTime
+    if active then
+        ent._kickLWasActive = true
+        ent:ManipulateBoneAngles(boneIdx, KICK_L_BONE_ANGLE, false)
+    elseif ent._kickLWasActive then
+        ent._kickLWasActive = false
+        ent:ManipulateBoneAngles(boneIdx, KICK_L_BONE_RESET, false)
     end
 end
 
@@ -1237,7 +1274,7 @@ local function GekkoDoSideHookKickBone(ent)
 end
 
 -- ============================================================
---  AXE KICK BONE DRIVER
+--  AXE KICK BONE DRIVER (left leg original)
 -- ============================================================
 local function GekkoDoAxeKickBone(ent)
     if ent._akInited == nil then
@@ -1295,6 +1332,67 @@ local function GekkoDoAxeKickBone(ent)
     if ent._akLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akLHipIdx,  lhip,  false) end
     if ent._akRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akRHipIdx,  rhip,  false) end
     if ent._akSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akSpineIdx, spine, false) end
+end
+
+-- ============================================================
+--  AXE KICK BONE DRIVER (right leg mirror)
+-- ============================================================
+local function GekkoDoAxeKickRBone(ent)
+    if ent._akrInited == nil then
+        ent._akrInited    = true
+        ent._akrLHipIdx   = ent:LookupBone(AKR_LHIP_BONE)  or -1
+        ent._akrRHipIdx   = ent:LookupBone(AKR_RHIP_BONE)  or -1
+        ent._akrSpineIdx  = ent:LookupBone(AKR_SPINE_BONE) or -1
+        ent._akrStartTime = -9999
+        ent._akrPulseLast = ent:GetNWInt("GekkoRAxeKickPulse", 0)
+        ent._akrWasActive = false
+    end
+    local pulse = ent:GetNWInt("GekkoRAxeKickPulse", 0)
+    if pulse ~= ent._akrPulseLast then
+        ent._akrPulseLast = pulse
+        ent._akrStartTime = CurTime()
+        print(string.format("[GekkoRAxeKick] pulse=%d", pulse))
+    end
+    local elapsed = CurTime() - ent._akrStartTime
+    local active  = elapsed >= 0 and elapsed < AK_DURATION
+    if not active then
+        if ent._akrWasActive then
+            ent._akrWasActive = false
+            ReleaseHips(ent, "RAXEKICK")
+            if ent._akrLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrLHipIdx,  Angle(0,0,0), false) end
+            if ent._akrRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrRHipIdx,  Angle(0,0,0), false) end
+            if ent._akrSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akrSpineIdx, Angle(0,0,0), false) end
+        end
+        return
+    end
+    if not ClaimHips(ent, "RAXEKICK") then return end
+    ent._akrWasActive = true
+    local t    = elapsed / AK_DURATION
+    local REST = AK_REST
+    local lhip, rhip, spine
+    if t < AK_P1_END then
+        local env = Smoothstep(t / AK_P1_END)
+        lhip  = LerpAngle(REST, AK_P1_LHIP,  env)
+        rhip  = REST
+        spine = LerpAngle(REST, AK_P1_SPINE, env)
+    elseif t < AK_P2_END then
+        lhip  = AK_P1_LHIP
+        rhip  = REST
+        spine = AK_P1_SPINE
+    elseif t < AK_P3_END then
+        local env = Smoothstep(Smoothstep((t - AK_P2_END) / (AK_P3_END - AK_P2_END)))
+        lhip  = LerpAngle(AK_P1_LHIP,  AK_P3_LHIP,  env)
+        rhip  = LerpAngle(REST,         AK_P3_RHIP,  env)
+        spine = LerpAngle(AK_P1_SPINE,  AK_P3_SPINE, env)
+    else
+        local env = Smoothstep((t - AK_P3_END) / (1.0 - AK_P3_END))
+        lhip  = LerpAngle(AK_P3_LHIP,  REST, env)
+        rhip  = LerpAngle(AK_P3_RHIP,  REST, env)
+        spine = LerpAngle(AK_P3_SPINE, REST, env)
+    end
+    if ent._akrLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrLHipIdx,  lhip,  false) end
+    if ent._akrRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrRHipIdx,  rhip,  false) end
+    if ent._akrSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akrSpineIdx, spine, false) end
 end
 
 -- ============================================================
@@ -1385,6 +1483,7 @@ function ENT:Think()
     local dt = FrameTime()
 
     GekkoDoKickBone(self)
+    GekkoDoKickLBone(self)
     GekkoDoHeadbuttBone(self)
     GekkoDoFK360Bone(self)
     GekkoDoSpinKickBone(self)
@@ -1394,6 +1493,7 @@ function ENT:Think()
     GekkoDoHeelHookBone(self)
     GekkoDoSideHookKickBone(self)
     GekkoDoAxeKickBone(self)
+    GekkoDoAxeKickRBone(self)
     GekkoDoJumpKickBone(self)
 
     GekkoUpdateHead(self, dt)
