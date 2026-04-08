@@ -29,17 +29,14 @@ local GND_L_THIGH_ANG     = Angle(0,   0,   -50)
 local GND_R_THIGH_ANG     = Angle(126, -105,  0)
 
 local function GekkoApplyGroundedPose(ent)
-    -- Pelvis drop
     local pelBone = ent:LookupBone("b_pelvis")
     if pelBone and pelBone >= 0 then
         ent:ManipulateBonePosition(pelBone, Vector(0, 0, GND_PELVIS_OFFSET_Z), false)
     end
-    -- Left thigh
     local lBone = ent:LookupBone("b_l_thigh")
     if lBone and lBone >= 0 then
         ent:ManipulateBoneAngles(lBone, GND_L_THIGH_ANG, false)
     end
-    -- Right thigh
     local rBone = ent:LookupBone("b_r_thigh")
     if rBone and rBone >= 0 then
         ent:ManipulateBoneAngles(rBone, GND_R_THIGH_ANG, false)
@@ -107,7 +104,7 @@ local SK_HIP_Z      = -22
 local SK_ULEG_X     = 140
 
 -- ============================================================
---  FOOTBALL KICK ANIMATION
+--  FOOTBALL KICK ANIMATION  (left leg)
 -- ============================================================
 local FK_DURATION      = 1.1
 local FK_PHASE_HOLD    = 0.300 / FK_DURATION
@@ -119,6 +116,20 @@ local FK_RHIP_X_PREP   =   36
 local FK_LHIP_Y_EXT    = -105
 local FK_LHIP_BONE     = "b_l_hippiston1"
 local FK_RHIP_BONE     = "b_r_hippiston1"
+
+-- ============================================================
+--  FOOTBALL KICK MIRRORED ANIMATION  (right leg)
+-- ============================================================
+local FKR_DURATION      = 1.1
+local FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
+local FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
+local FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
+local FKR_RHIP_Y_PREP   = -105   -- mirrored: negative Y
+local FKR_RHIP_X_PREP   =   36
+local FKR_LHIP_X_PREP   =   36
+local FKR_RHIP_Y_EXT    =  105   -- mirrored: positive Y on extension
+local FKR_RHIP_BONE     = "b_r_hippiston1"
+local FKR_LHIP_BONE     = "b_l_hippiston1"
 
 -- ============================================================
 --  DIAGONAL KICK ANIMATION
@@ -926,7 +937,7 @@ local function GekkoDoSpinKickBone(ent)
 end
 
 -- ============================================================
---  FOOTBALL KICK BONE DRIVER
+--  FOOTBALL KICK BONE DRIVER  (left leg)
 -- ============================================================
 local function GekkoDoFootballKickBone(ent)
     if ent._fkInited == nil then
@@ -980,6 +991,63 @@ local function GekkoDoFootballKickBone(ent)
     end
     if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(lhipX, lhipY, 0), false) end
     if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(rhipX, 0, 0),     false) end
+end
+
+-- ============================================================
+--  FOOTBALL KICK MIRRORED BONE DRIVER  (right leg)
+-- ============================================================
+local function GekkoDoFootballKickRBone(ent)
+    if ent._fkrInited == nil then
+        ent._fkrInited    = true
+        ent._fkrRHipIdx   = ent:LookupBone(FKR_RHIP_BONE) or -1
+        ent._fkrLHipIdx   = ent:LookupBone(FKR_LHIP_BONE) or -1
+        ent._fkrStartTime = -9999
+        ent._fkrPulseLast = ent:GetNWInt("GekkoRFootballKickPulse", 0)
+        ent._fkrWasActive = false
+    end
+    local pulse = ent:GetNWInt("GekkoRFootballKickPulse", 0)
+    if pulse ~= ent._fkrPulseLast then
+        ent._fkrPulseLast = pulse
+        ent._fkrStartTime = CurTime()
+        print(string.format("[GekkoFootballKickR] pulse=%d", pulse))
+    end
+    local elapsed = CurTime() - ent._fkrStartTime
+    local active  = elapsed >= 0 and elapsed < FKR_DURATION
+    if not active then
+        if ent._fkrWasActive then
+            ent._fkrWasActive = false
+            ReleaseHips(ent, "FOOTBALLKICKR")
+            if ent._fkrRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrRHipIdx, Angle(0, 0, 0), false) end
+            if ent._fkrLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrLHipIdx, Angle(0, 0, 0), false) end
+        end
+        return
+    end
+    if not ClaimHips(ent, "FOOTBALLKICKR") then return end
+    ent._fkrWasActive = true
+    local t = elapsed / FKR_DURATION
+    local rhipY, rhipX, lhipX
+    if t < FKR_PHASE_HOLD then
+        local env = Smoothstep(t / FKR_PHASE_HOLD)
+        rhipY =  FKR_RHIP_Y_PREP * env
+        rhipX =  FKR_RHIP_X_PREP * env
+        lhipX =  FKR_LHIP_X_PREP * env
+    elseif t < FKR_PHASE_EXTEND then
+        rhipY =  FKR_RHIP_Y_PREP
+        rhipX =  FKR_RHIP_X_PREP
+        lhipX =  FKR_LHIP_X_PREP
+    elseif t < FKR_PHASE_RECOVER then
+        local env = Smoothstep((t - FKR_PHASE_EXTEND) / (FKR_PHASE_RECOVER - FKR_PHASE_EXTEND))
+        rhipY = FKR_RHIP_Y_PREP + (FKR_RHIP_Y_EXT - FKR_RHIP_Y_PREP) * env
+        rhipX = FKR_RHIP_X_PREP * (1 - env)
+        lhipX = FKR_LHIP_X_PREP * (1 - env)
+    else
+        local env = Smoothstep((t - FKR_PHASE_RECOVER) / (1.0 - FKR_PHASE_RECOVER))
+        rhipY = FKR_RHIP_Y_EXT * (1 - env)
+        rhipX = 0
+        lhipX = 0
+    end
+    if ent._fkrRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrRHipIdx, Angle(rhipX, rhipY, 0), false) end
+    if ent._fkrLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrLHipIdx, Angle(lhipX, 0, 0),     false) end
 end
 
 -- ============================================================
@@ -1307,11 +1375,10 @@ end
 --  ENT:Think  (client)
 -- ============================================================
 function ENT:Think()
-    -- When grounded, skip all bone drivers and lock the collapsed pose
     if self:GetNWBool("GekkoLegsDisabled", false) then
         GekkoApplyGroundedPose(self)
-        GekkoDoBloodSplat(self)   -- blood FX still runs
-        GekkoDoMGFX(self)         -- weapons still fire
+        GekkoDoBloodSplat(self)
+        GekkoDoMGFX(self)
         return
     end
 
@@ -1322,6 +1389,7 @@ function ENT:Think()
     GekkoDoFK360Bone(self)
     GekkoDoSpinKickBone(self)
     GekkoDoFootballKickBone(self)
+    GekkoDoFootballKickRBone(self)
     GekkoDoDiagonalKickBone(self)
     GekkoDoHeelHookBone(self)
     GekkoDoSideHookKickBone(self)
