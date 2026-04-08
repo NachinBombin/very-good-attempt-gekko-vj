@@ -2,6 +2,7 @@
 --  npc_vj_gekko / init.lua
 --  + 5th weapon : Top-Attack Terror Missile   (sent_npc_topmissile)
 --  + 6th weapon : Active-Track Ballistic Missile (sent_npc_trackmissile)
+--  + 7th weapon : Orbit RPG (sent_orbital_rpg)
 --  + Sonar Lock : net message to targeted player on TRACKMISSILE fire
 -- ============================================================
 include("shared.lua")
@@ -43,12 +44,13 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 50
+local WWEIGHT_MG             = 40
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
 local WWEIGHT_GRENADE        = 10
 local WWEIGHT_TOPMISSILE     = 10
 local WWEIGHT_TRACKMISSILE   = 5
+local WWEIGHT_ORBITRPG       = 10
 
 -- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
@@ -127,7 +129,8 @@ local function RollWeapon()
     cum = cum + WWEIGHT_MISSILE_DOUBLE; if r <= cum then return "SALVO"        end
     cum = cum + WWEIGHT_GRENADE;        if r <= cum then return "GRENADE"      end
     cum = cum + WWEIGHT_TOPMISSILE;     if r <= cum then return "TOPMISSILE"   end
-    return "TRACKMISSILE"
+    cum = cum + WWEIGHT_TRACKMISSILE;   if r <= cum then return "TRACKMISSILE" end
+    return "ORBITRPG"
 end
 
 local function SpawnRocket(ent, attIdx, aimPos, spread)
@@ -222,6 +225,7 @@ local function RerollNotMissile(ent, enemy, exclude)
     elseif reroll == "SALVO" then return "SALVO"
     elseif reroll == "TOPMISSILE" then return "TOPMISSILE"
     elseif reroll == "TRACKMISSILE" then return "TRACKMISSILE"
+    elseif reroll == "ORBITRPG" then return "ORBITRPG"
     else return "GRENADE" end
 end
 
@@ -475,7 +479,6 @@ function ENT:OnTakeDamage(dmginfo)
 
     local doSplat
     if self._gekkoLegsDisabled then
-        -- Grounded state: highly prone to bleeding (high probability per hit)
         doSplat = (math.Rand(0, 1) < GROUNDED_BLEED_CHANCE)
     else
         doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
@@ -670,6 +673,7 @@ local function FireTopMissile(ent, enemy)
         if alt == "MG" then return FireMGBurst(ent, enemy)
         elseif alt == "MISSILE" then return FireMissile(ent, enemy)
         elseif alt == "SALVO" then return FireDoubleSalvo(ent, enemy)
+        elseif alt == "ORBITRPG" then return FireOrbitRpg(ent, enemy)
         else return FireGrenadeLauncher(ent, enemy) end
     end
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
@@ -701,6 +705,7 @@ local function FireTrackMissile(ent, enemy)
         elseif alt == "MISSILE" then return FireMissile(ent, enemy)
         elseif alt == "SALVO" then return FireDoubleSalvo(ent, enemy)
         elseif alt == "TOPMISSILE" then return FireTopMissile(ent, enemy)
+        elseif alt == "ORBITRPG" then return FireOrbitRpg(ent, enemy)
         else return FireGrenadeLauncher(ent, enemy) end
     end
     SendSonarLock(enemy)
@@ -723,6 +728,46 @@ local function FireTrackMissile(ent, enemy)
 end
 
 -- ============================================================
+--  Weapon: Orbit RPG (7th)
+--  Fires sent_orbital_rpg from the rocket launcher attachment.
+--  Grey smoke at muzzle. Straight-line flight; orbital trajectory
+--  is handled entirely inside sent_orbital_rpg.
+-- ============================================================
+local function FireOrbitRpg(ent, enemy)
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local attData = ent:GetAttachment(attIdx)
+    local src = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    local dir = (aimPos - src):GetNormalized()
+
+    -- Grey smoke muzzle puff
+    local eff = EffectData()
+    eff:SetOrigin(src)
+    eff:SetNormal(dir)
+    eff:SetScale(0.6)
+    eff:SetMagnitude(1)
+    util.Effect("SmokeEffect", eff)
+
+    local rpg = ents.Create("sent_orbital_rpg")
+    if not IsValid(rpg) then
+        print("[GekkoORBIT] ERROR: sent_orbital_rpg create failed -- falling back")
+        return FireMissile(ent, enemy)
+    end
+    rpg:SetPos(src)
+    rpg:SetAngles(dir:Angle())
+    rpg:SetOwner(ent)
+    rpg.Owner  = ent
+    rpg.Target = aimPos
+    rpg:Spawn()
+    rpg:Activate()
+
+    print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f",
+        attIdx, ent:GetPos():Distance(enemy:GetPos())))
+    return true
+end
+
+-- ============================================================
 --  Range attack entry point
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
@@ -736,6 +781,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     elseif choice == "SALVO"        then return FireDoubleSalvo(self, enemy)
     elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
     elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
+    elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
     else                                 return FireGrenadeLauncher(self, enemy)
     end
 end
