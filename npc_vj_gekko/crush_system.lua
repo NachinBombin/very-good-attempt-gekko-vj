@@ -16,7 +16,9 @@ if SERVER then
     util.AddNetworkString("GekkoHeelHookPulse")
     util.AddNetworkString("GekkoSideHookKickPulse")
     util.AddNetworkString("GekkoAxeKickPulse")
+    util.AddNetworkString("GekkoRAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
+    util.AddNetworkString("GekkoLKickPulse")
 end
 
 -- ============================================================
@@ -87,6 +89,10 @@ local ATTACKS = {
         w = 20, nwkey = "GekkoKickPulse",
         lock = 0.5, dmg = 25, impulse = 9000,
     },
+    LKICK = {
+        w = 20, nwkey = "GekkoLKickPulse",
+        lock = 0.5, dmg = 25, impulse = 9000,
+    },
     SPINKICK = {
         w = 20, nwkey = "GekkoSpinKickPulse",
         lock = 0.65, dmg = 35, impulse = 11000,
@@ -132,6 +138,12 @@ local ATTACKS = {
     },
     AXEKICK = {
         w = 20, nwkey = "GekkoAxeKickPulse",
+        duration = 1.4, hit_t = 0.55,
+        dmg = 45, impulse = 15000,
+        sweep_dist = 155, sweep_half = 55, sweep_z = 90,
+    },
+    RAXEKICK = {
+        w = 20, nwkey = "GekkoRAxeKickPulse",
         duration = 1.4, hit_t = 0.55,
         dmg = 45, impulse = 15000,
         sweep_dist = 155, sweep_half = 55, sweep_z = 90,
@@ -197,6 +209,16 @@ end
 
 local function FireKick(self, kickTarget, fwd)
     local A     = ATTACKS.KICK
+    ClaimKickLock(self, A.lock)
+    local toT  = (kickTarget:GetPos() - self:GetPos()):GetNormalized()
+    local dotT = math.Clamp(fwd:Dot(toT), 0.5, 1.0)
+    CrushDamageEnt(self, kickTarget, A.dmg * dotT, (fwd + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+end
+
+local function FireLKick(self, kickTarget, fwd)
+    local A     = ATTACKS.LKICK
     ClaimKickLock(self, A.lock)
     local toT  = (kickTarget:GetPos() - self:GetPos()):GetNormalized()
     local dotT = math.Clamp(fwd:Dot(toT), 0.5, 1.0)
@@ -351,6 +373,28 @@ local function FireAxeKick(self, closestTarget, dot)
     end)
 end
 
+local function FireRAxeKick(self, closestTarget, dot)
+    local A    = ATTACKS.RAXEKICK
+    ClaimKickLock(self, A.duration + 0.2)
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+    print(string.format("[GekkoCrush] RAXEKICK  target=%s  dot=%.2f  pulse=%d", closestTarget:GetClass(), dot, next))
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+        local fwdRef   = selfRef:GetForward()
+        local sweepDir = (fwdRef - Vector(0,0,0.3)):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+        local tr = util.TraceHull({ start = origin, endpos = origin + sweepDir * A.sweep_dist, mins = -half, maxs = half, filter = selfRef, mask = MASK_SHOT_HULL })
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            local impDir = (fwdRef * 0.4 - Vector(0,0,1) * 0.6):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
+            print(string.format("[GekkoCrush] RAXEKICK HIT  target=%s  pulse=%d", tr.Entity:GetClass(), next))
+        end
+    end)
+end
+
 -- ============================================================
 --  JUMPKICK fire helper
 --
@@ -457,10 +501,12 @@ function ENT:GeckoCrush_Think()
             { name = "HEELHOOK",       w = ATTACKS.HEELHOOK.w       },
             { name = "SIDEHOOKKICK",   w = ATTACKS.SIDEHOOKKICK.w   },
             { name = "AXEKICK",        w = ATTACKS.AXEKICK.w        },
+            { name = "RAXEKICK",       w = ATTACKS.RAXEKICK.w       },
             { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
         }
         if kickTarget then
-            pool[#pool+1] = { name = "KICK", w = ATTACKS.KICK.w }
+            pool[#pool+1] = { name = "KICK",  w = ATTACKS.KICK.w  }
+            pool[#pool+1] = { name = "LKICK", w = ATTACKS.LKICK.w }
         end
         local total = 0
         for _, e in ipairs(pool) do total = total + e.w end
@@ -478,12 +524,14 @@ function ENT:GeckoCrush_Think()
     if     attack == "FK360"           then FireFK360(self, closestTarget, fwd, dot)
     elseif attack == "HEADBUTT"        then FireHeadbutt(self, closestTarget, fwd)
     elseif attack == "KICK"            then FireKick(self, kickTarget, fwd)
+    elseif attack == "LKICK"           then FireLKick(self, kickTarget, fwd)
     elseif attack == "FOOTBALLKICK"    then FireFootballKick(self)
     elseif attack == "RFOOTBALLKICK"   then FireRFootballKick(self)
     elseif attack == "DIAGONALKICK"    then FireDiagonalKick(self)
     elseif attack == "HEELHOOK"        then FireHeelHook(self)
     elseif attack == "SIDEHOOKKICK"    then FireSideHookKick(self)
     elseif attack == "AXEKICK"         then FireAxeKick(self, closestTarget, dot)
+    elseif attack == "RAXEKICK"        then FireRAxeKick(self, closestTarget, dot)
     elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
     else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
