@@ -16,17 +16,17 @@ end
 -- ============================================================
 --  JUMP STATE CONSTANTS  (mirror shared.lua)
 -- ============================================================
-JUMP_NONE    = 0
-JUMP_RISING  = 1
-JUMP_FALLING = 2
-JUMP_LAND    = 3
+local JUMP_NONE    = 0
+local JUMP_RISING  = 1
+local JUMP_FALLING = 2
+local JUMP_LAND    = 3
 
 -- ============================================================
 --  GROUNDED POSE CONSTANTS  (must match leg_disable_system.lua)
 -- ============================================================
-GND_PELVIS_OFFSET_Z = -125
-GND_L_THIGH_ANG     = Angle(0,   0,   -50)
-GND_R_THIGH_ANG     = Angle(126, -105,  0)
+local GND_PELVIS_OFFSET_Z = -125
+local GND_L_THIGH_ANG     = Angle(0,   0,   -50)
+local GND_R_THIGH_ANG     = Angle(126, -105,  0)
 
 local function GekkoApplyGroundedPose(ent)
     local pelBone = ent:LookupBone("b_pelvis")
@@ -65,188 +65,186 @@ end
 -- ============================================================
 --  KICK ANIMATION  (b_r_upperleg)
 -- ============================================================
-KICK_WINDOW     = 1.0
-KICK_BONE_NAME  = "b_r_upperleg"
-KICK_BONE_ANGLE = Angle(112, 0, 0)
-KICK_BONE_RESET = Angle(0,   0, 0)
+local KICK_WINDOW     = 1.0
+local KICK_BONE_NAME  = "b_r_upperleg"
+local KICK_BONE_ANGLE = Angle(112, 0, 0)
+local KICK_BONE_RESET = Angle(0,   0, 0)
 
 -- mirrored basic kick (left upper leg)
-KICK_L_BONE_NAME  = "b_l_upperleg"
-KICK_L_BONE_ANGLE = KICK_BONE_ANGLE
-KICK_L_BONE_RESET = KICK_BONE_RESET
+local KICK_L_BONE_NAME  = "b_l_upperleg"
+local KICK_L_BONE_ANGLE = KICK_BONE_ANGLE
+local KICK_L_BONE_RESET = KICK_BONE_RESET
 
 -- ============================================================
 --  HEADBUTT ANIMATION
 -- ============================================================
-HB_DURATION       = 0.8
-HB_PEAK           = 0.4
-HB_SPINE3_ANG_X   = -60
-HB_PEDESTAL_POS_X =  70
-HB_PEDESTAL_POS_Z = -45
-HB_SPINE3_BONE    = "b_spine3"
-HB_PEDESTAL_BONE  = "b_pedestal"
+local HB_DURATION       = 0.8
+local HB_PEAK           = 0.4
+local HB_SPINE3_ANG_X   = -60
+local HB_PEDESTAL_POS_X =  70
+local HB_PEDESTAL_POS_Z = -45
+local HB_SPINE3_BONE    = "b_spine3"
+local HB_PEDESTAL_BONE  = "b_pedestal"
 
 -- ============================================================
 --  FK360 ANIMATION
 -- ============================================================
-FK360_RAMP     = 0.15
-FK360_BONE     = "b_pelvis"
+local FK360_RAMP     = 0.15
+local FK360_BONE     = "b_pelvis"
 
 -- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
-SK_DURATION = 0.9
-SK_P1_END   = 0.330
-SK_P2_END   = 0.500
-SK_P3_END   = 0.670
-SK_P4_END   = 0.800
+local SK_DURATION = 0.9
+local SK_P1_END   = 0.330
+local SK_P2_END   = 0.500
+local SK_P3_END   = 0.670
+local SK_P4_END   = 0.800
 
-SK_RAMP       = 0.10
-SK_YAW_TOTAL  = 590
-SK_PED_BONE   = "b_Pedestal"
-SK_PEL_BONE   = "b_pelvis"
-SK_HIP_BONE   = "b_r_hippiston1"
-SK_ULEG_BONE  = "b_r_upperleg"
-SK_PEL_DROP   = -50
-SK_HIP_Z      = -22
-SK_ULEG_X     = 140
+local SK_RAMP       = 0.10
+local SK_YAW_TOTAL  = 590
+local SK_PED_BONE   = "b_Pedestal"
+local SK_PEL_BONE   = "b_pelvis"
+local SK_HIP_BONE   = "b_r_hippiston1"
+local SK_ULEG_BONE  = "b_r_upperleg"
+local SK_PEL_DROP   = -50
+local SK_HIP_Z      = -22
+local SK_ULEG_X     = 140
 
 -- ============================================================
 --  FOOTBALL KICK ANIMATION  (left leg)
 -- ============================================================
-FK_DURATION      = 1.1
-FK_PHASE_HOLD    = 0.300 / FK_DURATION
-FK_PHASE_EXTEND  = 0.550 / FK_DURATION
-FK_PHASE_RECOVER = 0.700 / FK_DURATION
+local FK_DURATION      = 1.1
+local FK_PHASE_HOLD    = 0.300 / FK_DURATION
+local FK_PHASE_EXTEND  = 0.550 / FK_DURATION
+local FK_PHASE_RECOVER = 0.700 / FK_DURATION
 
-FK_LHIP_Y_PREP   =  105
-FK_LHIP_X_PREP   =   36
-FK_RHIP_X_PREP   =   36
-FK_LHIP_Y_EXT    = -105
+local FK_LHIP_Y_PREP   =  105
+local FK_LHIP_X_PREP   =   36
+local FK_RHIP_X_PREP   =   36
+local FK_LHIP_Y_EXT    = -105
 
-FK_LHIP_BONE     = "b_l_hippiston1"
-FK_RHIP_BONE     = "b_r_hippiston1"
+local FK_LHIP_BONE     = "b_l_hippiston1"
+local FK_RHIP_BONE     = "b_r_hippiston1"
 
 -- ============================================================
 --  FOOTBALL KICK MIRRORED ANIMATION  (right leg)
 -- ============================================================
-FKR_DURATION      = 1.1
-FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
-FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
-FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
+local FKR_DURATION      = 1.1
+local FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
+local FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
+local FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
 
-FKR_RHIP_Y_PREP   = 105
-FKR_RHIP_X_PREP   =   36
-FKR_LHIP_X_PREP   =   36
-FKR_RHIP_Y_EXT    = -105
+local FKR_RHIP_Y_PREP   = 105
+local FKR_RHIP_X_PREP   =   36
+local FKR_LHIP_X_PREP   =   36
+local FKR_RHIP_Y_EXT    = -105
 
-FKR_RHIP_BONE     = "b_r_hippiston1"
-FKR_LHIP_BONE     = "b_l_hippiston1"
+local FKR_RHIP_BONE     = "b_r_hippiston1"
+local FKR_LHIP_BONE     = "b_l_hippiston1"
 
 -- ============================================================
 --  DIAGONAL KICK ANIMATION
 -- ============================================================
-DGK_DURATION = 1.0
-DGK_P1_END   = 0.300 / DGK_DURATION
-DGK_P2_END   = 0.600 / DGK_DURATION
-DGK_P3_END   = 0.750 / DGK_DURATION
-DGK_P4_END   = 0.950 / DGK_DURATION
+local DGK_DURATION = 1.0
+local DGK_P1_END   = 0.300 / DGK_DURATION
+local DGK_P2_END   = 0.600 / DGK_DURATION
+local DGK_P3_END   = 0.750 / DGK_DURATION
+local DGK_P4_END   = 0.950 / DGK_DURATION
 
-DGK_P1_LHIP  = Angle( -8, -22,  43)
-DGK_P1_RHIP  = Angle(-32,   0,   0)
-DGK_P3_LHIP  = Angle( -8, -22, 105)
-DGK_P3_RHIP  = Angle(109,   0,   0)
-DGK_P4_LHIP  = Angle(136,   0,  12)
-DGK_P4_RHIP  = Angle(  0,   0,   0)
+local DGK_P1_LHIP  = Angle( -8, -22,  43)
+local DGK_P1_RHIP  = Angle(-32,   0,   0)
+local DGK_P3_LHIP  = Angle( -8, -22, 105)
+local DGK_P3_RHIP  = Angle(109,   0,   0)
+local DGK_P4_LHIP  = Angle(136,   0,  12)
+local DGK_P4_RHIP  = Angle(  0,   0,   0)
 
-DGK_LHIP_BONE = "b_l_hippiston1"
-DGK_RHIP_BONE = "b_r_hippiston1"
+local DGK_LHIP_BONE = "b_l_hippiston1"
+local DGK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
 -- ============================================================
-HH_DURATION_CL        = 0.8
-HH_HIP_CHAMBER_PITCH  =  85
-HH_HIP_EXTEND_ROLL    =  30
-HH_HIP_HOOK_YAW       = -35
-HH_PELVIS_YAW         =  28
-HH_PELVIS_PITCH       =   8
-HH_SPINE_LEAN         =  12
+local HH_DURATION_CL        = 0.8
+local HH_HIP_CHAMBER_PITCH  =  85
+local HH_HIP_EXTEND_ROLL    =  30
+local HH_HIP_HOOK_YAW       = -35
+local HH_PELVIS_YAW         =  28
+local HH_PELVIS_PITCH       =   8
+local HH_SPINE_LEAN         =  12
 
-HH_HIP_BONE    = "b_l_hippiston1"
-HH_PELVIS_BONE = "b_pelvis"
-HH_SPINE_BONE  = "b_spine3"
+local HH_HIP_BONE    = "b_l_hippiston1"
+local HH_PELVIS_BONE = "b_pelvis"
+local HH_SPINE_BONE  = "b_spine3"
 
 -- ============================================================
 --  SIDE HOOK KICK ANIMATION
 -- ============================================================
-SHK_DURATION = 1.1
-SHK_P1_END = 0.200 / SHK_DURATION
-SHK_P2_END = 0.400 / SHK_DURATION
-SHK_P3_END = 0.550 / SHK_DURATION
-SHK_P4_END = 0.700 / SHK_DURATION
+local SHK_DURATION = 1.1
+local SHK_P1_END = 0.200 / SHK_DURATION
+local SHK_P2_END = 0.400 / SHK_DURATION
+local SHK_P3_END = 0.550 / SHK_DURATION
+local SHK_P4_END = 0.700 / SHK_DURATION
 
-SHK_P1_LHIP = Angle(-74,  0,   0)
-SHK_P1_RHIP = Angle(-102, 0,   0)
-SHK_P2_LHIP = Angle(-25,  0,   0)
-SHK_P2_RHIP = Angle( -8,  0, -64)
-SHK_P3_LHIP = Angle(-25,  0,   0)
-SHK_P3_RHIP = Angle(  0,  0, -120)
-SHK_P4_LHIP = Angle(-57,  0, -29)
-SHK_P4_RHIP = Angle(-12,  0, -25)
-SHK_REST    = Angle(0, 0, 0)
+local SHK_P1_LHIP = Angle(-74,  0,   0)
+local SHK_P1_RHIP = Angle(-102, 0,   0)
+local SHK_P2_LHIP = Angle(-25,  0,   0)
+local SHK_P2_RHIP = Angle( -8,  0, -64)
+local SHK_P3_LHIP = Angle(-25,  0,   0)
+local SHK_P3_RHIP = Angle(  0,  0, -120)
+local SHK_P4_LHIP = Angle(-57,  0, -29)
+local SHK_P4_RHIP = Angle(-12,  0, -25)
+local SHK_REST    = Angle(0, 0, 0)
 
-SHK_LHIP_BONE = "b_l_hippiston1"
-SHK_RHIP_BONE = "b_r_hippiston1"
+local SHK_LHIP_BONE = "b_l_hippiston1"
+local SHK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
 --  AXE KICK ANIMATION
 -- ============================================================
-AK_DURATION = 1.1
-AK_P1_END   = 0.350 / AK_DURATION
-AK_P2_END   = 0.550 / AK_DURATION
-AK_P3_END   = 0.700 / AK_DURATION
+local AK_DURATION = 1.1
+local AK_P1_END   = 0.350 / AK_DURATION
+local AK_P2_END   = 0.550 / AK_DURATION
+local AK_P3_END   = 0.700 / AK_DURATION
 
-AK_P1_LHIP   = Angle(  0, -133,   0)
-AK_P1_SPINE  = Angle(  5,  -12, -39)
+local AK_P1_LHIP   = Angle(  0, -133,   0)
+local AK_P1_SPINE  = Angle(  5,  -12, -39)
 
-AK_P3_LHIP   = Angle(  0,   -5,   0)
-AK_P3_RHIP   = Angle(  0,  -31,   0)
-AK_P3_SPINE  = Angle(-17,    0,   0)
+local AK_P3_LHIP   = Angle(  0,   -5,   0)
+local AK_P3_RHIP   = Angle(  0,  -31,   0)
+local AK_P3_SPINE  = Angle(-17,    0,   0)
 
-AK_REST      = Angle(0, 0, 0)
+local AK_REST      = Angle(0, 0, 0)
 
-AK_LHIP_BONE  = "b_l_hippiston1"
-AK_RHIP_BONE  = "b_r_hippiston1"
-AK_SPINE_BONE = "b_spine3"
-
--- mirrored AXE KICK (right leg primary, reuse same angles)
+local AK_LHIP_BONE  = "b_l_hippiston1"
+local AK_RHIP_BONE  = "b_r_hippiston1"
+local AK_SPINE_BONE = "b_spine3"
 
 -- ============================================================
 --  JUMP KICK ANIMATION
 -- ============================================================
-JK_DURATION = 1.6
-JK_P1_END   = 0.300 / JK_DURATION
-JK_P2_END   = 0.550 / JK_DURATION
-JK_P3_END   = 1.000 / JK_DURATION
+local JK_DURATION = 1.6
+local JK_P1_END   = 0.300 / JK_DURATION
+local JK_P2_END   = 0.550 / JK_DURATION
+local JK_P3_END   = 1.000 / JK_DURATION
 
-JK_P1_LHIP  = Angle(58,  0,  -8)
-JK_P1_RHIP  = Angle(88,  0, -36)
+local JK_P1_LHIP  = Angle(58,  0,  -8)
+local JK_P1_RHIP  = Angle(88,  0, -36)
 
-JK_P2_LHIP  = Angle(56,  0,  79)
-JK_P2_RHIP  = Angle(88,  0, -36)
-JK_P2_PED_POS = Vector(30, 0, 13)
+local JK_P2_LHIP  = Angle(56,  0,  79)
+local JK_P2_RHIP  = Angle(88,  0, -36)
+local JK_P2_PED_POS = Vector(30, 0, 13)
 
-JK_P3_LHIP    = Angle(0,  43,  0)
-JK_P3_PED_ANG = Angle(0,  20,  0)
-JK_P3_PED_POS = Vector(0,  0,  0)
+local JK_P3_LHIP    = Angle(0,  43,  0)
+local JK_P3_PED_ANG = Angle(0,  20,  0)
+local JK_P3_PED_POS = Vector(0,  0,  0)
 
-JK_REST       = Angle(0, 0, 0)
-JK_REST_POS   = Vector(0, 0, 0)
+local JK_REST       = Angle(0, 0, 0)
+local JK_REST_POS   = Vector(0, 0, 0)
 
-JK_LHIP_BONE  = "b_l_hippiston1"
-JK_RHIP_BONE  = "b_r_hippiston1"
-JK_PED_BONE   = "b_pedestal"
+local JK_LHIP_BONE  = "b_l_hippiston1"
+local JK_RHIP_BONE  = "b_r_hippiston1"
+local JK_PED_BONE   = "b_pedestal"
 
 -- ============================================================
 --  SMOOTHSTEP
@@ -267,7 +265,7 @@ end
 -- ============================================================
 --  CRUSH HIT
 -- ============================================================
-CRUSH_IMPACT_SOUNDS = {
+local CRUSH_IMPACT_SOUNDS = {
     "physics/body/body_medium_impact_hard1.wav",
     "physics/body/body_medium_impact_hard2.wav",
     "physics/body/body_medium_impact_hard3.wav",
@@ -276,7 +274,7 @@ CRUSH_IMPACT_SOUNDS = {
     "physics/body/body_medium_impact_hard6.wav",
 }
 
-CRUSH_SHAKE_RADIUS = 900
+local CRUSH_SHAKE_RADIUS = 900
 
 net.Receive("GekkoCrushHit", function()
     local hitPos   = net.ReadVector()
@@ -309,17 +307,17 @@ end)
 -- ============================================================
 --  SONAR LOCK
 -- ============================================================
-SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
-SONAR_DURATION       = 3.0
-SONAR_PULSE_COUNT    = 3
-SONAR_PULSE_INTERVAL = 0.6
-SONAR_RING_THICKNESS = 3
-SONAR_PEAK_ALPHA     = 100
-SONAR_TINT_ALPHA     = 40
+local SONAR_SOUND          = "mac_bo2_m32/Sonar intercept.wav"
+local SONAR_DURATION       = 3.0
+local SONAR_PULSE_COUNT    = 3
+local SONAR_PULSE_INTERVAL = 0.6
+local SONAR_RING_THICKNESS = 3
+local SONAR_PEAK_ALPHA     = 100
+local SONAR_TINT_ALPHA     = 40
 
-SONAR_R = 200
-SONAR_G = 0
-SONAR_B = 0
+local SONAR_R = 200
+local SONAR_G = 0
+local SONAR_B = 0
 
 local sonar_startTime = nil
 local sonar_active    = false
@@ -424,7 +422,7 @@ end)
 -- ============================================================
 --  FOOTSTEP SYNC
 -- ============================================================
-STEP_SOUNDS = {
+local STEP_SOUNDS = {
     "physics/metal/metal_box_impact_hard1.wav",
     "physics/metal/metal_box_impact_hard2.wav",
     "physics/metal/metal_box_impact_hard3.wav",
@@ -465,9 +463,9 @@ end
 -- ============================================================
 --  FOOTSTEP CAMERA SHAKE
 -- ============================================================
-SHAKE_NEAR_DIST = 350
-SHAKE_FAR_DIST  = 750
-SHAKE_MIN_SPEED = 8
+local SHAKE_NEAR_DIST = 350
+local SHAKE_FAR_DIST  = 750
+local SHAKE_MIN_SPEED = 8
 
 local function GekkoFootShake(ent)
     local ply = LocalPlayer()
@@ -506,10 +504,10 @@ end
 -- ============================================================
 --  HEAD DRIVER
 -- ============================================================
-HEAD_LIMIT       =  50
-HEAD_PITCH_UP    = -60
-HEAD_PITCH_DOWN  =  60
-HEAD_SPEED       =  30
+local HEAD_LIMIT       =  50
+local HEAD_PITCH_UP    = -60
+local HEAD_PITCH_DOWN  =  60
+local HEAD_SPEED       =  30
 
 local function GekkoUpdateHead(ent, dt)
     local bone = ent._spineBone
@@ -556,7 +554,7 @@ end
 -- ============================================================
 --  JUMP DUST
 -- ============================================================
-ATT_MACHINEGUN = 3
+local ATT_MACHINEGUN = 3
 
 local function GekkoDoJumpDust(ent)
     local pulse = ent:GetNWInt("GekkoJumpDust", 0)
@@ -939,7 +937,6 @@ local function GekkoDoHeadbuttBone(ent)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
         ent._hbStartTime = CurTime()
-
         print(string.format("[GekkoHeadbutt] pulse=%d", pulse))
     end
 
@@ -999,9 +996,7 @@ local function GekkoDoFK360Bone(ent)
         ent._fk360PulseLast = pulse
         ent._fk360StartTime = CurTime()
         ent._fk360Yaw       = 0
-
-        print(string.format("[GekkoFK360] pulse=%d  duration=%.2f",
-            pulse, fk360Duration))
+        print(string.format("[GekkoFK360] pulse=%d  duration=%.2f", pulse, fk360Duration))
     end
 
     local boneIdx = ent._fk360BoneIdx
@@ -1060,7 +1055,6 @@ local function GekkoDoSpinKickBone(ent)
         ent._skPulseLast = pulse
         ent._skStartTime = CurTime()
         ent._skYaw       = 0
-
         print(string.format("[GekkoSpinKick] pulse=%d", pulse))
     end
 
@@ -1070,21 +1064,11 @@ local function GekkoDoSpinKickBone(ent)
         if ent._skWasActive then
             ent._skWasActive = false
             ent._skYaw = 0
-
             ReleaseHips(ent, "SPINKICK")
-
-            if ent._skPedIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._skPedIdx,    Angle(0, 0, 0),    false)
-            end
-            if ent._skPelIdx  >= 0 then
-                ent:ManipulateBonePosition(ent._skPelIdx,  Vector(0, 0, 0),   false)
-            end
-            if ent._skHipIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._skHipIdx,    Angle(0, 0, 0),    false)
-            end
-            if ent._skUlegIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._skUlegIdx,   Angle(0, 0, 0),    false)
-            end
+            if ent._skPedIdx  >= 0 then ent:ManipulateBoneAngles(ent._skPedIdx,   Angle(0,0,0),  false) end
+            if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx, Vector(0,0,0), false) end
+            if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,   Angle(0,0,0),  false) end
+            if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx,  Angle(0,0,0),  false) end
         end
         return
     end
@@ -1121,42 +1105,20 @@ local function GekkoDoSpinKickBone(ent)
     if t < SK_P1_END then
         crouchEnv = 0
     elseif t < SK_P2_END then
-        local localT = (t - SK_P1_END) / (SK_P2_END - SK_P1_END)
-        crouchEnv = Smoothstep(localT)
+        crouchEnv = Smoothstep((t - SK_P1_END) / (SK_P2_END - SK_P1_END))
     elseif t < SK_P3_END then
         crouchEnv = 1.0
     elseif t < SK_P4_END then
-        local localT = (t - SK_P3_END) / (SK_P4_END - SK_P3_END)
-        crouchEnv = 1.0 - Smoothstep(Smoothstep(localT))
+        crouchEnv = 1.0 - Smoothstep(Smoothstep((t - SK_P3_END) / (SK_P4_END - SK_P3_END)))
     else
-        local localT = (t - SK_P4_END) / (1.0 - SK_P4_END)
-        crouchEnv = math.max(
-            (1.0 - Smoothstep(Smoothstep(Smoothstep(localT)))) * 0.08,
-            0
-        )
+        crouchEnv = math.max((1.0 - Smoothstep(Smoothstep(Smoothstep((t - SK_P4_END) / (1.0 - SK_P4_END))))) * 0.08, 0)
     end
 
-    local legEnv
-    if t < SK_P1_END then
-        legEnv = 0
-    elseif t < SK_P3_END then
-        legEnv = 1.0
-    else
-        legEnv = crouchEnv
-    end
+    local legEnv = (t < SK_P1_END) and 0 or (t < SK_P3_END and 1.0 or crouchEnv)
 
-    if ent._skPelIdx  >= 0 then
-        ent:ManipulateBonePosition(ent._skPelIdx,
-            Vector(0, 0, SK_PEL_DROP * crouchEnv), false)
-    end
-    if ent._skHipIdx  >= 0 then
-        ent:ManipulateBoneAngles(ent._skHipIdx,
-            Angle(0, 0, SK_HIP_Z * crouchEnv), false)
-    end
-    if ent._skUlegIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._skUlegIdx,
-            Angle(SK_ULEG_X * legEnv, 0, 0), false)
-    end
+    if ent._skPelIdx  >= 0 then ent:ManipulateBonePosition(ent._skPelIdx, Vector(0,0,SK_PEL_DROP*crouchEnv), false) end
+    if ent._skHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._skHipIdx,   Angle(0,0,SK_HIP_Z*crouchEnv),     false) end
+    if ent._skUlegIdx >= 0 then ent:ManipulateBoneAngles(ent._skUlegIdx,  Angle(SK_ULEG_X*legEnv,0,0),       false) end
 end
 
 -- ============================================================
@@ -1176,7 +1138,6 @@ local function GekkoDoFootballKickBone(ent)
     if pulse ~= ent._fkPulseLast then
         ent._fkPulseLast = pulse
         ent._fkStartTime = CurTime()
-
         print(string.format("[GekkoFootballKick] pulse=%d", pulse))
     end
 
@@ -1185,15 +1146,9 @@ local function GekkoDoFootballKickBone(ent)
     if not active then
         if ent._fkWasActive then
             ent._fkWasActive = false
-
             ReleaseHips(ent, "FOOTBALLKICK")
-
-            if ent._fkLHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(0, 0, 0), false)
-            end
-            if ent._fkRHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(0, 0, 0), false)
-            end
+            if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(0,0,0), false) end
+            if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1202,35 +1157,23 @@ local function GekkoDoFootballKickBone(ent)
     ent._fkWasActive = true
 
     local t = elapsed / FK_DURATION
-
     local lhipY, lhipX, rhipX
     if t < FK_PHASE_HOLD then
         local env = Smoothstep(t / FK_PHASE_HOLD)
-        lhipY =  FK_LHIP_Y_PREP * env
-        lhipX =  FK_LHIP_X_PREP * env
-        rhipX =  FK_RHIP_X_PREP * env
+        lhipY = FK_LHIP_Y_PREP * env ; lhipX = FK_LHIP_X_PREP * env ; rhipX = FK_RHIP_X_PREP * env
     elseif t < FK_PHASE_EXTEND then
-        lhipY =  FK_LHIP_Y_PREP
-        lhipX =  FK_LHIP_X_PREP
-        rhipX =  FK_RHIP_X_PREP
+        lhipY = FK_LHIP_Y_PREP ; lhipX = FK_LHIP_X_PREP ; rhipX = FK_RHIP_X_PREP
     elseif t < FK_PHASE_RECOVER then
         local env = Smoothstep((t - FK_PHASE_EXTEND) / (FK_PHASE_RECOVER - FK_PHASE_EXTEND))
         lhipY = FK_LHIP_Y_PREP + (FK_LHIP_Y_EXT - FK_LHIP_Y_PREP) * env
-        lhipX = FK_LHIP_X_PREP * (1 - env)
-        rhipX = FK_RHIP_X_PREP * (1 - env)
+        lhipX = FK_LHIP_X_PREP * (1 - env) ; rhipX = FK_RHIP_X_PREP * (1 - env)
     else
         local env = Smoothstep((t - FK_PHASE_RECOVER) / (1.0 - FK_PHASE_RECOVER))
-        lhipY = FK_LHIP_Y_EXT * (1 - env)
-        lhipX = 0
-        rhipX = 0
+        lhipY = FK_LHIP_Y_EXT * (1 - env) ; lhipX = 0 ; rhipX = 0
     end
 
-    if ent._fkLHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(lhipX, lhipY, 0), false)
-    end
-    if ent._fkRHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(rhipX, 0, 0),     false)
-    end
+    if ent._fkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkLHipIdx, Angle(lhipX, lhipY, 0), false) end
+    if ent._fkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkRHipIdx, Angle(rhipX, 0, 0),     false) end
 end
 
 -- ============================================================
@@ -1250,7 +1193,6 @@ local function GekkoDoFootballKickRBone(ent)
     if pulse ~= ent._fkrPulseLast then
         ent._fkrPulseLast = pulse
         ent._fkrStartTime = CurTime()
-
         print(string.format("[GekkoFootballKickR] pulse=%d", pulse))
     end
 
@@ -1259,15 +1201,9 @@ local function GekkoDoFootballKickRBone(ent)
     if not active then
         if ent._fkrWasActive then
             ent._fkrWasActive = false
-
             ReleaseHips(ent, "FOOTBALLKICKR")
-
-            if ent._fkrRHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._fkrRHipIdx, Angle(0, 0, 0), false)
-            end
-            if ent._fkrLHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._fkrLHipIdx, Angle(0, 0, 0), false)
-            end
+            if ent._fkrRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrRHipIdx, Angle(0,0,0), false) end
+            if ent._fkrLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrLHipIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1276,35 +1212,23 @@ local function GekkoDoFootballKickRBone(ent)
     ent._fkrWasActive = true
 
     local t = elapsed / FKR_DURATION
-
     local rhipY, rhipX, lhipX
     if t < FKR_PHASE_HOLD then
         local env = Smoothstep(t / FKR_PHASE_HOLD)
-        rhipY =  FKR_RHIP_Y_PREP * env
-        rhipX =  FKR_RHIP_X_PREP * env
-        lhipX =  FKR_LHIP_X_PREP * env
+        rhipY = FKR_RHIP_Y_PREP * env ; rhipX = FKR_RHIP_X_PREP * env ; lhipX = FKR_LHIP_X_PREP * env
     elseif t < FKR_PHASE_EXTEND then
-        rhipY =  FKR_RHIP_Y_PREP
-        rhipX =  FKR_RHIP_X_PREP
-        lhipX =  FKR_LHIP_X_PREP
+        rhipY = FKR_RHIP_Y_PREP ; rhipX = FKR_RHIP_X_PREP ; lhipX = FKR_LHIP_X_PREP
     elseif t < FKR_PHASE_RECOVER then
         local env = Smoothstep((t - FKR_PHASE_EXTEND) / (FKR_PHASE_RECOVER - FKR_PHASE_EXTEND))
         rhipY = FKR_RHIP_Y_PREP + (FKR_RHIP_Y_EXT - FKR_RHIP_Y_PREP) * env
-        rhipX = FKR_RHIP_X_PREP * (1 - env)
-        lhipX = FKR_LHIP_X_PREP * (1 - env)
+        rhipX = FKR_RHIP_X_PREP * (1 - env) ; lhipX = FKR_LHIP_X_PREP * (1 - env)
     else
         local env = Smoothstep((t - FKR_PHASE_RECOVER) / (1.0 - FKR_PHASE_RECOVER))
-        rhipY = FKR_RHIP_Y_EXT * (1 - env)
-        rhipX = 0
-        lhipX = 0
+        rhipY = FKR_RHIP_Y_EXT * (1 - env) ; rhipX = 0 ; lhipX = 0
     end
 
-    if ent._fkrRHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._fkrRHipIdx, Angle(rhipX, rhipY, 0), false)
-    end
-    if ent._fkrLHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._fkrLHipIdx, Angle(lhipX, 0, 0),     false)
-    end
+    if ent._fkrRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrRHipIdx, Angle(rhipX, rhipY, 0), false) end
+    if ent._fkrLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._fkrLHipIdx, Angle(lhipX, 0, 0),     false) end
 end
 
 -- ============================================================
@@ -1324,7 +1248,6 @@ local function GekkoDoDiagonalKickBone(ent)
     if pulse ~= ent._dgkPulseLast then
         ent._dgkPulseLast = pulse
         ent._dgkStartTime = CurTime()
-
         print(string.format("[GekkoDiagonalKick] pulse=%d", pulse))
     end
 
@@ -1333,15 +1256,9 @@ local function GekkoDoDiagonalKickBone(ent)
     if not active then
         if ent._dgkWasActive then
             ent._dgkWasActive = false
-
             ReleaseHips(ent, "DIAGONALKICK")
-
-            if ent._dgkLHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._dgkLHipIdx, Angle(0, 0, 0), false)
-            end
-            if ent._dgkRHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._dgkRHipIdx, Angle(0, 0, 0), false)
-            end
+            if ent._dgkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkLHipIdx, Angle(0,0,0), false) end
+            if ent._dgkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkRHipIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1349,37 +1266,28 @@ local function GekkoDoDiagonalKickBone(ent)
     if not ClaimHips(ent, "DIAGONALKICK") then return end
     ent._dgkWasActive = true
 
-    local t     = elapsed / DGK_DURATION
+    local t    = elapsed / DGK_DURATION
+    local REST = Angle(0,0,0)
     local lhip, rhip
-    local REST  = Angle(0, 0, 0)
 
     if t < DGK_P1_END then
         local env = Smoothstep(t / DGK_P1_END)
-        lhip = LerpAngle(REST,       DGK_P1_LHIP, env)
-        rhip = LerpAngle(REST,       DGK_P1_RHIP, env)
+        lhip = LerpAngle(REST, DGK_P1_LHIP, env) ; rhip = LerpAngle(REST, DGK_P1_RHIP, env)
     elseif t < DGK_P2_END then
-        lhip = DGK_P1_LHIP
-        rhip = DGK_P1_RHIP
+        lhip = DGK_P1_LHIP ; rhip = DGK_P1_RHIP
     elseif t < DGK_P3_END then
         local env = Smoothstep((t - DGK_P2_END) / (DGK_P3_END - DGK_P2_END))
-        lhip = LerpAngle(DGK_P1_LHIP, DGK_P3_LHIP, env)
-        rhip = LerpAngle(DGK_P1_RHIP, DGK_P3_RHIP, env)
+        lhip = LerpAngle(DGK_P1_LHIP, DGK_P3_LHIP, env) ; rhip = LerpAngle(DGK_P1_RHIP, DGK_P3_RHIP, env)
     elseif t < DGK_P4_END then
         local env = Smoothstep((t - DGK_P3_END) / (DGK_P4_END - DGK_P3_END))
-        lhip = LerpAngle(DGK_P3_LHIP, DGK_P4_LHIP, env)
-        rhip = LerpAngle(DGK_P3_RHIP, DGK_P4_RHIP, env)
+        lhip = LerpAngle(DGK_P3_LHIP, DGK_P4_LHIP, env) ; rhip = LerpAngle(DGK_P3_RHIP, DGK_P4_RHIP, env)
     else
         local env = Smoothstep((t - DGK_P4_END) / (1.0 - DGK_P4_END))
-        lhip = LerpAngle(DGK_P4_LHIP, REST, env)
-        rhip = LerpAngle(DGK_P4_RHIP, REST, env)
+        lhip = LerpAngle(DGK_P4_LHIP, REST, env) ; rhip = LerpAngle(DGK_P4_RHIP, REST, env)
     end
 
-    if ent._dgkLHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._dgkLHipIdx, lhip, false)
-    end
-    if ent._dgkRHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._dgkRHipIdx, rhip, false)
-    end
+    if ent._dgkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkLHipIdx, lhip, false) end
+    if ent._dgkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._dgkRHipIdx, rhip, false) end
 end
 
 -- ============================================================
@@ -1400,7 +1308,6 @@ local function GekkoDoHeelHookBone(ent)
     if pulse ~= ent._hhPulseLast then
         ent._hhPulseLast = pulse
         ent._hhStartTime = CurTime()
-
         print(string.format("[GekkoHeelHook] pulse=%d", pulse))
     end
 
@@ -1409,18 +1316,10 @@ local function GekkoDoHeelHookBone(ent)
     if not active then
         if ent._hhWasActive then
             ent._hhWasActive = false
-
             ReleaseHips(ent, "HEELHOOK")
-
-            if ent._hhHipIdx   >= 0 then
-                ent:ManipulateBoneAngles(ent._hhHipIdx,   Angle(0, 0, 0), false)
-            end
-            if ent._hhPelIdx   >= 0 then
-                ent:ManipulateBoneAngles(ent._hhPelIdx,   Angle(0, 0, 0), false)
-            end
-            if ent._hhSpineIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0, 0, 0), false)
-            end
+            if ent._hhHipIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhHipIdx,   Angle(0,0,0), false) end
+            if ent._hhPelIdx   >= 0 then ent:ManipulateBoneAngles(ent._hhPelIdx,   Angle(0,0,0), false) end
+            if ent._hhSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1428,11 +1327,8 @@ local function GekkoDoHeelHookBone(ent)
     if not ClaimHips(ent, "HEELHOOK") then return end
     ent._hhWasActive = true
 
-    local t    = elapsed / HH_DURATION_CL
-    local P1   = 0.200
-    local P2   = 0.440
-    local P3   = 0.650
-    local P4   = 0.800
+    local t  = elapsed / HH_DURATION_CL
+    local P1 = 0.200 ; local P2 = 0.440 ; local P3 = 0.650 ; local P4 = 0.800
 
     local function PhaseEnv(t0, t1)
         return Smoothstep(math.Clamp((t - t0) / (t1 - t0), 0, 1))
@@ -1440,73 +1336,41 @@ local function GekkoDoHeelHookBone(ent)
 
     local hipPitch, hipRoll, hipYaw
     if t < P1 then
-        hipPitch = HH_HIP_CHAMBER_PITCH * PhaseEnv(0, P1)
-        hipRoll  = 0
-        hipYaw   = 0
+        hipPitch = HH_HIP_CHAMBER_PITCH * PhaseEnv(0, P1) ; hipRoll = 0 ; hipYaw = 0
     elseif t < P2 then
-        hipPitch = HH_HIP_CHAMBER_PITCH
-        hipRoll  = 0
-        hipYaw   = 0
+        hipPitch = HH_HIP_CHAMBER_PITCH ; hipRoll = 0 ; hipYaw = 0
     elseif t < P3 then
-        hipPitch = HH_HIP_CHAMBER_PITCH
-        hipRoll  = HH_HIP_EXTEND_ROLL * PhaseEnv(P2, P3)
-        hipYaw   = 0
+        hipPitch = HH_HIP_CHAMBER_PITCH ; hipRoll = HH_HIP_EXTEND_ROLL * PhaseEnv(P2, P3) ; hipYaw = 0
     elseif t < P4 then
         local env = PhaseEnv(P3, P4)
-        hipPitch = HH_HIP_CHAMBER_PITCH * (1 - env * 0.3)
-        hipRoll  = HH_HIP_EXTEND_ROLL   * (1 - env)
-        hipYaw   = HH_HIP_HOOK_YAW      * env
+        hipPitch = HH_HIP_CHAMBER_PITCH * (1 - env * 0.3) ; hipRoll = HH_HIP_EXTEND_ROLL * (1 - env) ; hipYaw = HH_HIP_HOOK_YAW * env
     else
         local env = PhaseEnv(P4, 1.0)
-        hipPitch = HH_HIP_CHAMBER_PITCH * (0.7 - env * 0.7)
-        hipRoll  = 0
-        hipYaw   = HH_HIP_HOOK_YAW * (1 - env)
+        hipPitch = HH_HIP_CHAMBER_PITCH * (0.7 - env * 0.7) ; hipRoll = 0 ; hipYaw = HH_HIP_HOOK_YAW * (1 - env)
     end
-
-    if ent._hhHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._hhHipIdx,
-            Angle(hipPitch, hipYaw, hipRoll), false)
-    end
+    if ent._hhHipIdx >= 0 then ent:ManipulateBoneAngles(ent._hhHipIdx, Angle(hipPitch, hipYaw, hipRoll), false) end
 
     local pelYaw, pelPitch
     if t < P1 then
-        pelYaw   = HH_PELVIS_YAW * PhaseEnv(0, P1) * 0.5
-        pelPitch = 0
+        pelYaw = HH_PELVIS_YAW * PhaseEnv(0, P1) * 0.5 ; pelPitch = 0
     elseif t < P2 then
-        pelYaw   = HH_PELVIS_YAW * (0.5 + 0.5 * PhaseEnv(P1, P2))
-        pelPitch = 0
+        pelYaw = HH_PELVIS_YAW * (0.5 + 0.5 * PhaseEnv(P1, P2)) ; pelPitch = 0
     elseif t < P3 then
-        pelYaw   = HH_PELVIS_YAW
-        pelPitch = HH_PELVIS_PITCH * PhaseEnv(P2, P3)
+        pelYaw = HH_PELVIS_YAW ; pelPitch = HH_PELVIS_PITCH * PhaseEnv(P2, P3)
     elseif t < P4 then
         local env = PhaseEnv(P3, P4)
-        pelYaw   = HH_PELVIS_YAW   * (1 - env * 0.6)
-        pelPitch = HH_PELVIS_PITCH * (1 - env)
+        pelYaw = HH_PELVIS_YAW * (1 - env * 0.6) ; pelPitch = HH_PELVIS_PITCH * (1 - env)
     else
-        pelYaw   = HH_PELVIS_YAW * 0.4 * (1 - PhaseEnv(P4, 1.0))
-        pelPitch = 0
+        pelYaw = HH_PELVIS_YAW * 0.4 * (1 - PhaseEnv(P4, 1.0)) ; pelPitch = 0
     end
-
-    if ent._hhPelIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._hhPelIdx,
-            Angle(pelPitch, pelYaw, 0), false)
-    end
+    if ent._hhPelIdx >= 0 then ent:ManipulateBoneAngles(ent._hhPelIdx, Angle(pelPitch, pelYaw, 0), false) end
 
     local spineLean
-    if t < P1 then
-        spineLean = 0
-    elseif t < P3 then
-        spineLean = HH_SPINE_LEAN * PhaseEnv(P1, P3)
-    elseif t < P4 then
-        spineLean = HH_SPINE_LEAN
-    else
-        spineLean = HH_SPINE_LEAN * (1 - PhaseEnv(P4, 1.0))
-    end
-
-    if ent._hhSpineIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._hhSpineIdx,
-            Angle(0, 0, spineLean), false)
-    end
+    if t < P1 then spineLean = 0
+    elseif t < P3 then spineLean = HH_SPINE_LEAN * PhaseEnv(P1, P3)
+    elseif t < P4 then spineLean = HH_SPINE_LEAN
+    else spineLean = HH_SPINE_LEAN * (1 - PhaseEnv(P4, 1.0)) end
+    if ent._hhSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._hhSpineIdx, Angle(0, 0, spineLean), false) end
 end
 
 -- ============================================================
@@ -1526,7 +1390,6 @@ local function GekkoDoSideHookKickBone(ent)
     if pulse ~= ent._shkPulseLast then
         ent._shkPulseLast = pulse
         ent._shkStartTime = CurTime()
-
         print(string.format("[GekkoSideHookKick] pulse=%d", pulse))
     end
 
@@ -1535,15 +1398,9 @@ local function GekkoDoSideHookKickBone(ent)
     if not active then
         if ent._shkWasActive then
             ent._shkWasActive = false
-
             ReleaseHips(ent, "SIDEHOOKKICK")
-
-            if ent._shkLHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._shkLHipIdx, Angle(0, 0, 0), false)
-            end
-            if ent._shkRHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._shkRHipIdx, Angle(0, 0, 0), false)
-            end
+            if ent._shkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._shkLHipIdx, Angle(0,0,0), false) end
+            if ent._shkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._shkRHipIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1553,40 +1410,31 @@ local function GekkoDoSideHookKickBone(ent)
 
     local t    = elapsed / SHK_DURATION
     local REST = SHK_REST
-
     local lhip, rhip
+
     if t < SHK_P1_END then
         local env = Smoothstep(t / SHK_P1_END)
-        lhip = LerpAngle(REST, SHK_P1_LHIP, env)
-        rhip = LerpAngle(REST, SHK_P1_RHIP, env)
+        lhip = LerpAngle(REST, SHK_P1_LHIP, env) ; rhip = LerpAngle(REST, SHK_P1_RHIP, env)
     elseif t < SHK_P2_END then
         local env = Smoothstep((t - SHK_P1_END) / (SHK_P2_END - SHK_P1_END))
-        lhip = LerpAngle(SHK_P1_LHIP, SHK_P2_LHIP, env)
-        rhip = LerpAngle(SHK_P1_RHIP, SHK_P2_RHIP, env)
+        lhip = LerpAngle(SHK_P1_LHIP, SHK_P2_LHIP, env) ; rhip = LerpAngle(SHK_P1_RHIP, SHK_P2_RHIP, env)
     elseif t < SHK_P3_END then
         local env = Smoothstep((t - SHK_P2_END) / (SHK_P3_END - SHK_P2_END))
-        lhip = SHK_P2_LHIP
-        rhip = LerpAngle(SHK_P2_RHIP, SHK_P3_RHIP, env)
+        lhip = SHK_P2_LHIP ; rhip = LerpAngle(SHK_P2_RHIP, SHK_P3_RHIP, env)
     elseif t < SHK_P4_END then
         local env = Smoothstep((t - SHK_P3_END) / (SHK_P4_END - SHK_P3_END))
-        lhip = LerpAngle(SHK_P2_LHIP, SHK_P4_LHIP, env)
-        rhip = LerpAngle(SHK_P3_RHIP, SHK_P4_RHIP, env)
+        lhip = LerpAngle(SHK_P2_LHIP, SHK_P4_LHIP, env) ; rhip = LerpAngle(SHK_P3_RHIP, SHK_P4_RHIP, env)
     else
         local env = Smoothstep((t - SHK_P4_END) / (1.0 - SHK_P4_END))
-        lhip = LerpAngle(SHK_P4_LHIP, REST, env)
-        rhip = LerpAngle(SHK_P4_RHIP, REST, env)
+        lhip = LerpAngle(SHK_P4_LHIP, REST, env) ; rhip = LerpAngle(SHK_P4_RHIP, REST, env)
     end
 
-    if ent._shkLHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._shkLHipIdx, lhip, false)
-    end
-    if ent._shkRHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._shkRHipIdx, rhip, false)
-    end
+    if ent._shkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._shkLHipIdx, lhip, false) end
+    if ent._shkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._shkRHipIdx, rhip, false) end
 end
 
 -- ============================================================
---  AXE KICK BONE DRIVER (left leg original)
+--  AXE KICK BONE DRIVER (left leg)
 -- ============================================================
 local function GekkoDoAxeKickBone(ent)
     if ent._akInited == nil then
@@ -1603,7 +1451,6 @@ local function GekkoDoAxeKickBone(ent)
     if pulse ~= ent._akPulseLast then
         ent._akPulseLast = pulse
         ent._akStartTime = CurTime()
-
         print(string.format("[GekkoAxeKick] pulse=%d", pulse))
     end
 
@@ -1612,18 +1459,10 @@ local function GekkoDoAxeKickBone(ent)
     if not active then
         if ent._akWasActive then
             ent._akWasActive = false
-
             ReleaseHips(ent, "AXEKICK")
-
-            if ent._akLHipIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._akLHipIdx,  Angle(0,0,0), false)
-            end
-            if ent._akRHipIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._akRHipIdx,  Angle(0,0,0), false)
-            end
-            if ent._akSpineIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._akSpineIdx, Angle(0,0,0), false)
-            end
+            if ent._akLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akLHipIdx,  Angle(0,0,0), false) end
+            if ent._akRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akRHipIdx,  Angle(0,0,0), false) end
+            if ent._akSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akSpineIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1631,40 +1470,26 @@ local function GekkoDoAxeKickBone(ent)
     if not ClaimHips(ent, "AXEKICK") then return end
     ent._akWasActive = true
 
-    local t    = elapsed / AK_DURATION
+    local t = elapsed / AK_DURATION
     local REST = AK_REST
-
     local lhip, rhip, spine
+
     if t < AK_P1_END then
         local env = Smoothstep(t / AK_P1_END)
-        lhip  = LerpAngle(REST, AK_P1_LHIP,  env)
-        rhip  = REST
-        spine = LerpAngle(REST, AK_P1_SPINE, env)
+        lhip = LerpAngle(REST, AK_P1_LHIP, env) ; rhip = REST ; spine = LerpAngle(REST, AK_P1_SPINE, env)
     elseif t < AK_P2_END then
-        lhip  = AK_P1_LHIP
-        rhip  = REST
-        spine = AK_P1_SPINE
+        lhip = AK_P1_LHIP ; rhip = REST ; spine = AK_P1_SPINE
     elseif t < AK_P3_END then
         local env = Smoothstep(Smoothstep((t - AK_P2_END) / (AK_P3_END - AK_P2_END)))
-        lhip  = LerpAngle(AK_P1_LHIP,  AK_P3_LHIP,  env)
-        rhip  = LerpAngle(REST,        AK_P3_RHIP,  env)
-        spine = LerpAngle(AK_P1_SPINE, AK_P3_SPINE, env)
+        lhip = LerpAngle(AK_P1_LHIP, AK_P3_LHIP, env) ; rhip = LerpAngle(REST, AK_P3_RHIP, env) ; spine = LerpAngle(AK_P1_SPINE, AK_P3_SPINE, env)
     else
         local env = Smoothstep((t - AK_P3_END) / (1.0 - AK_P3_END))
-        lhip  = LerpAngle(AK_P3_LHIP,  REST, env)
-        rhip  = LerpAngle(AK_P3_RHIP,  REST, env)
-        spine = LerpAngle(AK_P3_SPINE, REST, env)
+        lhip = LerpAngle(AK_P3_LHIP, REST, env) ; rhip = LerpAngle(AK_P3_RHIP, REST, env) ; spine = LerpAngle(AK_P3_SPINE, REST, env)
     end
 
-    if ent._akLHipIdx  >= 0 then
-        ent:ManipulateBoneAngles(ent._akLHipIdx,  lhip,  false)
-    end
-    if ent._akRHipIdx  >= 0 then
-        ent:ManipulateBoneAngles(ent._akRHipIdx,  rhip,  false)
-    end
-    if ent._akSpineIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._akSpineIdx, spine, false)
-    end
+    if ent._akLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akLHipIdx,  lhip,  false) end
+    if ent._akRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akRHipIdx,  rhip,  false) end
+    if ent._akSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akSpineIdx, spine, false) end
 end
 
 -- ============================================================
@@ -1673,9 +1498,9 @@ end
 local function GekkoDoAxeKickRBone(ent)
     if ent._akrInited == nil then
         ent._akrInited    = true
-        ent._akrLHipIdx   = ent:LookupBone("b_r_hippiston1")  or -1
-        ent._akrRHipIdx   = ent:LookupBone("b_l_hippiston1")  or -1
-        ent._akrSpineIdx  = ent:LookupBone(AK_SPINE_BONE) or -1
+        ent._akrLHipIdx   = ent:LookupBone("b_r_hippiston1") or -1
+        ent._akrRHipIdx   = ent:LookupBone("b_l_hippiston1") or -1
+        ent._akrSpineIdx  = ent:LookupBone(AK_SPINE_BONE)    or -1
         ent._akrStartTime = -9999
         ent._akrPulseLast = ent:GetNWInt("GekkoRAxeKickPulse", 0)
         ent._akrWasActive = false
@@ -1685,7 +1510,6 @@ local function GekkoDoAxeKickRBone(ent)
     if pulse ~= ent._akrPulseLast then
         ent._akrPulseLast = pulse
         ent._akrStartTime = CurTime()
-
         print(string.format("[GekkoRAxeKick] pulse=%d", pulse))
     end
 
@@ -1694,18 +1518,10 @@ local function GekkoDoAxeKickRBone(ent)
     if not active then
         if ent._akrWasActive then
             ent._akrWasActive = false
-
             ReleaseHips(ent, "RAXEKICK")
-
-            if ent._akrLHipIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._akrLHipIdx,  Angle(0,0,0), false)
-            end
-            if ent._akrRHipIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._akrRHipIdx,  Angle(0,0,0), false)
-            end
-            if ent._akrSpineIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._akrSpineIdx, Angle(0,0,0), false)
-            end
+            if ent._akrLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrLHipIdx,  Angle(0,0,0), false) end
+            if ent._akrRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrRHipIdx,  Angle(0,0,0), false) end
+            if ent._akrSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akrSpineIdx, Angle(0,0,0), false) end
         end
         return
     end
@@ -1713,40 +1529,26 @@ local function GekkoDoAxeKickRBone(ent)
     if not ClaimHips(ent, "RAXEKICK") then return end
     ent._akrWasActive = true
 
-    local t    = elapsed / AK_DURATION
+    local t = elapsed / AK_DURATION
     local REST = AK_REST
-
     local lhip, rhip, spine
+
     if t < AK_P1_END then
         local env = Smoothstep(t / AK_P1_END)
-        lhip  = LerpAngle(REST, AK_P1_LHIP,  env)
-        rhip  = REST
-        spine = LerpAngle(REST, AK_P1_SPINE, env)
+        lhip = LerpAngle(REST, AK_P1_LHIP, env) ; rhip = REST ; spine = LerpAngle(REST, AK_P1_SPINE, env)
     elseif t < AK_P2_END then
-        lhip  = AK_P1_LHIP
-        rhip  = REST
-        spine = AK_P1_SPINE
+        lhip = AK_P1_LHIP ; rhip = REST ; spine = AK_P1_SPINE
     elseif t < AK_P3_END then
         local env = Smoothstep(Smoothstep((t - AK_P2_END) / (AK_P3_END - AK_P2_END)))
-        lhip  = LerpAngle(AK_P1_LHIP,  AK_P3_LHIP,  env)
-        rhip  = LerpAngle(REST,        AK_P3_RHIP,  env)
-        spine = LerpAngle(AK_P1_SPINE, AK_P3_SPINE, env)
+        lhip = LerpAngle(AK_P1_LHIP, AK_P3_LHIP, env) ; rhip = LerpAngle(REST, AK_P3_RHIP, env) ; spine = LerpAngle(AK_P1_SPINE, AK_P3_SPINE, env)
     else
         local env = Smoothstep((t - AK_P3_END) / (1.0 - AK_P3_END))
-        lhip  = LerpAngle(AK_P3_LHIP,  REST, env)
-        rhip  = LerpAngle(AK_P3_RHIP,  REST, env)
-        spine = LerpAngle(AK_P3_SPINE, REST, env)
+        lhip = LerpAngle(AK_P3_LHIP, REST, env) ; rhip = LerpAngle(AK_P3_RHIP, REST, env) ; spine = LerpAngle(AK_P3_SPINE, REST, env)
     end
 
-    if ent._akrLHipIdx  >= 0 then
-        ent:ManipulateBoneAngles(ent._akrLHipIdx,  lhip,  false)
-    end
-    if ent._akrRHipIdx  >= 0 then
-        ent:ManipulateBoneAngles(ent._akrRHipIdx,  rhip,  false)
-    end
-    if ent._akrSpineIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._akrSpineIdx, spine, false)
-    end
+    if ent._akrLHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrLHipIdx,  lhip,  false) end
+    if ent._akrRHipIdx  >= 0 then ent:ManipulateBoneAngles(ent._akrRHipIdx,  rhip,  false) end
+    if ent._akrSpineIdx >= 0 then ent:ManipulateBoneAngles(ent._akrSpineIdx, spine, false) end
 end
 
 -- ============================================================
@@ -1767,7 +1569,6 @@ local function GekkoDoJumpKickBone(ent)
     if pulse ~= ent._jkPulseLast then
         ent._jkPulseLast = pulse
         ent._jkStartTime = CurTime()
-
         print(string.format("[GekkoJumpKick] pulse=%d", pulse))
     end
 
@@ -1776,18 +1577,12 @@ local function GekkoDoJumpKickBone(ent)
     if not active then
         if ent._jkWasActive then
             ent._jkWasActive = false
-
             ReleaseHips(ent, "JUMPKICK")
-
-            if ent._jkLHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._jkLHipIdx,    JK_REST,     false)
-            end
-            if ent._jkRHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._jkRHipIdx,    JK_REST,     false)
-            end
+            if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,   JK_REST,     false) end
+            if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,   JK_REST,     false) end
             if ent._jkPedIdx  >= 0 then
-                ent:ManipulateBoneAngles(ent._jkPedIdx,     JK_REST,     false)
-                ent:ManipulateBonePosition(ent._jkPedIdx,   JK_REST_POS, false)
+                ent:ManipulateBoneAngles(ent._jkPedIdx,   JK_REST,     false)
+                ent:ManipulateBonePosition(ent._jkPedIdx, JK_REST_POS, false)
             end
         end
         return
@@ -1797,50 +1592,30 @@ local function GekkoDoJumpKickBone(ent)
     ent._jkWasActive = true
 
     local t = elapsed / JK_DURATION
-
     local lhip, rhip, pedAng, pedPos
 
     if t < JK_P1_END then
         local env = Smoothstep(t / JK_P1_END)
-        lhip   = LerpAngle(JK_REST,      JK_P1_LHIP,    env)
-        rhip   = LerpAngle(JK_REST,      JK_P1_RHIP,    env)
-        pedAng = JK_REST
-        pedPos = JK_REST_POS
+        lhip = LerpAngle(JK_REST, JK_P1_LHIP, env) ; rhip = LerpAngle(JK_REST, JK_P1_RHIP, env)
+        pedAng = JK_REST ; pedPos = JK_REST_POS
     elseif t < JK_P2_END then
         local env = Smoothstep((t - JK_P1_END) / (JK_P2_END - JK_P1_END))
-        lhip   = LerpAngle(JK_P1_LHIP, JK_P2_LHIP,    env)
-        rhip   = JK_P2_RHIP
-
+        lhip = LerpAngle(JK_P1_LHIP, JK_P2_LHIP, env) ; rhip = JK_P2_RHIP
         pedAng = JK_REST
-        pedPos = Vector(
-            Lerp(env, 0, JK_P2_PED_POS.x),
-            0,
-            Lerp(env, 0, JK_P2_PED_POS.z)
-        )
+        pedPos = Vector(Lerp(env, 0, JK_P2_PED_POS.x), 0, Lerp(env, 0, JK_P2_PED_POS.z))
     elseif t < JK_P3_END then
         local env = Smoothstep((t - JK_P2_END) / (JK_P3_END - JK_P2_END))
-        lhip   = LerpAngle(JK_P2_LHIP, JK_P3_LHIP,    env)
-        rhip   = LerpAngle(JK_P2_RHIP, JK_REST,        env)
-        pedAng = LerpAngle(JK_REST,     JK_P3_PED_ANG,  env)
-        pedPos = Vector(
-            Lerp(env, JK_P2_PED_POS.x, 0),
-            0,
-            Lerp(env, JK_P2_PED_POS.z, 0)
-        )
+        lhip = LerpAngle(JK_P2_LHIP, JK_P3_LHIP, env) ; rhip = LerpAngle(JK_P2_RHIP, JK_REST, env)
+        pedAng = LerpAngle(JK_REST, JK_P3_PED_ANG, env)
+        pedPos = Vector(Lerp(env, JK_P2_PED_POS.x, 0), 0, Lerp(env, JK_P2_PED_POS.z, 0))
     else
         local env = Smoothstep((t - JK_P3_END) / (1.0 - JK_P3_END))
-        lhip   = LerpAngle(JK_P3_LHIP,    JK_REST,     env)
-        rhip   = JK_REST
-        pedAng = LerpAngle(JK_P3_PED_ANG, JK_REST,     env)
-        pedPos = JK_REST_POS
+        lhip = LerpAngle(JK_P3_LHIP, JK_REST, env) ; rhip = JK_REST
+        pedAng = LerpAngle(JK_P3_PED_ANG, JK_REST, env) ; pedPos = JK_REST_POS
     end
 
-    if ent._jkLHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._jkLHipIdx,   lhip,   false)
-    end
-    if ent._jkRHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._jkRHipIdx,   rhip,   false)
-    end
+    if ent._jkLHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkLHipIdx,   lhip,   false) end
+    if ent._jkRHipIdx >= 0 then ent:ManipulateBoneAngles(ent._jkRHipIdx,   rhip,   false) end
     if ent._jkPedIdx  >= 0 then
         ent:ManipulateBoneAngles(ent._jkPedIdx,    pedAng, false)
         ent:ManipulateBonePosition(ent._jkPedIdx,  pedPos, false)
