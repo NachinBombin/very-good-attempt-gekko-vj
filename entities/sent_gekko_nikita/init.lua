@@ -3,30 +3,30 @@ AddCSLuaFile( "shared.lua" )
 include( "shared.lua" )
 
 -- ============================================================
---  SERVER  -  Gekko Nikita Homing Missile
+--  SERVER  -  Gekko Nikita Homing Cruise Missile
 --
---  Homing method: NWEntity "NikitaTrackEnt" set by FireNikita
---  immediately after Spawn()+Activate(). NetworkVars survive
---  the engine post-Spawn table reset that wiped plain Lua
---  fields (self.TrackEnt = ...) in previous versions.
+--  Steering: LerpVector( FrameTime() * TURN_SPEED, forward, desired )
+--            Operates on 3D direction vector -- no gimbal jitter.
+--            Borrowed technique from S-24 Rammer missile.
 --
---  MOVETYPE_NOCLIP: SetVelocity fully replaces velocity.
---  MOVETYPE_FLY accumulates velocity (bug: 4700 u/s in 1s).
+--  Movetype: NOCLIP so SetVelocity is fully authoritative.
+--            VPHYSICS at this low speed causes physics-engine
+--            impulses on Spawn that make the first frames go straight.
 --
---  SafeAimPos traces ground under target so aim Z is never
---  underground (prevented the nose-dive crash behavior).
+--  Homing target: NWEntity "NikitaTrackEnt" set by FireNikita
+--  immediately after Spawn()+Activate(). Survives the engine
+--  post-Spawn table reset that wiped plain Lua fields.
 -- ============================================================
 
-local SND_EXPLODE = "ambient/explosions/explode_8.wav"
+local SND_EXPLODE    = "ambient/explosions/explode_8.wav"
 
-local CRUISE_SPEED     = 380     -- u/s, constant
-local MAX_TURN_RATE    = 55      -- degrees per second max turn
-local LIFETIME         = 45
-local PROXIMITY_RADIUS = 180
-local ENGINE_DELAY     = 0.5
-local TARGET_Z_OFFSET  = 80
+local CRUISE_SPEED   = 380      -- u/s
+local TURN_SPEED     = 4.5      -- LerpVector t-factor per second; higher = tighter turns
+local LIFETIME       = 45
+local PROX_RADIUS    = 180
+local ENGINE_DELAY   = 0.5
+local TARGET_Z_OFFS  = 80
 
--- Ground trace so aim Z is never underground
 local function SafeAimPos( ent )
     local p  = ent:GetPos()
     local tr = util.TraceLine({
@@ -36,7 +36,7 @@ local function SafeAimPos( ent )
         filter = ent,
     })
     local gz = tr.Hit and tr.HitPos.z or p.z
-    return Vector( p.x, p.y, gz + TARGET_Z_OFFSET )
+    return Vector( p.x, p.y, gz + TARGET_Z_OFFS )
 end
 
 function ENT:Initialize()
@@ -53,11 +53,7 @@ function ENT:Initialize()
     self.Radius       = 0
     self._nextDebug   = 0
 
-    -- Homing target is set via NWEntity by FireNikita right after
-    -- Spawn()+Activate(). NWEntity survives the engine table reset.
-    -- Plain self.TrackEnt = ... was wiped by Spawn() every time.
     self:SetNWEntity( "NikitaTrackEnt", NULL )
-
     self:SetVelocity( self:GetForward() * 120 )
 
     local selfRef = self
@@ -84,7 +80,7 @@ function ENT:Think()
 
     if not self.EngineActive then return true end
 
-    -- Read homing target from NWEntity (survives Spawn reset)
+    -- Resolve live homing target
     local trackEnt = self:GetNWEntity( "NikitaTrackEnt", NULL )
     local aimPos
     if IsValid( trackEnt ) then
@@ -95,28 +91,21 @@ function ENT:Think()
 
     if aimPos then
         -- Proximity detonation
-        if ( self:GetPos() - aimPos ):LengthSqr() < PROXIMITY_RADIUS * PROXIMITY_RADIUS then
+        if ( self:GetPos() - aimPos ):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
             self:MissileDoExplosion() ; return true
         end
 
-        -- Clamped turn steering
-        local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
-        local curAngle  = self:GetAngles()
-        local maxDelta  = MAX_TURN_RATE * FrameTime()
+        -- LerpVector steering: framerate-independent, no gimbal jitter
+        local currentDir = self:GetForward()
+        local desiredDir = ( aimPos - self:GetPos() ):GetNormalized()
+        local newDir     = LerpVector( FrameTime() * TURN_SPEED, currentDir, desiredDir ):GetNormalized()
 
-        local function Clamp( cur, want )
-            local d = math.NormalizeAngle( want - cur )
-            return cur + math.Clamp( d, -maxDelta, maxDelta )
-        end
-
-        self:SetAngles( Angle(
-            Clamp( curAngle.p, wantAngle.p ),
-            Clamp( curAngle.y, wantAngle.y ),
-            0
-        ))
+        self:SetAngles( newDir:Angle() )
+        self:SetVelocity( newDir * CRUISE_SPEED )
+    else
+        -- No target: fly straight
+        self:SetVelocity( self:GetForward() * CRUISE_SPEED )
     end
-
-    self:SetVelocity( self:GetForward() * CRUISE_SPEED )
 
     -- Manual world/entity collision (SOLID_NONE skips engine Touch)
     local tr = util.TraceLine({
@@ -134,7 +123,7 @@ function ENT:Think()
         end
     end
 
-    -- Debug every 0.5s
+    -- Debug ticker
     if CurTime() > self._nextDebug then
         self._nextDebug = CurTime() + 0.5
         print( string.format(

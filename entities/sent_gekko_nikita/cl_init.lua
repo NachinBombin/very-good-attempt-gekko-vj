@@ -1,52 +1,63 @@
 include( "shared.lua" )
 
+-- ============================================================
+--  CLIENT  -  Gekko Nikita Homing Cruise Missile
+--
+--  Visual FX borrowed from S-24 Rammer missile:
+--    - ParticleEmitter spark trail at exhaust (tail = -GetForward()*20)
+--    - DynamicLight orange glow at exhaust, 0.1s die-time per Think
+--  Smoke sprite trail set server-side via util.SpriteTrail.
+-- ============================================================
+
 function ENT:Initialize()
-    if not IsValid( self ) then return end
-
-    self:SetRenderBounds(
-        Vector( -120, -120, -120 ),
-        Vector(  120,  120,  120 )
-    )
-
-    local ok, part = pcall( CreateParticleSystem, self, "rockettrail", PATTACH_POINT_FOLLOW, 0 )
-    if ok and IsValid( part ) then
-        self._thrusterPart = part
-    end
-
-    self._dynLight = DynamicLight( self:EntIndex() )
-    if self._dynLight then
-        self._dynLight.style      = 0
-        self._dynLight.r          = 255
-        self._dynLight.g          = 100
-        self._dynLight.b          = 10
-        self._dynLight.brightness = 4
-        self._dynLight.size       = 280
-        self._dynLight.decay      = 0
-        self._dynLight.dietime    = CurTime() + 9999
-    end
+    self.Emitter = ParticleEmitter( self:GetPos() )
 end
 
 function ENT:Draw()
     self:DrawModel()
+end
 
-    if self._dynLight then
-        self._dynLight.pos     = self:GetPos()
-        self._dynLight.dietime = CurTime() + 0.05
+function ENT:Think()
+    if not IsValid( self.Emitter ) then return end
+
+    local pos       = self:GetPos()
+    local backDir   = -self:GetForward()
+    local exhaustPos = pos + backDir * 20
+
+    self.Emitter:SetPos( pos )
+
+    -- Orange dynamic light at exhaust
+    local dlight = DynamicLight( self:EntIndex() )
+    if dlight then
+        dlight.pos        = exhaustPos
+        dlight.r          = 255
+        dlight.g          = 150
+        dlight.b          = 50
+        dlight.brightness = 2.5
+        dlight.Decay      = 1000
+        dlight.Size       = 140
+        dlight.DieTime    = CurTime() + 0.1
     end
 
-    local targetPos = self:GetTargetPos()
-    if targetPos ~= vector_origin then
-        render.DrawLine(
-            self:GetPos(),
-            targetPos,
-            Color( 255, 40, 40, 80 ),
-            true
-        )
+    -- Exhaust spark particles
+    for i = 1, 2 do
+        local part = self.Emitter:Add( "effects/spark", exhaustPos )
+        if part then
+            part:SetVelocity( backDir * math.Rand( 120, 350 ) + VectorRand() * 25 )
+            part:SetDieTime( math.Rand( 0.15, 0.35 ) )
+            part:SetStartAlpha( 255 )
+            part:SetEndAlpha( 0 )
+            part:SetStartSize( math.Rand( 2, 5 ) )
+            part:SetEndSize( 0 )
+            part:SetColor( 255, 200, 100 )
+            part:SetGravity( Vector( 0, 0, -200 ) )
+            part:SetCollide( false )
+        end
     end
 end
 
 function ENT:OnRemove()
-    if IsValid( self._thrusterPart ) then
-        self._thrusterPart:StopEmission()
+    if IsValid( self.Emitter ) then
+        self.Emitter:Finish()
     end
 end
