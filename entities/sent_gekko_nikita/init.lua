@@ -5,29 +5,40 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Missile  (sent_gekko_nikita)
 --
---  Slow cruise missile. Almost runnable from.
---  Tracks forever (no ballistic ceiling phase).
---  Can be shot down (50 HP).
+--  Flight model based on the reference player-controlled Nikita:
+--    phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
+--
+--  This fully decouples thrust from steering:
+--    * Forward speed is ALWAYS exactly CRUISE_SPEED, every tick.
+--    * Steering is ONLY SetAngles() via LerpAngle.
+--    * No ApplyForceCenter, no accumulation, no momentum bleed.
+--    * Gravity disabled so speed stays constant on any heading.
+--
+--  Result: missile turns effortlessly at any TRACK_LERP value
+--  without the speed changing at all.  Tune only two values:
+--    CRUISE_SPEED  -- how fast it moves forward
+--    TRACK_LERP    -- how tightly it turns per tick (0=never, 1=instant)
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
--- Very low force so it takes several seconds to reach cruise speed.
--- 120000 (trackmissile) hits cap in ~1 tick. 800 ramps gently over ~3s.
-local FORCE_PER_TICK        = 800
+-- Forward speed in u/s, locked every tick. Player sprint ~340.
+-- 220 = slower than a sprinting player, very dodgeable.
+local CRUISE_SPEED          = 220
 
--- Hard absolute speed ceiling in u/s.
--- Player jog ~200, sprint ~340. 280 = nearly outrunnable.
-local SPEED_CAP             = 280
-
--- How lazily the missile turns. 0.03 = very slow yaw, wide arcs.
-local TRACK_LERP            = 0.03
+-- Turning rate per physics tick. 0.04 = lazy wide arcs.
+-- Completely independent of speed now -- changing this only
+-- affects how tightly it curves, never how fast it goes.
+local TRACK_LERP            = 0.04
 
 local LIFETIME              = 45
 local COLLISION_IMMUNE_TIME = 0.5
-local KICK_UP_SPEED         = 90      -- gentle initial loft
+
+-- Brief upward kick before engine ignites (no gravity during kick
+-- either, so this just sets initial direction cleanly).
+local KICK_UP_SPEED         = 180
 
 -- ============================================================
 --  Initialize
@@ -44,12 +55,11 @@ function ENT:Initialize()
     if IsValid( phys ) then
         phys:Wake()
         phys:SetMass( 500 )
-        phys:EnableDrag( true )
-        phys:EnableGravity( true )
+        phys:EnableDrag( false )    -- no drag: speed is set directly
+        phys:EnableGravity( false ) -- no gravity: speed is set directly
         self:StartMotionController()
     end
 
-    self.SpeedValue       = 0
     self.Destroyed        = false
     self.ActivatedAlmonds = false
     self.SpawnTime        = CurTime()
@@ -67,6 +77,7 @@ function ENT:Initialize()
 
     self:SetTargetPos( self.Target )
 
+    -- Initial upward kick so missile visually lofts before engine
     local selfRef = self
     timer.Simple( 0, function()
         if not IsValid( selfRef ) then return end
@@ -116,19 +127,19 @@ function ENT:FireEngine()
 end
 
 -- ============================================================
---  PhysicsUpdate  -- guidance + thrust + hard velocity clamp
+--  PhysicsUpdate
+--
+--  KEY PATTERN (from reference player-nikita):
+--    phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
+--
+--  SetVelocity replaces the velocity entirely each tick.
+--  The missile always moves at exactly CRUISE_SPEED in whatever
+--  direction it is currently facing.  Steering (SetAngles) and
+--  thrust (SetVelocity) are 100% independent.
 -- ============================================================
 function ENT:PhysicsUpdate( phys, deltatime )
     if not self.ActivatedAlmonds then return end
     if not IsValid( phys ) then return end
-
-    -- Hard velocity clamp: prevents momentum/gravity from
-    -- carrying the missile past SPEED_CAP regardless of force.
-    local vel = self:GetVelocity()
-    local spd = vel:Length()
-    if spd > SPEED_CAP then
-        phys:SetVelocity( vel * ( SPEED_CAP / spd ) )
-    end
 
     -- Resolve aim position
     local aimPos
@@ -136,15 +147,16 @@ function ENT:PhysicsUpdate( phys, deltatime )
         aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
     elseif self.Target then
         aimPos = self.Target
-    else
-        phys:ApplyForceCenter( self:GetForward() * FORCE_PER_TICK )
-        return
     end
 
-    local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
-    self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
+    -- Steer toward aim: only changes facing angle, never speed
+    if aimPos then
+        local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
+        self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
+    end
 
-    phys:ApplyForceCenter( self:GetForward() * FORCE_PER_TICK )
+    -- Lock forward speed exactly: no accumulation, no momentum, no gravity bleed
+    phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
 end
 
 -- ============================================================
