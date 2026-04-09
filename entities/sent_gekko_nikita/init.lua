@@ -7,11 +7,8 @@ include( "shared.lua" )
 --
 --  Steering: LerpVector( FrameTime() * TURN_SPEED, forward, desired )
 --            Operates on 3D direction vector -- no gimbal jitter.
---            Borrowed technique from S-24 Rammer missile.
 --
 --  Movetype: NOCLIP so SetVelocity is fully authoritative.
---            VPHYSICS at this low speed causes physics-engine
---            impulses on Spawn that make the first frames go straight.
 --
 --  Homing target: NWEntity "NikitaTrackEnt" set by FireNikita
 --  immediately after Spawn()+Activate(). Survives the engine
@@ -20,8 +17,8 @@ include( "shared.lua" )
 
 local SND_EXPLODE    = "ambient/explosions/explode_8.wav"
 
-local CRUISE_SPEED   = 380      -- u/s
-local TURN_SPEED     = 4.5      -- LerpVector t-factor per second; higher = tighter turns
+local CRUISE_SPEED   = 380
+local TURN_SPEED     = 4.5
 local LIFETIME       = 45
 local PROX_RADIUS    = 180
 local ENGINE_DELAY   = 0.5
@@ -41,6 +38,7 @@ end
 
 function ENT:Initialize()
     self:SetModel( "models/weapons/w_missile_launch.mdl" )
+    self:SetModelScale( 7, 0 )
     self:SetMoveType( MOVETYPE_NOCLIP )
     self:SetSolid( SOLID_NONE )
     self:SetCollisionGroup( COLLISION_GROUP_PROJECTILE )
@@ -80,7 +78,6 @@ function ENT:Think()
 
     if not self.EngineActive then return true end
 
-    -- Resolve live homing target
     local trackEnt = self:GetNWEntity( "NikitaTrackEnt", NULL )
     local aimPos
     if IsValid( trackEnt ) then
@@ -90,12 +87,10 @@ function ENT:Think()
     end
 
     if aimPos then
-        -- Proximity detonation
         if ( self:GetPos() - aimPos ):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
             self:MissileDoExplosion() ; return true
         end
 
-        -- LerpVector steering: framerate-independent, no gimbal jitter
         local currentDir = self:GetForward()
         local desiredDir = ( aimPos - self:GetPos() ):GetNormalized()
         local newDir     = LerpVector( FrameTime() * TURN_SPEED, currentDir, desiredDir ):GetNormalized()
@@ -103,11 +98,9 @@ function ENT:Think()
         self:SetAngles( newDir:Angle() )
         self:SetVelocity( newDir * CRUISE_SPEED )
     else
-        -- No target: fly straight
         self:SetVelocity( self:GetForward() * CRUISE_SPEED )
     end
 
-    -- Manual world/entity collision (SOLID_NONE skips engine Touch)
     local tr = util.TraceLine({
         start  = self:GetPos(),
         endpos = self:GetPos() + self:GetForward() * ( CRUISE_SPEED * FrameTime() + 20 ),
@@ -123,7 +116,6 @@ function ENT:Think()
         end
     end
 
-    -- Debug ticker
     if CurTime() > self._nextDebug then
         self._nextDebug = CurTime() + 0.5
         print( string.format(
