@@ -101,9 +101,19 @@ local GL_SMOKE_SCALE     = 0.4
 local GL_SMOKE_EVERY     = 2
 
 -- Shared missile constants
-local TOPMISSILE_LAUNCH_Z  = 300
-local MISSILE_MIN_DIST     = 1200
-local MISSILE_SOUND_WARN   = "buttons/button17.wav"
+local TOPMISSILE_LAUNCH_Z   = 300
+local MISSILE_MIN_DIST      = 1200
+local MISSILE_SOUND_WARN    = "buttons/button17.wav"
+
+-- How far ahead of the Gekko (toward the target) the top/track
+-- missiles spawn.  Keeps them completely clear of the Gekko hull
+-- so the 0.5 s collision-immune window is not wasted on self-hits.
+local MISSILE_SPAWN_FORWARD = 600
+
+-- How far ahead of the Gekko the Nikita spawns (horizontally
+-- toward the target) to avoid homing back on the launcher.
+local NIKITA_SPAWN_FORWARD  = 800
+local NIKITA_SPAWN_Z        = 200   -- extra height above Gekko base
 
 local JUMP_STATE_NAMES = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 local HEAD_Z_FRACTION  = 0.65
@@ -701,6 +711,10 @@ end
 
 -- ============================================================
 --  Weapon: top-attack terror missile  (5th)
+--
+--  FIX: Spawn offset 600 u horizontally toward the target so the
+--  missile starts clear of the Gekko hull before the 0.5 s
+--  collision-immune window expires.
 -- ============================================================
 local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -714,7 +728,21 @@ local function FireTopMissile(ent, enemy)
         else return FireGrenadeLauncher(ent, enemy) end
     end
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
-    local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
+
+    -- Compute a spawn position 600 u forward of the Gekko toward
+    -- the target (horizontal only) + the standard launch height.
+    local toTarget2D = (enemy:GetPos() - ent:GetPos())
+    toTarget2D.z = 0
+    toTarget2D:Normalize()
+    local launchPos = ent:GetPos()
+                    + toTarget2D * MISSILE_SPAWN_FORWARD
+                    + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
+
+    -- Face the target horizontally so PhysicsUpdate steer arc
+    -- starts from a sensible angle.
+    local faceAng = (enemy:GetPos() - launchPos):GetNormalized():Angle()
+    faceAng.p = 0   -- keep pitch level at spawn; arc handles the rest
+
     local missile = ents.Create("sent_npc_topmissile")
     if not IsValid(missile) then
         print("[GekkoTM] ERROR: create failed")
@@ -723,15 +751,18 @@ local function FireTopMissile(ent, enemy)
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0, 0, 40)
     missile:SetPos(launchPos)
-    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
+    missile:SetAngles(faceAng)
     missile:Spawn()
     missile:Activate()
-    print(string.format("[GekkoTM] Launched | dist=%.0f", dist))
+    print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%.0f",
+        dist, MISSILE_SPAWN_FORWARD))
     return true
 end
 
 -- ============================================================
 --  Weapon: active-track then ballistic missile  (6th)
+--
+--  FIX: Same spawn-offset fix as FireTopMissile.
 -- ============================================================
 local function FireTrackMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -747,7 +778,17 @@ local function FireTrackMissile(ent, enemy)
     end
     SendSonarLock(enemy)
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
-    local launchPos = ent:GetPos() + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
+
+    local toTarget2D = (enemy:GetPos() - ent:GetPos())
+    toTarget2D.z = 0
+    toTarget2D:Normalize()
+    local launchPos = ent:GetPos()
+                    + toTarget2D * MISSILE_SPAWN_FORWARD
+                    + Vector(0, 0, TOPMISSILE_LAUNCH_Z)
+
+    local faceAng = (enemy:GetPos() - launchPos):GetNormalized():Angle()
+    faceAng.p = 0
+
     local missile = ents.Create("sent_npc_trackmissile")
     if not IsValid(missile) then
         print("[GekkoTRK] ERROR: create failed")
@@ -757,55 +798,78 @@ local function FireTrackMissile(ent, enemy)
     missile.Target   = enemy:GetPos() + Vector(0, 0, 40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos)
-    missile:SetAngles(Angle(-90, ent:GetAngles().y, 0))
+    missile:SetAngles(faceAng)
     missile:Spawn()
     missile:Activate()
-    print(string.format("[GekkoTRK] Launched | dist=%.0f  tracking=%s", dist, tostring(enemy)))
+    print(string.format("[GekkoTRK] Launched | dist=%.0f spawnOffset=%.0f tracking=%s",
+        dist, MISSILE_SPAWN_FORWARD, tostring(enemy)))
     return true
 end
 
 -- ============================================================
 --  Weapon: Nikita homing missile  (8th)
 --
---  sent_nikita uses base_entity, whose ENT methods are only
---  accessible after the engine has fully processed Spawn()+Activate().
---  Calling nikita:SetTarget() directly after Activate() hits the
---  engine metatable before Lua's ENT table is wired up, causing
---  "attempt to call method 'SetTarget' (a nil value)".
+--  FIX: Removed SWEP_FireNikita() which is a player-SWEP global
+--  that does not reliably exist for NPC contexts and caused the
+--  missile to target the Gekko itself (owner = Gekko).
 --
---  The fix: use SWEP_FireNikita(), the global helper defined in
---  sent_nikita/init.lua. It runs Spawn()+Activate() internally and
---  then calls SetTarget() safely. We pass the attachment position
---  as eyePos so the missile originates from the correct hardpoint.
+--  The missile is now spawned manually:
+--    - Spawn position: NIKITA_SPAWN_FORWARD units toward the
+--      target + NIKITA_SPAWN_Z height, keeping it far from the
+--      Gekko hull so early homing cannot loop back.
+--    - Owner, Target and TrackEnt are set before Spawn(), same
+--      pattern as sent_npc_trackmissile.
+--    - CollisionGroup = COLLISION_GROUP_PROJECTILE so it ignores
+--      the Gekko's HULL_LARGE collider.
 -- ============================================================
 local function FireNikita(ent, enemy)
-    ent._missileCount = (ent._missileCount or 0) + 1
-    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    local attData = ent:GetAttachment(attIdx)
-    local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
-    local launchAng = (aimPos - src):GetNormalized():Angle()
+    local toTarget2D = (enemy:GetPos() - ent:GetPos())
+    toTarget2D.z = 0
+    local dist2D = toTarget2D:Length()
+    if dist2D > 0 then toTarget2D:Normalize() end
 
+    local spawnPos = ent:GetPos()
+                   + toTarget2D * NIKITA_SPAWN_FORWARD
+                   + Vector(0, 0, NIKITA_SPAWN_Z)
+
+    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
+    local launchDir = (aimPos - spawnPos):GetNormalized()
+
+    -- Smoke effect at launch point
     local eff = EffectData()
-    eff:SetOrigin(src)
-    eff:SetNormal(launchAng:Forward())
+    eff:SetOrigin(spawnPos)
+    eff:SetNormal(launchDir)
     eff:SetScale(0.5)
     eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
 
-    if not SWEP_FireNikita then
-        print("[GekkoNikita] ERROR: SWEP_FireNikita not found -- is sent_nikita loaded? Falling back.")
-        return FireMissile(ent, enemy)
-    end
-
-    local nikita = SWEP_FireNikita(ent, src, launchAng, enemy)
+    local nikita = ents.Create("sent_nikita")
     if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: SWEP_FireNikita returned invalid -- falling back")
+        print("[GekkoNikita] ERROR: sent_nikita create failed -- is the addon loaded? Falling back.")
         return FireMissile(ent, enemy)
     end
 
-    print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f target=%s",
-        attIdx, ent:GetPos():Distance(enemy:GetPos()), tostring(enemy)))
+    nikita.Owner    = ent
+    nikita.Target   = aimPos
+    nikita.TrackEnt = enemy
+    nikita:SetPos(spawnPos)
+    nikita:SetAngles(launchDir:Angle())
+    nikita:SetOwner(ent)
+    nikita:Spawn()
+    nikita:Activate()
+
+    -- Apply forward velocity one tick after spawn so physobj has settled.
+    local nikRef = nikita
+    timer.Simple(0, function()
+        if not IsValid(nikRef) then return end
+        local phys = nikRef:GetPhysicsObject()
+        if IsValid(phys) then
+            phys:SetVelocity(launchDir * 800)
+        end
+    end)
+
+    print(string.format("[GekkoNikita] Launched | dist=%.0f spawnOffset=%.0f target=%s",
+        ent:GetPos():Distance(enemy:GetPos()), NIKITA_SPAWN_FORWARD, tostring(enemy)))
     return true
 end
 
