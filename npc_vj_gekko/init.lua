@@ -338,7 +338,6 @@ function ENT:GekkoUpdateAnimation()
     end
     arate = math.Clamp(arate, 0.5, 3.0)
 
-    -- Sequence change guard: only ResetSequence on actual change
     if targetSeq and targetSeq ~= -1 then
         if self._gekkoCurrentLocoSeq ~= targetSeq then
             self._gekkoCurrentLocoSeq = targetSeq
@@ -355,7 +354,6 @@ function ENT:GekkoUpdateAnimation()
     end
     self.Gekko_LastSeqIdx = targetSeq
 
-    -- Playback rate smoother: lerp instead of snap
     self._gekkoTargetRate = arate
     local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
     self:SetPlaybackRate(smoothed)
@@ -402,7 +400,6 @@ function ENT:Init()
     self._gibCooldownT       = 0
     self._lastWeaponChoice   = ""
     self._glSparkCounter     = 0
-    -- Sequence guard + rate smoother state
     self._gekkoCurrentLocoSeq = -1
     self._gekkoTargetRate     = 1.0
     self:SetNWBool("GekkoMGFiring",     false)
@@ -746,7 +743,6 @@ local function FireOrbitRpg(ent, enemy)
     local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
     local dir     = (aimPos - src):GetNormalized()
 
-    -- Grey smoke muzzle puff
     local eff = EffectData()
     eff:SetOrigin(src)
     eff:SetNormal(dir)
@@ -760,7 +756,7 @@ local function FireOrbitRpg(ent, enemy)
         return FireMissile(ent, enemy)
     end
     rpg:SetPos(src)
-    rpg:SetAngles(dir:Angle())  -- direction baked into angles; missile reads GetForward() on Initialize
+    rpg:SetAngles(dir:Angle())
     rpg:SetOwner(ent)
     rpg:Spawn()
     rpg:Activate()
@@ -772,9 +768,10 @@ end
 
 -- ============================================================
 --  Weapon: Nikita homing missile  (8th)
---  Slow, self-homing, destructible (10 HP).
---  Target is auto-acquired in sent_nikita:Initialize() by scanning
---  nearby entities -- we only need to set position, angle, and owner.
+--  Slow, destructible (10 HP), explicit-target homing.
+--  sent_nikita no longer auto-scans; target MUST be passed via
+--  SetTarget() after Activate(). The Gekko's current enemy is
+--  assigned directly -- the missile will never home onto the Gekko.
 -- ============================================================
 local function FireNikita(ent, enemy)
     ent._missileCount = (ent._missileCount or 0) + 1
@@ -784,7 +781,6 @@ local function FireNikita(ent, enemy)
     local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
     local dir     = (aimPos - src):GetNormalized()
 
-    -- Small smoke puff at launch point
     local eff = EffectData()
     eff:SetOrigin(src)
     eff:SetNormal(dir)
@@ -798,13 +794,16 @@ local function FireNikita(ent, enemy)
         return FireMissile(ent, enemy)
     end
     nikita:SetPos(src)
-    nikita:SetAngles(dir:Angle())  -- initial facing; auto-target acquired in Initialize()
-    nikita:SetOwner(ent)           -- owner excluded from FindClosestTarget scan
+    nikita:SetAngles(dir:Angle())
+    nikita:SetOwner(ent)
     nikita:Spawn()
     nikita:Activate()
+    -- Assign target AFTER Activate() so networked vars are initialised.
+    -- sent_nikita:SetTarget() stores the entity and writes TargetEntIndex.
+    nikita:SetTarget(enemy)
 
-    print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f",
-        attIdx, ent:GetPos():Distance(enemy:GetPos())))
+    print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f target=%s",
+        attIdx, ent:GetPos():Distance(enemy:GetPos()), tostring(enemy)))
     return true
 end
 
