@@ -99,11 +99,10 @@ local GL_SMOKE_EVERY     = 2
 
 local TOPMISSILE_LAUNCH_Z   = 300
 local MISSILE_MIN_DIST      = 1200
-local NIKITA_MIN_DIST       = 800    -- nikita is slow, needs less range than other missiles
+local NIKITA_MIN_DIST       = 800
 local MISSILE_SOUND_WARN    = "buttons/button17.wav"
 local MISSILE_SPAWN_FORWARD = 600
 
--- Nikita spawn offset (horizontal toward target + height above base).
 local NIKITA_SPAWN_FORWARD  = 800
 local NIKITA_SPAWN_Z        = 200
 
@@ -675,11 +674,7 @@ local function FireTrackMissile(ent, enemy)
 end
 
 -- ============================================================
---  Weapon: Nikita cruise missile  (8th)
---
---  Slow (600 u/s cap), destroyable (50 HP), direct-homing.
---  No top-attack / ballistic phase.
---  TrackEnt follows the enemy live; Target is the fallback pos.
+--  Weapon: Nikita cruise missile
 -- ============================================================
 local function FireNikita(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -698,30 +693,37 @@ local function FireNikita(ent, enemy)
     local aimPos    = enemy:GetPos() + Vector(0, 0, 40)
     local launchDir = (aimPos - spawnPos):GetNormalized()
 
-    local eff = EffectData()
-    eff:SetOrigin(spawnPos) ; eff:SetNormal(launchDir) ; eff:SetScale(0.5) ; eff:SetMagnitude(1)
-    util.Effect("SmokeEffect", eff)
-
     local nikita = ents.Create("sent_gekko_nikita")
     if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: create failed -- falling back to dumbfire")
+        print("[GekkoNikita] ERROR: create failed")
         return FireMissile(ent, enemy)
     end
 
-    -- TrackEnt = live entity to follow (used by PhysicsUpdate)
-    -- Target   = fallback Vector if TrackEnt becomes invalid
-    -- Both MUST be set before Spawn() / Initialize()
-    nikita.Owner    = ent
-    nikita.TrackEnt = enemy     -- <<< live homing target
-    nikita.Target   = aimPos    -- <<< static fallback
-    nikita:SetPos(spawnPos)
-    nikita:SetAngles(launchDir:Angle())
-    nikita:SetOwner(ent)
+    nikita:SetPos( spawnPos )
+    nikita:SetAngles( launchDir:Angle() )
     nikita:Spawn()
     nikita:Activate()
 
-    print(string.format("[GekkoNikita] Launched | dist=%.0f tracking=%s",
-        dist, tostring(enemy)))
+    -- CRITICAL: assign TrackEnt/Target/Owner AFTER Spawn()+Activate().
+    -- Spawn() calls Initialize() which resets the entity table.
+    -- Any fields set before Spawn() are lost.  timer.Simple(0) defers
+    -- the assignment to the next tick, after the engine is done with
+    -- the spawn sequence.
+    local capturedEnemy = enemy
+    local capturedAim   = aimPos
+    local capturedOwner = ent
+    timer.Simple( 0, function()
+        if not IsValid( nikita ) then return end
+        nikita.TrackEnt = capturedEnemy
+        nikita.Target   = capturedAim
+        nikita.Owner    = capturedOwner
+        nikita:SetOwner( capturedOwner )
+        print( "[GekkoNikita] Deferred assign | TrackEnt=" .. tostring( capturedEnemy )
+            .. " valid=" .. tostring( IsValid( capturedEnemy ) ) )
+    end )
+
+    print(string.format("[GekkoNikita] Launched | dist=%.0f target=%s",
+        dist, tostring(aimPos)))
     return true
 end
 
