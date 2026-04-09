@@ -22,14 +22,14 @@ include("shared.lua")   -- registers SetTargetPos / GetTargetPos
 -- ============================================================
 --  Tuning
 -- ============================================================
-local FORCE_PER_TICK        = 48000   -- lower force = slower acceleration
-local SPEED_CAP             = 600     -- hard velocity cap (u/s)
-local TRACK_LERP            = 0.06    -- steering rate (lower = lazier turns)
-local LIFETIME              = 20      -- seconds before auto-detonate
+local FORCE_PER_TICK        = 48000
+local SPEED_CAP             = 600
+local TURN_RATE             = 0.06    -- 0-1 fraction toward wanted angle per physics tick
+local LIFETIME              = 20
 local COLLISION_IMMUNE_TIME = 0.5
-local KICK_UP_SPEED         = 400     -- initial upward nudge to clear the hull
-local ENGINE_DELAY          = 0.6     -- seconds before engine + guidance ignite
-local PROX_DETONATE         = 180     -- units from aim point to detonate
+local KICK_UP_SPEED         = 400
+local ENGINE_DELAY          = 0.6
+local PROX_DETONATE         = 180
 local HEALTH                = 50
 local BLAST_DAMAGE          = 1800
 local BLAST_RADIUS          = 512
@@ -37,6 +37,19 @@ local BLAST_RADIUS          = 512
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
+
+-- Inline angle lerp: server-safe replacement for LerpAngle (client-only global)
+local function AngleLerp(t, a, b)
+    local function lerpAngleDeg(from, to, frac)
+        local delta = (to - from + 540) % 360 - 180
+        return from + delta * frac
+    end
+    return Angle(
+        lerpAngleDeg(a.p, b.p, t),
+        lerpAngleDeg(a.y, b.y, t),
+        lerpAngleDeg(a.r, b.r, t)
+    )
+end
 
 -- ============================================================
 --  Initialize
@@ -64,17 +77,14 @@ function ENT:Initialize()
     self.Damage       = 0
     self.Radius       = 0
 
-    -- Fallback target if nothing was set
     if not self.Target or type(self.Target) ~= "Vector" then
         local fwd = self:GetForward() ; fwd.z = 0 ; fwd:Normalize()
         self.Target = self:GetPos() + fwd * 2000
         print("[GekkoNikita] WARNING: no Target set -- using fallback")
     end
 
-    -- Broadcast fixed aim position to clients for targeting line
     self:SetTargetPos(self.Target)
 
-    -- Deferred upward kick to clear Gekko hull before guidance starts
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -113,7 +123,6 @@ function ENT:FireEngine()
     self:SetNWBool("EngineStarted", true)
     self.EngineSound:PlayEx(511, 100)
 
-    -- Attach exhaust trail prop (same pattern as trackmissile)
     local a = self:GetAngles()
     a:RotateAroundAxis(self:GetUp(), 180)
     local prop = ents.Create("prop_physics")
@@ -130,19 +139,18 @@ function ENT:FireEngine()
 end
 
 -- ============================================================
---  PhysicsUpdate  --  guidance + thrust (runs every physics tick)
+--  PhysicsUpdate  --  guidance + thrust (every physics tick)
 -- ============================================================
 function ENT:PhysicsUpdate()
     if not self.EngineActive then return end
     local phys = self:GetPhysicsObject()
     if not IsValid(phys) then return end
 
-    -- Ramp force up to cap
     if self:GetVelocity():Length() < SPEED_CAP then
         self.SpeedValue = math.min(self.SpeedValue + FORCE_PER_TICK, FORCE_PER_TICK * 10)
     end
 
-    -- Resolve aim position: live entity preferred, fallback to vector
+    -- Resolve live aim position
     local aimPos
     if IsValid(self.TrackEnt) then
         aimPos = self.TrackEnt:GetPos() + Vector(0, 0, 40)
@@ -153,9 +161,9 @@ function ENT:PhysicsUpdate()
         return
     end
 
-    -- Steer toward aim: LerpAngle gives smooth lazy curves at low TRACK_LERP
     local wantAngle = (aimPos - self:GetPos()):GetNormalized():Angle()
-    self:SetAngles(LerpAngle(TRACK_LERP, self:GetAngles(), wantAngle))
+    -- AngleLerp is our inline server-safe replacement for LerpAngle
+    self:SetAngles(AngleLerp(TURN_RATE, self:GetAngles(), wantAngle))
 
     phys:ApplyForceCenter(self:GetForward() * self.SpeedValue)
 end
@@ -171,7 +179,7 @@ function ENT:PhysicsCollide(data, physobj)
 end
 
 -- ============================================================
---  Think  --  proximity detonation + lifetime guard
+--  Think  --  proximity detonation
 -- ============================================================
 function ENT:Think()
     self:NextThink(CurTime())
