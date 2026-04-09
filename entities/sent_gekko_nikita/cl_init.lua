@@ -1,5 +1,14 @@
 include( "shared.lua" )
 
+-- ============================================================
+--  CLIENT  -  Gekko Nikita particle exhaust + boost swell
+--
+--  Boost value (0..1) is read from NWFloat "NikitaBoost" each tick.
+--  At boost = 1:
+--    * Fuchsia flame StartSize grows +10 units (35-45 -> 45-55)
+--    * Dynamic light Size swells from 180 -> 260
+-- ============================================================
+
 function ENT:Initialize()
     self.Emitter = ParticleEmitter( self:GetPos(), false )
 end
@@ -11,15 +20,17 @@ end
 function ENT:Think()
     if not IsValid( self.Emitter ) then return end
 
-    local pos        = self:GetPos()
-    local backDir    = -self:GetForward()
-    -- Exhaust origin sits just behind the tail of the (x7 scaled) model
+    local pos     = self:GetPos()
+    local backDir = -self:GetForward()
     local exhaustPos = pos + backDir * 55
+
+    -- Read boost from server (0 = cruise, 1 = full boost)
+    local boost = self:GetNWFloat( "NikitaBoost", 0 )
 
     self.Emitter:SetPos( pos )
 
     -- --------------------------------------------------------
-    --  Dynamic light: orange core glow
+    --  Dynamic light: orange core, swells during boost
     -- --------------------------------------------------------
     local dlight = DynamicLight( self:EntIndex() )
     if dlight then
@@ -29,12 +40,12 @@ function ENT:Think()
         dlight.b          = 20
         dlight.brightness = 3
         dlight.Decay      = 1200
-        dlight.Size       = 180
+        dlight.Size       = Lerp( boost, 180, 260 )   -- swell during boost
         dlight.DieTime    = CurTime() + 0.05
     end
 
     -- --------------------------------------------------------
-    --  Orange flame core
+    --  Orange flame core  (unchanged)
     -- --------------------------------------------------------
     for i = 1, 4 do
         local part = self.Emitter:Add( "particles/flamelet" .. math.random( 1, 5 ), exhaustPos + VectorRand() * 6 )
@@ -54,8 +65,12 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Fuchsia flame layer
+    --  Fuchsia flame layer  (swells +10 units at full boost)
     -- --------------------------------------------------------
+    -- Base range: [35, 45].  At boost=1 range becomes [45, 55].
+    local fuchsiaMin = Lerp( boost, 35, 45 )
+    local fuchsiaMax = Lerp( boost, 45, 55 )
+
     for i = 1, 3 do
         local part = self.Emitter:Add( "particles/flamelet" .. math.random( 1, 5 ), exhaustPos + VectorRand() * 8 )
         if part then
@@ -63,7 +78,7 @@ function ENT:Think()
             part:SetDieTime( math.Rand( 0.10, 0.22 ) )
             part:SetStartAlpha( 180 )
             part:SetEndAlpha( 0 )
-            part:SetStartSize( math.Rand( 35, 45) )
+            part:SetStartSize( math.Rand( fuchsiaMin, fuchsiaMax ) )
             part:SetEndSize( math.Rand( 2, 8 ) )
             part:SetColor( 220, 0, 200 )   -- fuchsia
             part:SetRoll( math.Rand( 0, 360 ) )
@@ -74,7 +89,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Sparks
+    --  Sparks  (unchanged)
     -- --------------------------------------------------------
     for i = 1, 3 do
         local part = self.Emitter:Add( "effects/spark", exhaustPos + VectorRand() * 4 )
@@ -93,7 +108,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Light smoke wisp trailing behind
+    --  Light smoke wisp  (unchanged)
     -- --------------------------------------------------------
     if math.random( 1, 3 ) == 1 then
         local part = self.Emitter:Add( "particle/particle_smokegrenade", exhaustPos + backDir * math.Rand( 5, 20 ) )
