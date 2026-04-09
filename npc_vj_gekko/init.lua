@@ -99,12 +99,11 @@ local GL_SMOKE_EVERY     = 2
 
 local TOPMISSILE_LAUNCH_Z   = 300
 local MISSILE_MIN_DIST      = 1200
+local NIKITA_MIN_DIST       = 800    -- nikita is slow, needs less range than other missiles
 local MISSILE_SOUND_WARN    = "buttons/button17.wav"
 local MISSILE_SPAWN_FORWARD = 600
 
 -- Nikita spawn offset (horizontal toward target + height above base).
--- The missile uses this to clear the Gekko hull; target steering is
--- handled entirely inside sent_gekko_nikita.
 local NIKITA_SPAWN_FORWARD  = 800
 local NIKITA_SPAWN_Z        = 200
 
@@ -678,19 +677,17 @@ end
 -- ============================================================
 --  Weapon: Nikita cruise missile  (8th)
 --
---  Uses sent_gekko_nikita -- a fully self-contained entity that
---  lives in this addon.  No external addon dependency.
---
---  The Gekko is the sole authority on the target.
---  The missile receives a fixed Target vector and flies toward
---  it unconditionally.  It performs NO autonomous enemy scan,
---  NO nearest-entity lookup, and NO re-acquisition mid-flight.
---
---  Spawn offset (NIKITA_SPAWN_FORWARD / NIKITA_SPAWN_Z) places
---  the missile clear of the Gekko hull before the 0.5 s
---  collision-immune window expires.
+--  Slow (600 u/s cap), destroyable (50 HP), direct-homing.
+--  No top-attack / ballistic phase.
+--  TrackEnt follows the enemy live; Target is the fallback pos.
 -- ============================================================
 local function FireNikita(ent, enemy)
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist < NIKITA_MIN_DIST then
+        print(string.format("[GekkoNikita] Too close (%.0f) -- re-rolling", dist))
+        return FireMGBurst(ent, enemy)
+    end
+
     local toTarget2D = (enemy:GetPos() - ent:GetPos())
     toTarget2D.z = 0
     if toTarget2D:Length() > 0 then toTarget2D:Normalize() end
@@ -707,21 +704,24 @@ local function FireNikita(ent, enemy)
 
     local nikita = ents.Create("sent_gekko_nikita")
     if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: sent_gekko_nikita create failed -- falling back to dumbfire missile")
+        print("[GekkoNikita] ERROR: create failed -- falling back to dumbfire")
         return FireMissile(ent, enemy)
     end
 
-    -- Set target BEFORE Spawn() so Initialize() can validate it.
-    nikita.Owner  = ent
-    nikita.Target = aimPos   -- fixed Vector: the missile steers here and nowhere else
+    -- TrackEnt = live entity to follow (used by PhysicsUpdate)
+    -- Target   = fallback Vector if TrackEnt becomes invalid
+    -- Both MUST be set before Spawn() / Initialize()
+    nikita.Owner    = ent
+    nikita.TrackEnt = enemy     -- <<< live homing target
+    nikita.Target   = aimPos    -- <<< static fallback
     nikita:SetPos(spawnPos)
     nikita:SetAngles(launchDir:Angle())
     nikita:SetOwner(ent)
     nikita:Spawn()
     nikita:Activate()
 
-    print(string.format("[GekkoNikita] Launched | dist=%.0f spawnOffset=%.0f target=%s",
-        ent:GetPos():Distance(enemy:GetPos()), NIKITA_SPAWN_FORWARD, tostring(aimPos)))
+    print(string.format("[GekkoNikita] Launched | dist=%.0f tracking=%s",
+        dist, tostring(enemy)))
     return true
 end
 
