@@ -353,7 +353,7 @@ function ENT:Init()
         local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
         local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
         print(string.format(
-            "[GekkoNPC] Activate | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            "[GekkoNPC] Deferred activate | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
             selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
             selfRef.GekkoSeq_CrouchWalk or -1, selfRef.GekkoSeq_CrouchIdle or -1,
             selfRef.GekkoSpineBone,
@@ -586,7 +586,7 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    print(string.format("[GekkoTM] Launched | dist=%.0f", dist))
+    print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
 
@@ -635,17 +635,8 @@ local function FireNikita( ent, enemy )
                    + toTarget2D * NIKITA_SPAWN_FORWARD
                    + Vector(0, 0, NIKITA_SPAWN_Z)
 
-    -- Safe aim Z: trace to ground under enemy so missile doesn't nose-dive
-    local ep  = enemy:GetPos()
-    local tr  = util.TraceLine({
-        start  = ep + Vector(0,0,100),
-        endpos = ep - Vector(0,0,1000),
-        mask   = MASK_SOLID_BRUSHONLY,
-        filter = enemy,
-    })
-    local gz     = tr.Hit and tr.HitPos.z or ep.z
-    local aimPos = Vector(ep.x, ep.y, gz + 80)
-
+    -- Aim toward the enemy's current position (center-mass height)
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     local launchDir = (aimPos - spawnPos):GetNormalized()
 
     local nikita = ents.Create("sent_gekko_nikita")
@@ -659,17 +650,16 @@ local function FireNikita( ent, enemy )
     nikita:Spawn()
     nikita:Activate()
 
-    -- Set homing target via NWEntity AFTER Spawn()+Activate().
-    -- NWEntity survives the engine post-Spawn table reset.
-    -- FallbackTarget is also a plain field -- survives because we set
-    -- it after Spawn, not before.
-    nikita:SetNWEntity( "NikitaTrackEnt", enemy )
-    nikita.FallbackTarget = aimPos
+    -- THE FIX: set the plain Lua field TrackEnt that the missile's
+    -- Think loop reads every tick for homing.
+    -- NikitaTrackEnt (NWEntity) is kept for client-side HUD/effects only.
+    nikita.TrackEnt       = enemy   -- <-- THIS was the missing line
     nikita.NikitaOwner    = ent
+    nikita:SetNWEntity( "NikitaTrackEnt", enemy )
     nikita:SetOwner( ent )
 
-    print(string.format("[GekkoNikita] Launched | dist=%.0f homing=%s",
-        dist, tostring(IsValid(enemy))))
+    print(string.format("[GekkoNikita] Launched | dist=%.0f homing=%s target=%s",
+        dist, tostring(IsValid(enemy)), tostring(enemy)))
     return true
 end
 
