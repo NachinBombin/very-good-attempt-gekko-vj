@@ -4,63 +4,33 @@ include( "shared.lua" )
 
 -- ============================================================
 --  SERVER  -  NPC Tracking Missile  (sent_npc_trackmissile)
---  6th weapon for npc_vj_gekko.
 --
---  FIX: The missile was spawning at the Gekko's feet with
---       angle (-90, yaw, 0).  GetForward() at pitch=-90 points
---       STRAIGHT DOWN in GMod, so the initial kick of
---       GetForward()*108450 fired it into the ground/Gekko.
---       The 0.5 s collision-immune window then protected it
---       while it spun in place trying to steer.
+--  Arc phase:   IDENTICAL to sent_npc_topmissile.
+--               Same FORCE_PER_TICK, SPEED_CAP, KICK_UP_SPEED,
+--               same distance-based phase thresholds, same
+--               LerpAngle rates.  Visual climb is identical.
 --
---  SOLUTION:
---    1. Spawn position is offset 600 u horizontally TOWARD the
---       target so the missile starts clear of the Gekko hull.
---       (Caller in npc_vj_gekko/init.lua handles this.)
---    2. Initial velocity kick is now a fixed upward vector
---       Vector(0,0,1)*KICK_UP_SPEED, independent of angles.
---    3. Spawn angle is set toward the target (not straight up)
---       so active-tracking phase begins cleanly.
+--  Chase phase: Once the arc reaches its apex (Tracking = true)
+--               the missile switches from the fixed Target vector
+--               to the live TrackEnt entity position.
+--               If TrackEnt has died it falls back to Target.
 --
---  FLIGHT PHASES:
---
---    [0] PRE-IGNITION  (0 -> 0.75 s)
---        Missile coasts upward on initial kick.
---        No guidance, no engine.
---
---    [1] ACTIVE TRACKING  (engine lit, Z < SpawnZ + TRACK_CEILING)
---        Engine ignites.  Missile steers toward live enemy pos.
---        Lerp rate TRACK_LERP = 0.12 (aggressive curving).
---
---    [2] BALLISTIC  (Z >= SpawnZ + TRACK_CEILING)
---        Guidance cut.  Engine thrust along forward only.
---        Gravity + drag arc it naturally to target.
---
---    [3] DETONATE
---        Proximity (<180 u), PhysicsCollide, or lifetime.
+--  Differences from topmissile:
+--    * Live homing after apex (topmissile stays on fixed Target)
+--    * Fires sonar-lock net message on the client
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
+-- Identical to topmissile
 local FORCE_PER_TICK        = 120000
 local SPEED_CAP             = game.SinglePlayer() and 1800 or 2300
 local LIFETIME              = 45
 local COLLISION_IMMUNE_TIME = 0.5
-
--- Height above spawn Z at which active tracking is cut off.
-local TRACK_CEILING = 600
-
--- How aggressively the missile steers while in tracking phase.
-local TRACK_LERP = 0.12
-
--- Units the spawn point is pushed horizontally from the Gekko
--- toward the target before the missile is created.
-local SPAWN_FORWARD_OFFSET = 600
-
--- Initial upward speed (u/s) applied one physics tick after spawn.
-local KICK_UP_SPEED = 900
+local SPAWN_FORWARD_OFFSET  = 600
+local KICK_UP_SPEED         = 900
 
 -- ============================================================
 --  Initialize
@@ -80,15 +50,15 @@ function ENT:Initialize()
         self.PhysObj:EnableGravity( true )
     end
 
-    self.SpeedValue        = 0
-    self.Destroyed         = false
-    self.ActivatedAlmonds  = false
-    self.Ballistic         = false
-    self.SpawnTime         = CurTime()
-    self.SpawnZ            = nil
-    self.HealthVal         = 50
-    self.Damage            = 0
-    self.Radius            = 0
+    self.SpeedValue       = 0
+    self.Destroyed        = false
+    self.ActivatedAlmonds = false
+    self.InitialDistance  = nil     -- latched first PhysicsUpdate tick
+    self.Tracking         = false   -- false = arc phase, true = chase phase
+    self.SpawnTime        = CurTime()
+    self.HealthVal        = 50
+    self.Damage           = 0
+    self.Radius           = 0
 
     if not self.Target or type( self.Target ) ~= "Vector" then
         local fwd = self:GetForward()
@@ -98,8 +68,7 @@ function ENT:Initialize()
         print( "[TrackMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
-    -- Deferred upward kick: purely vertical so the missile clears
-    -- the Gekko and ground before the engine ignites.
+    -- Identical deferred kick to topmissile
     local selfRef = self
     timer.Simple( 0, function()
         if not IsValid( selfRef ) then return end
@@ -121,7 +90,7 @@ function ENT:Initialize()
 end
 
 -- ============================================================
---  FireEngine  (+0.75 s)
+--  FireEngine  (+0.75 s)  -- identical to topmissile
 -- ============================================================
 function ENT:FireEngine()
     if self.Destroyed then return end
@@ -131,9 +100,6 @@ function ENT:FireEngine()
     self.EngineSound:PlayEx( 511, 100 )
     self.ActivatedAlmonds = true
     self:SetNWBool( "EngineStarted", true )
-
-    -- Latch spawn Z now that the physobj has settled.
-    self.SpawnZ = self:GetPos().z
 
     local a = self:GetAngles()
     a:RotateAroundAxis( self:GetUp(), 180 )
@@ -150,8 +116,7 @@ function ENT:FireEngine()
         ParticleEffectAttach( "scud_trail", PATTACH_ABSORIGIN_FOLLOW, prop, 0 )
     end
 
-    print( string.format( "[TrackMissile] Engine lit | SpawnZ=%.0f  ceiling at Z=%.0f",
-        self.SpawnZ, self.SpawnZ + TRACK_CEILING ) )
+    print( "[TrackMissile] Engine lit | arc phase active" )
 end
 
 -- ============================================================
@@ -165,10 +130,21 @@ function ENT:PhysicsCollide( data, physobj )
 end
 
 -- ============================================================
---  PhysicsUpdate  -  guidance + thrust
+--  PhysicsUpdate
+--
+--  ARC PHASE  (self.Tracking == false)
+--    Copied verbatim from topmissile.
+--    Uses horizontal distance remaining to the original Target
+--    to decide which height offset to steer toward.
+--    Thresholds: >90% dist -> low arc, >40% -> high arc, <=40% -> dive.
+--
+--  CHASE PHASE  (self.Tracking == true)
+--    Steers toward live TrackEnt (or Target fallback).
+--    LerpAngle 0.15 -- same aggressive rate as topmissile final dive.
 -- ============================================================
 function ENT:PhysicsUpdate()
     if not self.ActivatedAlmonds then return end
+    if not self.Target            then return end
 
     local phys = self:GetPhysicsObject()
     if not IsValid( phys ) then return end
@@ -179,34 +155,56 @@ function ENT:PhysicsUpdate()
 
     local mp = self:GetPos()
 
-    if not self.Ballistic and self.SpawnZ then
-        if mp.z >= self.SpawnZ + TRACK_CEILING then
-            self.Ballistic = true
-            self:SetNWBool( "Ballistic", true )
-            print( string.format(
-                "[TrackMissile] Ceiling reached Z=%.0f -> BALLISTIC", mp.z
-            ))
+    -- Always measure arc progress against the ORIGINAL fixed Target
+    local _2dDist = ( Vector( mp.x, mp.y, 0 )
+                   - Vector( self.Target.x, self.Target.y, 0 ) ):Length()
+
+    -- Latch initial horizontal distance once, on the first active tick
+    if not self.InitialDistance then
+        self.InitialDistance = math.max( _2dDist, 1 )
+        print( string.format( "[TrackMissile] InitialDistance latched = %.0f", self.InitialDistance ) )
+    end
+
+    -- ---- ARC PHASE (identical to topmissile) ----
+    if not self.Tracking then
+        local halfway   = self.InitialDistance * 0.9
+        local twoThirds = self.InitialDistance * 0.4
+        local steerPos
+
+        if _2dDist > halfway then
+            -- Early climb: aim just slightly above target
+            steerPos = self.Target + Vector( 0, 0, 512 )
+        elseif _2dDist > twoThirds then
+            -- Mid arc: aim high above target (the visible peak)
+            steerPos = self.Target + Vector( 0, 0,
+                math.Clamp( self.InitialDistance * 0.85, 0, 14500 ) )
+        else
+            -- Apex reached: transition to chase phase
+            self.Tracking = true
+            self:SetNWBool( "Ballistic", false )  -- keep NW compat
+            print( "[TrackMissile] Apex reached -> CHASE phase" )
+        end
+
+        if not self.Tracking then
+            local lerpVal = _2dDist < 1000 and 0.15 or 0.02
+            self:SetAngles( LerpAngle( lerpVal, self:GetAngles(),
+                ( steerPos - mp ):GetNormalized():Angle() ) )
+            phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
+            return
         end
     end
 
-    if self.Ballistic then
-        phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
-        return
-    end
-
-    -- ---- ACTIVE TRACKING ----
+    -- ---- CHASE PHASE ----
+    -- Live-track the enemy; fall back to fixed Target if dead.
     local aimPos
     if IsValid( self.TrackEnt ) then
         aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
-    elseif self.Target then
-        aimPos = self.Target
     else
-        phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
-        return
+        aimPos = self.Target
     end
 
-    local wantAngle = ( aimPos - mp ):GetNormalized():Angle()
-    self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
+    self:SetAngles( LerpAngle( 0.15, self:GetAngles(),
+        ( aimPos - mp ):GetNormalized():Angle() ) )
 
     phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
 end
@@ -224,10 +222,12 @@ function ENT:Think()
     end
 
     if self.ActivatedAlmonds then
+        -- During arc: proximity to fixed Target
+        -- During chase: proximity to live enemy
         local checkPos
-        if IsValid( self.TrackEnt ) then
+        if self.Tracking and IsValid( self.TrackEnt ) then
             checkPos = self.TrackEnt:GetPos()
-        elseif self.Target then
+        else
             checkPos = self.Target
         end
         if checkPos and ( self:GetPos() - checkPos ):Length() < 180 then
