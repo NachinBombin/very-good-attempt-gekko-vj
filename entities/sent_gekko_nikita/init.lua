@@ -18,6 +18,12 @@ include( "shared.lua" )
 --  Steering: LerpVector on 3D direction vector, framerate-independent.
 --  Collision: util.TraceHull each tick (more reliable than line trace).
 --  Homing: NWEntity "NikitaTrackEnt" set post-Spawn by FireNikita.
+--
+--  IMPORTANT: Do NOT set NikitaTrackEnt = NULL inside Initialize().
+--    Initialize() is called internally by Spawn(), which means it
+--    fires BEFORE FireNikita's post-Activate SetNWEntity call.
+--    Setting it to NULL here would permanently overwrite the real
+--    target, making the missile fly straight every time.
 -- ============================================================
 
 local SND_EXPLODE   = "ambient/explosions/explode_8.wav"
@@ -59,7 +65,10 @@ function ENT:Initialize()
     self.Radius       = 0
     self._nextDebug   = 0
 
-    self:SetNWEntity( "NikitaTrackEnt", NULL )
+    -- NOTE: Do NOT set NikitaTrackEnt here.
+    -- FireNikita sets it after Spawn()+Activate(). Setting it
+    -- to NULL inside Initialize() (which runs during Spawn())
+    -- would overwrite the real target and break homing entirely.
 
     -- Launch nudge: SetAbsVelocity replaces velocity, does not accumulate
     self:SetAbsVelocity( self:GetForward() * 80 )
