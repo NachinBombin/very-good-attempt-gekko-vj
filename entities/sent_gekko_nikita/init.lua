@@ -20,13 +20,9 @@
 --    timer         -- auto-detonate after LIFETIME seconds
 -- ============================================================
 AddCSLuaFile()
-
-ENT.Type           = "anim"
-ENT.Base           = "base_anim"
-ENT.PrintName      = "Gekko Nikita Missile"
-ENT.Author         = "Gekko NPC"
-ENT.Spawnable      = false
-ENT.AdminSpawnable = false
+AddCSLuaFile("cl_init.lua")
+AddCSLuaFile("shared.lua")
+include("shared.lua")   -- REQUIRED: registers SetupDataTables -> SetTargetPos/GetTargetPos
 
 -- ============================================================
 --  Tuning constants
@@ -38,9 +34,9 @@ local TURN_RATE       = 3.8     -- lerp weight per tick (higher = tighter turns)
 local LIFETIME        = 14      -- seconds before auto-detonate
 local BLAST_RADIUS    = 380
 local BLAST_DAMAGE    = 220
-local COLLIDE_GRACE   = 0.45   -- seconds of owner-collision immunity after spawn
-local PROX_DETONATE   = 80     -- units from target pos to detonate
-local THINK_INTERVAL  = 0      -- 0 = every server tick
+local COLLIDE_GRACE   = 0.45    -- seconds of owner-collision immunity after spawn
+local PROX_DETONATE   = 80      -- units from target pos to detonate
+local THINK_INTERVAL  = 0       -- 0 = every server tick
 
 local SND_LAUNCH   = "weapons/rpg/rocket1.wav"
 local SND_FLY      = "weapons/rpg/rocket_fly.wav"
@@ -52,7 +48,7 @@ local FX_EXPLODE   = "Explosion"
 -- ============================================================
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile_closed.mdl")
-    self:SetModelScale(10)  -- match the 10x visual scale referenced in cl_init
+    self:SetModelScale(10)
     self:SetMoveType(MOVETYPE_FLY)
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-4,-4,-4), Vector(4,4,4))
@@ -69,10 +65,10 @@ function ENT:Initialize()
     end
     self._target = self.Target  -- fixed forever; never re-assigned
 
-    -- Broadcast target position to clients (for targeting line in cl_init)
+    -- Broadcast fixed target position to clients (targeting line in cl_init)
     self:SetTargetPos(self._target)
 
-    -- Initial velocity
+    -- Initial velocity toward target
     local dir = (self._target - self:GetPos()):GetNormalized()
     self:SetAngles(dir:Angle())
     self:SetLocalVelocity(dir * SPEED_INITIAL)
@@ -102,21 +98,35 @@ end
 --  Think  (steer toward fixed target position)
 -- ============================================================
 function ENT:Think()
+    -- Abort cleanly if target was never set (e.g. self-destruct path)
+    if not self._target then
+        self:NextThink(CurTime() + 0.1)
+        return true
+    end
+
     local now = CurTime()
     local age = now - (self._spawnTime or now)
 
-    -- Speed ramp
+    -- Speed ramp: SPEED_INITIAL -> SPEED_CRUISE over SPEED_RAMP_TIME seconds
+    -- math.Lerp(t, a, b) is the correct server-safe call (not bare Lerp)
     local speed = math.Lerp(
         math.Clamp(age / SPEED_RAMP_TIME, 0, 1),
         SPEED_INITIAL, SPEED_CRUISE
     )
 
-    local pos    = self:GetPos()
-    local want   = (self._target - pos):GetNormalized()
-    local cur    = self:GetForward()
+    local pos  = self:GetPos()
+    local want = (self._target - pos):GetNormalized()
+    local cur  = self:GetForward()
+
+    -- Steer toward target.
+    -- math.Lerp on each component is server-safe; LerpVector is client-only.
     local lerpT  = math.Clamp(TURN_RATE * FrameTime(), 0, 1)
-    local newDir = LerpVector(lerpT, cur, want)
-    if newDir:Length() < 0.001 then newDir = want end
+    local newDir = Vector(
+        math.Lerp(lerpT, cur.x, want.x),
+        math.Lerp(lerpT, cur.y, want.y),
+        math.Lerp(lerpT, cur.z, want.z)
+    )
+    if newDir:LengthSqr() < 0.0001 then newDir = want end
     newDir:Normalize()
 
     self:SetAngles(newDir:Angle())
