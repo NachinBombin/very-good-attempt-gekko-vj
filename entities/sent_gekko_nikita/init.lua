@@ -5,138 +5,105 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Missile  (sent_gekko_nikita)
 --
---  Uses ENTITY:PhysicsSimulate via StartMotionController.
---  PhysicsSimulate is called by the motion controller every
---  tick and is NEVER skipped due to the physobj sleeping.
---  (PhysicsUpdate was silently skipped because SetVelocity +
---  no gravity caused the physobj to sleep between ticks.)
---
---  Thrust and steering are fully decoupled:
---    * Steering: SetAngles via LerpAngle only
---    * Thrust:   return angular/linear velocity from PhysicsSimulate
+--  Movement: StartMotionController + PhysicsSimulate
+--   Steering = LerpAngle toward target every sim tick
+--   Thrust   = SetVelocity along current forward  (never accumulates)
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
--- Forward speed in u/s. Player sprint ~340. 220 = nearly outrunnable.
-local CRUISE_SPEED = 220
-
--- Turning rate per tick. 0.04 = lazy wide arcs.
-local TRACK_LERP   = 0.04
-
-local LIFETIME              = 45
-local COLLISION_IMMUNE_TIME = 0.5
-local KICK_UP_SPEED         = 180
+local CRUISE_SPEED          = 280      -- u/s forward at all times
+local TRACK_LERP            = 0.05     -- per-tick angle blend  (bigger = tighter)
+local LIFETIME              = 45       -- seconds until self-destruct
+local PROXIMITY_RADIUS      = 180      -- u to target for proximity det
+local COLLISION_IMMUNE_TIME = 0.6      -- seconds after spawn, ignore collisions
+local ENGINE_DELAY          = 0.5      -- seconds before engine + tracking start
 
 -- ============================================================
 --  Initialize
 -- ============================================================
 function ENT:Initialize()
+    -- Use a compact model with a tiny VPhysics hull so it never
+    -- clips through the floor on spawn.  No SetModelScale -- that
+    -- resizes the visual only, NOT the VPhysics collision hull.
     self:SetModel( "models/weapons/w_missile_launch.mdl" )
-    self:SetModelScale( 2, 0 )
     self:PhysicsInit( SOLID_VPHYSICS )
     self:SetMoveType( MOVETYPE_VPHYSICS )
     self:SetSolid( SOLID_VPHYSICS )
     self:SetCollisionGroup( COLLISION_GROUP_PROJECTILE )
 
+    -- Ignore ALL entities for the first COLLISION_IMMUNE_TIME seconds.
+    -- This prevents the missile from immediately detonating against
+    -- the Gekko or the ground it spawned near.
+    self:SetOwner( self.Owner )
+    self:CollisionRulesChanged()
+    local selfRef = self
+    timer.Simple( COLLISION_IMMUNE_TIME, function()
+        if not IsValid( selfRef ) then return end
+        selfRef:SetCollisionGroup( COLLISION_GROUP_PROJECTILE )
+        selfRef:CollisionRulesChanged()
+    end )
+
     local phys = self:GetPhysicsObject()
     if IsValid( phys ) then
         phys:Wake()
-        phys:SetMass( 500 )
+        phys:SetMass( 60 )
         phys:EnableDrag( false )
         phys:EnableGravity( false )
+        -- Give it a gentle initial nudge in the forward direction so it
+        -- doesn't sit motionless for ENGINE_DELAY seconds.
+        phys:SetVelocity( self:GetForward() * 120 )
         -- StartMotionController registers PhysicsSimulate.
-        -- Unlike PhysicsUpdate, PhysicsSimulate is driven by the
-        -- motion controller and is NEVER skipped due to sleep.
+        -- PhysicsSimulate is called every tick by the controller and is
+        -- NEVER skipped due to physics sleep (unlike PhysicsUpdate).
         self:StartMotionController()
     end
 
-    self.Destroyed        = false
-    self.ActivatedAlmonds = false
-    self.SpawnTime        = CurTime()
-    self.HealthVal        = 50
-    self.Damage           = 0
-    self.Radius           = 0
+    self.Destroyed       = false
+    self.EngineActive    = false
+    self.SpawnTime       = CurTime()
+    self.HealthVal       = 50
+    self.Damage          = 0
+    self.Radius          = 0
 
     if not self.Target or type( self.Target ) ~= "Vector" then
         local fwd = self:GetForward()
-        fwd.z = 0
-        fwd:Normalize()
         self.Target = self:GetPos() + fwd * 2000
         print( "[GekkoNikita] WARNING: no Target set -- using fallback" )
     end
 
     self:SetTargetPos( self.Target )
 
-    local selfRef = self
-    timer.Simple( 0, function()
-        if not IsValid( selfRef ) then return end
-        local phys2 = selfRef:GetPhysicsObject()
-        if not IsValid( phys2 ) then return end
-        phys2:SetVelocity( Vector( 0, 0, 1 ) * KICK_UP_SPEED )
-    end )
-
     sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
     self.EngineSound = CreateSound( self, SND_ENGINE )
 
-    timer.Simple( 0.75, function()
-        if IsValid( selfRef ) and not selfRef.Destroyed then
-            selfRef:FireEngine()
-        end
+    -- Delay homing + full speed until missile has cleared the spawn area
+    timer.Simple( ENGINE_DELAY, function()
+        if not IsValid( selfRef ) or selfRef.Destroyed then return end
+        selfRef.Damage = math.random( 2500, 4500 )
+        selfRef.Radius = math.random( 700,  1024 )
+        selfRef.EngineSound:PlayEx( 1.0, 100 )
+        selfRef.EngineActive = true
+        selfRef:SetNWBool( "EngineStarted", true )
     end )
 
     self:NextThink( CurTime() )
 end
 
 -- ============================================================
---  FireEngine
--- ============================================================
-function ENT:FireEngine()
-    if self.Destroyed then return end
-
-    self.Damage = math.random( 2500, 4500 )
-    self.Radius = math.random( 700,  1024 )
-    self.EngineSound:PlayEx( 511, 100 )
-    self.ActivatedAlmonds = true
-    self:SetNWBool( "EngineStarted", true )
-
-    local a = self:GetAngles()
-    a:RotateAroundAxis( self:GetUp(), 180 )
-
-    local prop = ents.Create( "prop_physics" )
-    if IsValid( prop ) then
-        prop:SetPos( self:LocalToWorld( Vector( -15, 0, 0 ) ) )
-        prop:SetAngles( a )
-        prop:SetParent( self )
-        prop:SetModel( "models/items/ar2_grenade.mdl" )
-        prop:Spawn()
-        prop:SetRenderMode( RENDERMODE_TRANSALPHA )
-        prop:SetColor( Color( 0, 0, 0, 0 ) )
-        ParticleEffectAttach( "scud_trail", PATTACH_ABSORIGIN_FOLLOW, prop, 0 )
-    end
-end
-
--- ============================================================
---  PhysicsSimulate
---
---  Called by the motion controller every tick -- never skipped
---  due to physobj sleep.  This is the correct hook to use with
---  StartMotionController.
---
---  Returns SIM_GLOBAL_ACCELERATION to let the engine apply our
---  requested velocity each tick.
+--  PhysicsSimulate  (motion controller tick -- never sleeps)
 -- ============================================================
 function ENT:PhysicsSimulate( phys, deltaTime )
-    -- Always keep physobj awake
     phys:Wake()
 
-    if not self.ActivatedAlmonds then
-        return
+    if not self.EngineActive then
+        -- Engine not started yet: coast on initial nudge velocity, no steering
+        return SIM_NOTHING
     end
 
-    -- Resolve aim position
+    -- Resolve aim position (live entity takes priority over static vector)
     local aimPos
     if IsValid( self.TrackEnt ) then
         aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
@@ -144,16 +111,16 @@ function ENT:PhysicsSimulate( phys, deltaTime )
         aimPos = self.Target
     end
 
-    -- Steer: only changes facing angle, never affects speed
+    -- Steering: rotate facing toward target, leave speed untouched
     if aimPos then
         local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
         self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
     end
 
-    -- Thrust: lock velocity to exactly CRUISE_SPEED along current forward
+    -- Thrust: always exactly CRUISE_SPEED along current facing
     phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
 
-    return SIM_NOTHING  -- we set velocity directly, no further sim needed
+    return SIM_NOTHING
 end
 
 -- ============================================================
@@ -162,12 +129,11 @@ end
 function ENT:PhysicsCollide( data, physobj )
     if self.Destroyed then return end
     if CurTime() - self.SpawnTime < COLLISION_IMMUNE_TIME then return end
-    if not self.ActivatedAlmonds then return end
     self:MissileDoExplosion()
 end
 
 -- ============================================================
---  Think  -- proximity detonation + lifetime
+--  Think  --  proximity detonation + lifetime
 -- ============================================================
 function ENT:Think()
     self:NextThink( CurTime() )
@@ -178,14 +144,14 @@ function ENT:Think()
         return true
     end
 
-    if self.ActivatedAlmonds then
+    if self.EngineActive then
         local checkPos
         if IsValid( self.TrackEnt ) then
             checkPos = self.TrackEnt:GetPos()
         elseif self.Target then
             checkPos = self.Target
         end
-        if checkPos and ( self:GetPos() - checkPos ):Length() < 180 then
+        if checkPos and ( self:GetPos() - checkPos ):Length() < PROXIMITY_RADIUS then
             self:MissileDoExplosion()
             return true
         end
@@ -220,7 +186,6 @@ function ENT:MissileDoExplosion()
 
     sound.Play( SND_EXPLODE, pos, 100, 100 )
     util.ScreenShake( pos, 16, 200, 1, 3000 )
-    ParticleEffect( "vj_explosion3", pos, Angle( 0, 0, 0 ) )
 
     local ed = EffectData()
     ed:SetOrigin( pos )
@@ -232,7 +197,7 @@ function ENT:MissileDoExplosion()
         pe:SetKeyValue( "Magnitude",  tostring( math.floor( dmg * 5 ) ) )
         pe:SetKeyValue( "radius",     tostring( rad ) )
         pe:SetKeyValue( "spawnflags", "19" )
-        pe:Spawn() pe:Activate()
+        pe:Spawn() ; pe:Activate()
         pe:Fire( "Explode", "", 0 )
         pe:Fire( "Kill",    "", 0.5 )
     end
