@@ -6,53 +6,61 @@ include( "shared.lua" )
 --  SERVER  -  NPC Tracking Missile  (sent_npc_trackmissile)
 --  6th weapon for npc_vj_gekko.
 --
+--  FIX: The missile was spawning at the Gekko's feet with
+--       angle (-90, yaw, 0).  GetForward() at pitch=-90 points
+--       STRAIGHT DOWN in GMod, so the initial kick of
+--       GetForward()*108450 fired it into the ground/Gekko.
+--       The 0.5 s collision-immune window then protected it
+--       while it spun in place trying to steer.
+--
+--  SOLUTION:
+--    1. Spawn position is offset 600 u horizontally TOWARD the
+--       target so the missile starts clear of the Gekko hull.
+--       (Caller in npc_vj_gekko/init.lua handles this.)
+--    2. Initial velocity kick is now a fixed upward vector
+--       Vector(0,0,1)*KICK_UP_SPEED, independent of angles.
+--    3. Spawn angle is set toward the target (not straight up)
+--       so active-tracking phase begins cleanly.
+--
 --  FLIGHT PHASES:
 --
 --    [0] PRE-IGNITION  (0 -> 0.75 s)
---        Missile coasts on its initial kick (straight up).
---        No guidance, no engine.  Sparks + steam visuals only.
+--        Missile coasts upward on initial kick.
+--        No guidance, no engine.
 --
---    [1] ACTIVE TRACKING  (0.75 s -> engine lit, while Z < TRACK_CEILING)
---        Engine ignites.  Missile steers hard toward the live
---        enemy position every PhysicsUpdate tick.
---        Lerp rate is aggressive (0.12) so it can curve.
---        This continues until the missile's Z rises above
---        TRACK_CEILING units above the SPAWN point Z.
+--    [1] ACTIVE TRACKING  (engine lit, Z < SpawnZ + TRACK_CEILING)
+--        Engine ignites.  Missile steers toward live enemy pos.
+--        Lerp rate TRACK_LERP = 0.12 (aggressive curving).
 --
---    [2] BALLISTIC  (Z >= TRACK_CEILING  OR  engine not yet lit)
---        Guidance is cut entirely.  No SetAngles, no ApplyForce
---        steering.  Only engine thrust along the current forward
---        vector keeps speed up; gravity + drag arc it naturally.
---        This prevents any looping/circling near the ground.
+--    [2] BALLISTIC  (Z >= SpawnZ + TRACK_CEILING)
+--        Guidance cut.  Engine thrust along forward only.
+--        Gravity + drag arc it naturally to target.
 --
 --    [3] DETONATE
---        Proximity trigger (<180 u to target), PhysicsCollide,
---        or lifetime timeout.
---
---  SAFETY:
---    - COLLISION_IMMUNE_TIME = 0.5 s: ignores PhysicsCollide
---      during the launch kick window.
---    - MinDist check in FireTrackMissile(): re-rolls if too close.
---    - Velocity kick deferred to timer.Simple(0) so physobj has
---      simulated at least one tick before velocity is applied.
+--        Proximity (<180 u), PhysicsCollide, or lifetime.
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
-local FORCE_PER_TICK       = 120000
-local SPEED_CAP            = game.SinglePlayer() and 1800 or 2300
-local LIFETIME             = 45
+local FORCE_PER_TICK        = 120000
+local SPEED_CAP             = game.SinglePlayer() and 1800 or 2300
+local LIFETIME              = 45
 local COLLISION_IMMUNE_TIME = 0.5
 
--- Height above spawn Z at which active tracking is cut off
--- and the missile becomes purely ballistic.
+-- Height above spawn Z at which active tracking is cut off.
 local TRACK_CEILING = 600
 
--- How aggressively the missile steers toward the target
--- while in active-tracking phase.
+-- How aggressively the missile steers while in tracking phase.
 local TRACK_LERP = 0.12
+
+-- Units the spawn point is pushed horizontally from the Gekko
+-- toward the target before the missile is created.
+local SPAWN_FORWARD_OFFSET = 600
+
+-- Initial upward speed (u/s) applied one physics tick after spawn.
+local KICK_UP_SPEED = 900
 
 -- ============================================================
 --  Initialize
@@ -90,14 +98,14 @@ function ENT:Initialize()
         print( "[TrackMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
-    -- Deferred velocity kick: wait one physics tick so the engine does not
-    -- zero the velocity when it first simulates the freshly-woken physobj.
+    -- Deferred upward kick: purely vertical so the missile clears
+    -- the Gekko and ground before the engine ignites.
     local selfRef = self
     timer.Simple( 0, function()
         if not IsValid( selfRef ) then return end
         local phys = selfRef:GetPhysicsObject()
         if not IsValid( phys ) then return end
-        phys:SetVelocity( selfRef:GetForward() * 108450 )
+        phys:SetVelocity( Vector( 0, 0, 1 ) * KICK_UP_SPEED )
     end )
 
     sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
@@ -124,7 +132,7 @@ function ENT:FireEngine()
     self.ActivatedAlmonds = true
     self:SetNWBool( "EngineStarted", true )
 
-    -- Latch spawn Z now that we're flying (physobj has settled)
+    -- Latch spawn Z now that the physobj has settled.
     self.SpawnZ = self:GetPos().z
 
     local a = self:GetAngles()
