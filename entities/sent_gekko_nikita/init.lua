@@ -5,25 +5,17 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Homing Cruise Missile
 --
---  ROOT CAUSE OF ACCELERATION BUG:
---    MOVETYPE_NOCLIP does NOT zero velocity between ticks.
---    SetVelocity() ADDS to the current velocity.
---    Every Think() was stacking +CRUISE_SPEED on top of the
---    previous value, causing exponential acceleration.
+--  HOMING NOTE:
+--    TrackEnt is stored as a plain Lua field (self.TrackEnt),
+--    NOT as an NWEntity. NWEntity is for client replication;
+--    reading it back server-side on the same entity is unreliable.
+--    FireNikita already sets missile.TrackEnt = enemy directly.
+--    NWEntity "NikitaTrackEnt" is kept solely so the client
+--    can read the target if needed (e.g. HUD sonar).
 --
---  FIX: Use SetAbsVelocity() which REPLACES velocity outright.
---    This is the only safe way to drive constant-speed motion
---    on MOVETYPE_NOCLIP entities in GMod.
---
---  Steering: LerpVector on 3D direction vector, framerate-independent.
---  Collision: util.TraceHull each tick (more reliable than line trace).
---  Homing: NWEntity "NikitaTrackEnt" set post-Spawn by FireNikita.
---
---  IMPORTANT: Do NOT set NikitaTrackEnt = NULL inside Initialize().
---    Initialize() is called internally by Spawn(), which means it
---    fires BEFORE FireNikita's post-Activate SetNWEntity call.
---    Setting it to NULL here would permanently overwrite the real
---    target, making the missile fly straight every time.
+--  VELOCITY NOTE:
+--    SetAbsVelocity() REPLACES velocity (no accumulation).
+--    Never use SetVelocity() on MOVETYPE_NOCLIP.
 -- ============================================================
 
 local SND_EXPLODE   = "ambient/explosions/explode_8.wav"
@@ -33,21 +25,20 @@ local TURN_SPEED    = 4.5    -- LerpVector t per second
 local LIFETIME      = 45
 local PROX_RADIUS   = 180
 local ENGINE_DELAY  = 0.5
-local TARGET_Z_OFFS = 80
+local TARGET_Z_OFFS = 40     -- aim at center-mass of target, not ground
 
 local HULL_MINS = Vector( -8, -8, -8 )
 local HULL_MAXS = Vector(  8,  8,  8 )
 
-local function SafeAimPos( ent )
-    local p  = ent:GetPos()
-    local tr = util.TraceLine({
-        start  = p + Vector( 0, 0, 100 ),
-        endpos = p - Vector( 0, 0, 1000 ),
-        mask   = MASK_SOLID_BRUSHONLY,
-        filter = ent,
-    })
-    local gz = tr.Hit and tr.HitPos.z or p.z
-    return Vector( p.x, p.y, gz + TARGET_Z_OFFS )
+local function GetAimPos( trackEnt, fallback )
+    -- Primary: track live entity at center-mass height
+    if IsValid( trackEnt ) then
+        local p = trackEnt:GetPos()
+        return Vector( p.x, p.y, p.z + TARGET_Z_OFFS )
+    end
+    -- Fallback: static vector supplied by FireNikita
+    if fallback then return fallback end
+    return nil
 end
 
 function ENT:Initialize()
@@ -65,12 +56,10 @@ function ENT:Initialize()
     self.Radius       = 0
     self._nextDebug   = 0
 
-    -- NOTE: Do NOT set NikitaTrackEnt here.
-    -- FireNikita sets it after Spawn()+Activate(). Setting it
-    -- to NULL inside Initialize() (which runs during Spawn())
-    -- would overwrite the real target and break homing entirely.
+    -- TrackEnt and FallbackTarget are set by FireNikita AFTER Spawn()+Activate().
+    -- Do NOT touch them here.
 
-    -- Launch nudge: SetAbsVelocity replaces velocity, does not accumulate
+    -- Launch nudge
     self:SetAbsVelocity( self:GetForward() * 80 )
 
     local selfRef = self
@@ -79,9 +68,8 @@ function ENT:Initialize()
         selfRef.Damage = math.random( 2500, 4500 )
         selfRef.Radius = math.random( 700,  1024 )
         selfRef.EngineActive = true
-        local trackEnt = selfRef:GetNWEntity( "NikitaTrackEnt", NULL )
-        print( "[NikitaDBG] Engine ACTIVE | homing=" .. tostring( IsValid( trackEnt ) )
-            .. " target=" .. tostring( trackEnt ) )
+        print( "[NikitaDBG] Engine ACTIVE | homing=" .. tostring( IsValid( selfRef.TrackEnt ) )
+            .. " target=" .. tostring( selfRef.TrackEnt ) )
     end )
 
     self:NextThink( CurTime() )
@@ -97,16 +85,9 @@ function ENT:Think()
 
     if not self.EngineActive then return true end
 
-    -- Resolve homing target
-    local trackEnt = self:GetNWEntity( "NikitaTrackEnt", NULL )
-    local aimPos
-    if IsValid( trackEnt ) then
-        aimPos = SafeAimPos( trackEnt )
-    elseif self.FallbackTarget then
-        aimPos = self.FallbackTarget
-    end
+    -- Resolve aim position from plain Lua field (reliable server-side)
+    local aimPos = GetAimPos( self.TrackEnt, self.FallbackTarget )
 
-    -- Compute steering direction
     local currentDir = self:GetForward()
     local moveDir
 
@@ -123,8 +104,6 @@ function ENT:Think()
     end
 
     self:SetAngles( moveDir:Angle() )
-
-    -- SetAbsVelocity REPLACES velocity -- no accumulation, true constant speed
     self:SetAbsVelocity( moveDir * CRUISE_SPEED )
 
     -- Hull collision sweep ahead
@@ -151,7 +130,7 @@ function ENT:Think()
         self._nextDebug = CurTime() + 0.5
         print( string.format(
             "[NikitaDBG] homing=%s spd=%.0f ang=%s",
-            tostring( IsValid( trackEnt ) ),
+            tostring( IsValid( self.TrackEnt ) ),
             self:GetAbsVelocity():Length(),
             tostring( self:GetAngles() )
         ))
