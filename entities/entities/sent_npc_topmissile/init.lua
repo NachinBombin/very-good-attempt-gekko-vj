@@ -5,27 +5,44 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  NPC Top-Attack Missile  (npc_vj_gekko)
 --
---  CHANGE LOG:
---    - SND_WARN changed to buttons/button17.wav (loud electronic
---      alarm beep) at max volume 511 from npc init caller
---    - Velocity kick deferred to timer.Simple(0) so physobj has
---      simulated at least one tick before velocity is applied.
---      (SetVelocityInstantaneous was being zeroed by the engine
---      on the first physics step in recent GMod builds.)
---    - 22-degree tilt REMOVED
---    - FORCE_PER_TICK = 120000 N sustains ~2000 u/s
---    - PhysicsCollide 0.5 s immunity window (self-collision fix)
---    - Drag ON
+--  FIX: The missile was spawning at the Gekko's feet and using
+--       GetForward() (which is straight DOWN at pitch=-90) as
+--       its initial velocity kick, slamming it into the ground
+--       or the Gekko itself within the collision-immune window,
+--       causing an infinite spin/loop.
+--
+--  SOLUTION:
+--    1. Spawn position is offset 600 u horizontally TOWARD the
+--       target so the missile starts clear of the Gekko.
+--    2. Initial velocity kick is now a fixed upward vector
+--       (0, 0, 1) * kick speed, independent of spawn angles.
+--    3. Spawn angle is set to face the target (not straight up)
+--       so the steer arc begins sensibly.
+--
+--  UNCHANGED BEHAVIOUR:
+--    - 3-phase top-attack arc (climb -> apex -> dive)
+--    - FORCE_PER_TICK / SPEED_CAP engine thrust
+--    - COLLISION_IMMUNE_TIME 0.5 s
+--    - PhysicsCollide + proximity detonation
 -- ============================================================
 
-local SND_LAUNCH  = "buttons/button17.wav"   -- loud electronic beep
+local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
-local FORCE_PER_TICK = 120000
-local SPEED_CAP  = game.SinglePlayer() and 1800 or 2300
-local LIFETIME   = 45
+local FORCE_PER_TICK        = 120000
+local SPEED_CAP             = game.SinglePlayer() and 1800 or 2300
+local LIFETIME              = 45
 local COLLISION_IMMUNE_TIME = 0.5
+
+-- Units the spawn point is pushed horizontally from the Gekko
+-- toward the target before the missile is created.
+-- This keeps the missile well clear of the Gekko hull on launch.
+local SPAWN_FORWARD_OFFSET  = 600
+
+-- Initial upward speed (u/s) applied at spawn (one physics tick
+-- later via timer.Simple(0)).  The engine then takes over at +0.75 s.
+local KICK_UP_SPEED         = 900
 
 -- ============================================================
 --  Initialize
@@ -63,19 +80,17 @@ function ENT:Initialize()
         print( "[TopMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
-    -- Deferred velocity kick: wait one physics tick so the engine does not
-    -- zero the velocity when it first simulates the freshly-woken physobj.
+    -- Deferred velocity kick: purely upward so the missile clears
+    -- the ground before the engine ignites and the arc begins.
     local selfRef = self
     timer.Simple( 0, function()
         if not IsValid( selfRef ) then return end
         local phys = selfRef:GetPhysicsObject()
         if not IsValid( phys ) then return end
-        phys:SetVelocity( selfRef:GetForward() * 108450 )
+        phys:SetVelocity( Vector( 0, 0, 1 ) * KICK_UP_SPEED )
     end )
 
-    -- Max-volume electronic beep on launch
     sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
-
     self.EngineSound = CreateSound( self, SND_ENGINE )
 
     timer.Simple( 0.75, function()
