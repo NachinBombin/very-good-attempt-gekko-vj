@@ -3,48 +3,46 @@ AddCSLuaFile( "shared.lua" )
 include( "shared.lua" )
 
 -- ============================================================
---  SERVER  -  Gekko Nikita Missile
+--  SERVER  -  Gekko Nikita Homing Missile
 --
---  MOVETYPE_NOCLIP: SetVelocity replaces velocity each tick.
---  MOVETYPE_FLY accumulates velocity (adds to current),
---  causing speed to explode to 4700+ u/s within 1 second.
+--  Homing method: NWEntity "NikitaTrackEnt" set by FireNikita
+--  immediately after Spawn()+Activate(). NetworkVars survive
+--  the engine post-Spawn table reset that wiped plain Lua
+--  fields (self.TrackEnt = ...) in previous versions.
 --
---  Target Z is clamped via traceline to the actual ground
---  under the enemy + a fixed offset, preventing nose-dive
---  when the enemy stands on uneven or sloped terrain.
+--  MOVETYPE_NOCLIP: SetVelocity fully replaces velocity.
+--  MOVETYPE_FLY accumulates velocity (bug: 4700 u/s in 1s).
+--
+--  SafeAimPos traces ground under target so aim Z is never
+--  underground (prevented the nose-dive crash behavior).
 -- ============================================================
 
-local SND_LAUNCH  = "buttons/button17.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
-local CRUISE_SPEED     = 380      -- u/s, constant
-local MAX_TURN_RATE    = 55       -- degrees per second max turn
-local LIFETIME         = 45      -- seconds before self-destruct
-local PROXIMITY_RADIUS = 180     -- detonation proximity
-local ENGINE_DELAY     = 0.5     -- seconds before steering activates
-local TARGET_Z_OFFSET  = 80      -- height above ground to aim at
+local CRUISE_SPEED     = 380     -- u/s, constant
+local MAX_TURN_RATE    = 55      -- degrees per second max turn
+local LIFETIME         = 45
+local PROXIMITY_RADIUS = 180
+local ENGINE_DELAY     = 0.5
+local TARGET_Z_OFFSET  = 80
 
--- Resolve a safe aim position above the ground under an entity.
--- Falls back to entity pos + TARGET_Z_OFFSET if trace fails.
+-- Ground trace so aim Z is never underground
 local function SafeAimPos( ent )
-    local top = ent:GetPos() + Vector( 0, 0, 100 )
-    local tr  = util.TraceLine({
-        start  = top,
-        endpos = top - Vector( 0, 0, 1000 ),
+    local p  = ent:GetPos()
+    local tr = util.TraceLine({
+        start  = p + Vector( 0, 0, 100 ),
+        endpos = p - Vector( 0, 0, 1000 ),
         mask   = MASK_SOLID_BRUSHONLY,
         filter = ent,
     })
-    local groundZ = tr.Hit and tr.HitPos.z or ent:GetPos().z
-    local pos     = ent:GetPos()
-    return Vector( pos.x, pos.y, groundZ + TARGET_Z_OFFSET )
+    local gz = tr.Hit and tr.HitPos.z or p.z
+    return Vector( p.x, p.y, gz + TARGET_Z_OFFSET )
 end
 
 function ENT:Initialize()
     self:SetModel( "models/weapons/w_missile_launch.mdl" )
-    -- MOVETYPE_NOCLIP: SetVelocity fully replaces velocity every tick.
-    -- MOVETYPE_FLY has physics accumulation - SetVelocity ADDS each tick.
     self:SetMoveType( MOVETYPE_NOCLIP )
-    self:SetSolid( SOLID_NONE )  -- noclip needs SOLID_NONE
+    self:SetSolid( SOLID_NONE )
     self:SetCollisionGroup( COLLISION_GROUP_PROJECTILE )
 
     self.Destroyed    = false
@@ -54,11 +52,13 @@ function ENT:Initialize()
     self.Damage       = 0
     self.Radius       = 0
     self._nextDebug   = 0
-    -- TrackEnt / Target / Owner assigned post-Spawn via timer.Simple(0)
-    -- in FireNikita. Initialize() sees them as nil -- expected.
+
+    -- Homing target is set via NWEntity by FireNikita right after
+    -- Spawn()+Activate(). NWEntity survives the engine table reset.
+    -- Plain self.TrackEnt = ... was wiped by Spawn() every time.
+    self:SetNWEntity( "NikitaTrackEnt", NULL )
 
     self:SetVelocity( self:GetForward() * 120 )
-    sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
 
     local selfRef = self
     timer.Simple( ENGINE_DELAY, function()
@@ -66,8 +66,9 @@ function ENT:Initialize()
         selfRef.Damage = math.random( 2500, 4500 )
         selfRef.Radius = math.random( 700,  1024 )
         selfRef.EngineActive = true
-        print( "[NikitaDBG] Engine ACTIVE | TrackEnt=" .. tostring( selfRef.TrackEnt )
-            .. " | Target=" .. tostring( selfRef.Target ) )
+        local trackEnt = selfRef:GetNWEntity( "NikitaTrackEnt", NULL )
+        print( "[NikitaDBG] Engine ACTIVE | homing=" .. tostring( IsValid( trackEnt ) )
+            .. " target=" .. tostring( trackEnt ) )
     end )
 
     self:NextThink( CurTime() )
@@ -83,64 +84,63 @@ function ENT:Think()
 
     if not self.EngineActive then return true end
 
-    -- Resolve aim position
-    -- Use SafeAimPos for live tracking so Z is always above ground.
-    -- Static Target fallback is already set safely by FireNikita.
+    -- Read homing target from NWEntity (survives Spawn reset)
+    local trackEnt = self:GetNWEntity( "NikitaTrackEnt", NULL )
     local aimPos
-    if IsValid( self.TrackEnt ) then
-        aimPos = SafeAimPos( self.TrackEnt )
-    elseif self.Target then
-        aimPos = self.Target
+    if IsValid( trackEnt ) then
+        aimPos = SafeAimPos( trackEnt )
+    elseif self.FallbackTarget then
+        aimPos = self.FallbackTarget
     end
 
     if aimPos then
         -- Proximity detonation
-        if ( self:GetPos() - aimPos ):Length() < PROXIMITY_RADIUS then
+        if ( self:GetPos() - aimPos ):LengthSqr() < PROXIMITY_RADIUS * PROXIMITY_RADIUS then
             self:MissileDoExplosion() ; return true
         end
 
-        -- Clamped turn rate steering.
-        -- math.NormalizeAngle ensures we always take the shortest arc.
+        -- Clamped turn steering
         local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
         local curAngle  = self:GetAngles()
         local maxDelta  = MAX_TURN_RATE * FrameTime()
 
-        local function ClampAngleDelta( cur, want )
-            local diff = math.NormalizeAngle( want - cur )
-            return cur + math.Clamp( diff, -maxDelta, maxDelta )
+        local function Clamp( cur, want )
+            local d = math.NormalizeAngle( want - cur )
+            return cur + math.Clamp( d, -maxDelta, maxDelta )
         end
 
         self:SetAngles( Angle(
-            ClampAngleDelta( curAngle.p, wantAngle.p ),
-            ClampAngleDelta( curAngle.y, wantAngle.y ),
+            Clamp( curAngle.p, wantAngle.p ),
+            Clamp( curAngle.y, wantAngle.y ),
             0
         ))
     end
 
-    -- Full velocity replacement every tick. Safe with MOVETYPE_NOCLIP.
     self:SetVelocity( self:GetForward() * CRUISE_SPEED )
 
-    -- Touch detection (SOLID_NONE skips engine touch, so we trace manually)
+    -- Manual world/entity collision (SOLID_NONE skips engine Touch)
     local tr = util.TraceLine({
         start  = self:GetPos(),
-        endpos = self:GetPos() + self:GetForward() * ( CRUISE_SPEED * FrameTime() + 16 ),
+        endpos = self:GetPos() + self:GetForward() * ( CRUISE_SPEED * FrameTime() + 20 ),
         mask   = MASK_SHOT,
-        filter = { self, IsValid( self.Owner ) and self.Owner or self },
+        filter = { self, IsValid( self.NikitaOwner ) and self.NikitaOwner or self },
     })
-    if tr.Hit and IsValid( tr.Entity ) and tr.Entity ~= self.Owner then
-        self:MissileDoExplosion() ; return true
-    end
-    if tr.HitWorld then
-        self:MissileDoExplosion() ; return true
+    if tr.Hit then
+        if tr.HitWorld then
+            self:MissileDoExplosion() ; return true
+        end
+        if IsValid( tr.Entity ) and tr.Entity ~= self.NikitaOwner then
+            self:MissileDoExplosion() ; return true
+        end
     end
 
-    -- Debug print every 0.5s
+    -- Debug every 0.5s
     if CurTime() > self._nextDebug then
         self._nextDebug = CurTime() + 0.5
         print( string.format(
-            "[NikitaDBG] aimPos=%s trackValid=%s ang=%s spd=%.0f",
+            "[NikitaDBG] homing=%s aimPos=%s ang=%s spd=%.0f",
+            tostring( IsValid( trackEnt ) ),
             tostring( aimPos ),
-            tostring( IsValid( self.TrackEnt ) ),
             tostring( self:GetAngles() ),
             self:GetVelocity():Length()
         ))
@@ -150,10 +150,9 @@ function ENT:Think()
 end
 
 function ENT:Touch( ent )
-    -- Kept as secondary safety net even with SOLID_NONE
     if self.Destroyed then return end
     if CurTime() - self.SpawnTime < 0.3 then return end
-    if ent == self.Owner then return end
+    if ent == self.NikitaOwner then return end
     self:MissileDoExplosion()
 end
 
@@ -170,7 +169,7 @@ function ENT:MissileDoExplosion()
     local pos   = self:GetPos()
     local dmg   = self.Damage > 0 and self.Damage or 1200
     local rad   = self.Radius > 0 and self.Radius or 700
-    local owner = IsValid( self.Owner ) and self.Owner or self
+    local owner = IsValid( self.NikitaOwner ) and self.NikitaOwner or self
     sound.Play( SND_EXPLODE, pos, 100, 100 )
     util.ScreenShake( pos, 16, 200, 1, 3000 )
     local ed = EffectData() ; ed:SetOrigin( pos ) ; util.Effect( "Explosion", ed )
