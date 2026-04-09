@@ -17,7 +17,7 @@ include("shared.lua")
 
 local SND_EXPLODE   = "ambient/explosions/explode_8.wav"
 
-local CRUISE_SPEED  = 210    -- units / second, constant
+local CRUISE_SPEED  = 310    -- units / second, constant
 local TURN_SPEED    = 10.0   -- Lerp factor per second
 
 local LIFETIME      = 45

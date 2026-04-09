@@ -13,6 +13,7 @@ function ENT:Think()
 
     local pos        = self:GetPos()
     local backDir    = -self:GetForward()
+    -- Exhaust origin sits just behind the tail of the (x7 scaled) model
     local exhaustPos = pos + backDir * 55
 
     self.Emitter:SetPos( pos )
@@ -30,21 +31,6 @@ function ENT:Think()
         dlight.Decay      = 1200
         dlight.Size       = 180
         dlight.DieTime    = CurTime() + 0.05
-    end
-
-    -- --------------------------------------------------------
-    --  Dynamic light: fuchsia outer glow
-    -- --------------------------------------------------------
-    local dlight2 = DynamicLight( self:EntIndex() + 32768 )
-    if dlight2 then
-        dlight2.pos        = exhaustPos
-        dlight2.r          = 220
-        dlight2.g          = 0
-        dlight2.b          = 200
-        dlight2.brightness = 2
-        dlight2.Decay      = 1400
-        dlight2.Size       = 260
-        dlight2.DieTime    = CurTime() + 0.05
     end
 
     -- --------------------------------------------------------
@@ -77,9 +63,9 @@ function ENT:Think()
             part:SetDieTime( math.Rand( 0.10, 0.22 ) )
             part:SetStartAlpha( 180 )
             part:SetEndAlpha( 0 )
-            part:SetStartSize( math.Rand( 14, 26 ) )
+            part:SetStartSize( math.Rand( 35, 45) )
             part:SetEndSize( math.Rand( 2, 8 ) )
-            part:SetColor( 220, 0, 200 )
+            part:SetColor( 220, 0, 200 )   -- fuchsia
             part:SetRoll( math.Rand( 0, 360 ) )
             part:SetRollDelta( math.Rand( -3, 3 ) )
             part:SetGravity( Vector( 0, 0, 8 ) )
@@ -107,7 +93,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Light smoke wisp
+    --  Light smoke wisp trailing behind
     -- --------------------------------------------------------
     if math.random( 1, 3 ) == 1 then
         local part = self.Emitter:Add( "particle/particle_smokegrenade", exhaustPos + backDir * math.Rand( 5, 20 ) )
