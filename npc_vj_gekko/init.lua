@@ -3,6 +3,7 @@
 --  + 5th weapon : Top-Attack Terror Missile   (sent_npc_topmissile)
 --  + 6th weapon : Active-Track Ballistic Missile (sent_npc_trackmissile)
 --  + 7th weapon : Orbit RPG (sent_orbital_rpg)
+--  + 8th weapon : Nikita Missile (sent_nikita)
 --  + Sonar Lock : net message to targeted player on TRACKMISSILE fire
 -- ============================================================
 include("shared.lua")
@@ -44,13 +45,14 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Weapon selection weights (must sum to 100)
-local WWEIGHT_MG             = 40
+local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
 local WWEIGHT_GRENADE        = 10
 local WWEIGHT_TOPMISSILE     = 10
 local WWEIGHT_TRACKMISSILE   = 5
 local WWEIGHT_ORBITRPG       = 10
+local WWEIGHT_NIKITA         = 5
 
 -- Double-salvo inaccuracy
 local SALVO_SPREAD_XY = 220
@@ -130,7 +132,8 @@ local function RollWeapon()
     cum = cum + WWEIGHT_GRENADE;        if r <= cum then return "GRENADE"      end
     cum = cum + WWEIGHT_TOPMISSILE;     if r <= cum then return "TOPMISSILE"   end
     cum = cum + WWEIGHT_TRACKMISSILE;   if r <= cum then return "TRACKMISSILE" end
-    return "ORBITRPG"
+    cum = cum + WWEIGHT_ORBITRPG;       if r <= cum then return "ORBITRPG"     end
+    return "NIKITA"
 end
 
 local function SpawnRocket(ent, attIdx, aimPos, spread)
@@ -226,6 +229,7 @@ local function RerollNotMissile(ent, enemy, exclude)
     elseif reroll == "TOPMISSILE" then return "TOPMISSILE"
     elseif reroll == "TRACKMISSILE" then return "TRACKMISSILE"
     elseif reroll == "ORBITRPG" then return "ORBITRPG"
+    elseif reroll == "NIKITA" then return "NIKITA"
     else return "GRENADE" end
 end
 
@@ -768,6 +772,45 @@ local function FireOrbitRpg(ent, enemy)
 end
 
 -- ============================================================
+--  Weapon: Nikita homing missile  (8th)
+--  Slow, self-homing, destructible (10 HP).
+--  Locks onto the current enemy at launch; no minimum-distance
+--  restriction (the missile's crawl speed makes it safe at any range).
+-- ============================================================
+local function FireNikita(ent, enemy)
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local attData = ent:GetAttachment(attIdx)
+    local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
+    local dir     = (aimPos - src):GetNormalized()
+
+    -- Small smoke puff at launch point
+    local eff = EffectData()
+    eff:SetOrigin(src)
+    eff:SetNormal(dir)
+    eff:SetScale(0.5)
+    eff:SetMagnitude(1)
+    util.Effect("SmokeEffect", eff)
+
+    local nikita = ents.Create("sent_nikita")
+    if not IsValid(nikita) then
+        print("[GekkoNikita] ERROR: sent_nikita create failed -- falling back to missile")
+        return FireMissile(ent, enemy)
+    end
+    nikita:SetPos(src)
+    nikita:SetAngles(dir:Angle())
+    nikita:SetOwner(ent)
+    nikita.Owner = ent
+    nikita:Spawn()
+    nikita:Activate()
+
+    print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f  target=%s",
+        attIdx, ent:GetPos():Distance(enemy:GetPos()), tostring(enemy)))
+    return true
+end
+
+-- ============================================================
 --  Range attack entry point
 -- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
@@ -782,6 +825,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
     elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
     elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"       then return FireNikita(self, enemy)
     else                                 return FireGrenadeLauncher(self, enemy)
     end
 end
