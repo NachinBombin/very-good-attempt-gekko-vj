@@ -734,16 +734,17 @@ end
 -- ============================================================
 --  Weapon: Orbit RPG (7th)
 --  Fires sent_orbital_rpg from the rocket launcher attachment.
---  Grey smoke at muzzle. Straight-line flight; orbital trajectory
+--  Direction = attachment-to-enemy aim angle at launch time.
+--  The missile flies straight in that direction; orbital wobble
 --  is handled entirely inside sent_orbital_rpg.
 -- ============================================================
 local function FireOrbitRpg(ent, enemy)
     ent._missileCount = (ent._missileCount or 0) + 1
-    local attIdx = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local attData = ent:GetAttachment(attIdx)
-    local src = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
-    local dir = (aimPos - src):GetNormalized()
+    local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
+    local dir     = (aimPos - src):GetNormalized()
 
     -- Grey smoke muzzle puff
     local eff = EffectData()
@@ -759,10 +760,8 @@ local function FireOrbitRpg(ent, enemy)
         return FireMissile(ent, enemy)
     end
     rpg:SetPos(src)
-    rpg:SetAngles(dir:Angle())
+    rpg:SetAngles(dir:Angle())  -- direction baked into angles; missile reads GetForward() on Initialize
     rpg:SetOwner(ent)
-    rpg.Owner  = ent
-    rpg.Target = aimPos
     rpg:Spawn()
     rpg:Activate()
 
@@ -774,8 +773,8 @@ end
 -- ============================================================
 --  Weapon: Nikita homing missile  (8th)
 --  Slow, self-homing, destructible (10 HP).
---  Locks onto the current enemy at launch; no minimum-distance
---  restriction (the missile's crawl speed makes it safe at any range).
+--  Target is auto-acquired in sent_nikita:Initialize() by scanning
+--  nearby entities -- we only need to set position, angle, and owner.
 -- ============================================================
 local function FireNikita(ent, enemy)
     ent._missileCount = (ent._missileCount or 0) + 1
@@ -799,14 +798,13 @@ local function FireNikita(ent, enemy)
         return FireMissile(ent, enemy)
     end
     nikita:SetPos(src)
-    nikita:SetAngles(dir:Angle())
-    nikita:SetOwner(ent)
-    nikita.Owner = ent
+    nikita:SetAngles(dir:Angle())  -- initial facing; auto-target acquired in Initialize()
+    nikita:SetOwner(ent)           -- owner excluded from FindClosestTarget scan
     nikita:Spawn()
     nikita:Activate()
 
-    print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f  target=%s",
-        attIdx, ent:GetPos():Distance(enemy:GetPos()), tostring(enemy)))
+    print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f",
+        attIdx, ent:GetPos():Distance(enemy:GetPos())))
     return true
 end
 
