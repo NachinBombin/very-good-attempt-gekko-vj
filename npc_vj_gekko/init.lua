@@ -730,10 +730,6 @@ end
 
 -- ============================================================
 --  Weapon: Orbit RPG (7th)
---  Fires sent_orbital_rpg from the rocket launcher attachment.
---  Direction = attachment-to-enemy aim angle at launch time.
---  The missile flies straight in that direction; orbital wobble
---  is handled entirely inside sent_orbital_rpg.
 -- ============================================================
 local function FireOrbitRpg(ent, enemy)
     ent._missileCount = (ent._missileCount or 0) + 1
@@ -768,10 +764,17 @@ end
 
 -- ============================================================
 --  Weapon: Nikita homing missile  (8th)
---  Slow, destructible (10 HP), explicit-target homing.
---  sent_nikita no longer auto-scans; target MUST be passed via
---  SetTarget() after Activate(). The Gekko's current enemy is
---  assigned directly -- the missile will never home onto the Gekko.
+--
+--  sent_nikita uses base_entity, whose ENT methods are only
+--  accessible after the engine has fully processed Spawn()+Activate().
+--  Calling nikita:SetTarget() directly after Activate() hits the
+--  engine metatable before Lua's ENT table is wired up, causing
+--  "attempt to call method 'SetTarget' (a nil value)".
+--
+--  The fix: use SWEP_FireNikita(), the global helper defined in
+--  sent_nikita/init.lua. It runs Spawn()+Activate() internally and
+--  then calls SetTarget() safely. We pass the attachment position
+--  as eyePos so the missile originates from the correct hardpoint.
 -- ============================================================
 local function FireNikita(ent, enemy)
     ent._missileCount = (ent._missileCount or 0) + 1
@@ -779,28 +782,27 @@ local function FireNikita(ent, enemy)
     local attData = ent:GetAttachment(attIdx)
     local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
     local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
-    local dir     = (aimPos - src):GetNormalized()
+    local launchAng = (aimPos - src):GetNormalized():Angle()
 
     local eff = EffectData()
     eff:SetOrigin(src)
-    eff:SetNormal(dir)
+    eff:SetNormal(launchAng:Forward())
     eff:SetScale(0.5)
     eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
 
-    local nikita = ents.Create("sent_nikita")
-    if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: sent_nikita create failed -- falling back to missile")
+    -- SWEP_FireNikita handles Spawn()+Activate()+SetTarget() in the
+    -- correct order, avoiding the base_entity metatable race.
+    if not SWEP_FireNikita then
+        print("[GekkoNikita] ERROR: SWEP_FireNikita not found -- is sent_nikita loaded? Falling back.")
         return FireMissile(ent, enemy)
     end
-    nikita:SetPos(src)
-    nikita:SetAngles(dir:Angle())
-    nikita:SetOwner(ent)
-    nikita:Spawn()
-    nikita:Activate()
-    -- Assign target AFTER Activate() so networked vars are initialised.
-    -- sent_nikita:SetTarget() stores the entity and writes TargetEntIndex.
-    nikita:SetTarget(enemy)
+
+    local nikita = SWEP_FireNikita(ent, src, launchAng, enemy)
+    if not IsValid(nikita) then
+        print("[GekkoNikita] ERROR: SWEP_FireNikita returned invalid -- falling back")
+        return FireMissile(ent, enemy)
+    end
 
     print(string.format("[GekkoNikita] Launched | att=%d dist=%.0f target=%s",
         attIdx, ent:GetPos():Distance(enemy:GetPos()), tostring(enemy)))
