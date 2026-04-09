@@ -7,41 +7,35 @@
 --    * The Gekko (npc_vj_gekko/init.lua :: FireNikita) is the
 --      SOLE target authority.
 --    * Receives a fixed  self.Target  Vector before Spawn().
---    * Performs NO autonomous enemy scan, NO nearest-entity
---      lookup, and NO re-acquisition mid-flight.
---    * Flies to the given position and detonates.
---    * If Target is nil/zero on Spawn the missile self-destructs
---      safely after 0.2 s so no orphan entity persists.
---
---  Lifecycle:
---    Initialize()  -- validate target, set physics, broadcast TargetPos
---    Think()       -- steer toward target every tick
---    Touch()       -- detonate on contact
---    timer         -- auto-detonate after LIFETIME seconds
+--    * NO enemy scan, NO nearest-entity lookup, NO re-acquisition.
+--    * Flies to given position and detonates.
 -- ============================================================
 AddCSLuaFile()
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
-include("shared.lua")   -- REQUIRED: registers SetupDataTables -> SetTargetPos/GetTargetPos
+include("shared.lua")   -- registers SetTargetPos / GetTargetPos
 
 -- ============================================================
---  Tuning constants
+--  Tuning
 -- ============================================================
-local SPEED_INITIAL   = 600     -- units/s at launch
-local SPEED_CRUISE    = 1100    -- units/s at full throttle
-local SPEED_RAMP_TIME = 0.6     -- seconds to reach cruise speed
-local TURN_RATE       = 3.8     -- lerp weight per tick (higher = tighter turns)
-local LIFETIME        = 14      -- seconds before auto-detonate
+local SPEED_INITIAL   = 600
+local SPEED_CRUISE    = 1100
+local SPEED_RAMP_TIME = 0.6
+local TURN_RATE       = 0.12    -- 0-1 lerp fraction per tick toward wanted dir
+local LIFETIME        = 14
 local BLAST_RADIUS    = 380
 local BLAST_DAMAGE    = 220
-local COLLIDE_GRACE   = 0.45    -- seconds of owner-collision immunity after spawn
-local PROX_DETONATE   = 80      -- units from target pos to detonate
-local THINK_INTERVAL  = 0       -- 0 = every server tick
+local COLLIDE_GRACE   = 0.45
+local PROX_DETONATE   = 80
 
 local SND_LAUNCH   = "weapons/rpg/rocket1.wav"
 local SND_FLY      = "weapons/rpg/rocket_fly.wav"
 local SND_DETONATE = "weapons/explode5.wav"
 local FX_EXPLODE   = "Explosion"
+
+-- Inline lerp -- avoids math.Lerp which is absent in some GMod builds
+local function lerp(t, a, b)  return a + (b - a) * t  end
+local function clamp(v, lo, hi)  return v < lo and lo or v > hi and hi or v  end
 
 -- ============================================================
 --  Initialize
@@ -49,6 +43,9 @@ local FX_EXPLODE   = "Explosion"
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile_closed.mdl")
     self:SetModelScale(10)
+
+    -- Pure kinematic flight: MOVETYPE_FLY + SetLocalVelocity
+    -- NO PhysicsInit -- physics objects fight kinematic velocity
     self:SetMoveType(MOVETYPE_FLY)
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-4,-4,-4), Vector(4,4,4))
@@ -56,37 +53,25 @@ function ENT:Initialize()
     self:DrawShadow(false)
     self:SetGravity(0)
     self._spawnTime = CurTime()
+    self._detonated = false
 
-    -- Validate target assigned by Gekko before Spawn()
     if not self.Target or self.Target == vector_origin then
-        print("[GekkoNikita] ERROR: no Target on Initialize -- self-destructing")
+        print("[GekkoNikita] ERROR: no Target -- self-destructing")
         timer.Simple(0.2, function() if IsValid(self) then self:Remove() end end)
         return
     end
-    self._target = self.Target  -- fixed forever; never re-assigned
 
-    -- Broadcast fixed target position to clients (targeting line in cl_init)
+    self._target = self.Target
     self:SetTargetPos(self._target)
 
-    -- Initial velocity toward target
     local dir = (self._target - self:GetPos()):GetNormalized()
     self:SetAngles(dir:Angle())
     self:SetLocalVelocity(dir * SPEED_INITIAL)
-    self:PhysicsInit(SOLID_BBOX)
-    local phys = self:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:EnableGravity(false)
-        phys:SetVelocity(dir * SPEED_INITIAL)
-        phys:SetMass(1)
-    end
 
-    -- Sounds
     self:EmitSound(SND_LAUNCH, 80, 100, 1)
     timer.Simple(0.3, function()
         if IsValid(self) then self:EmitSound(SND_FLY, 75, 95, 1) end
     end)
-
-    -- Safety auto-detonate
     timer.Simple(LIFETIME, function()
         if IsValid(self) then self:Detonate() end
     end)
@@ -95,58 +80,49 @@ function ENT:Initialize()
 end
 
 -- ============================================================
---  Think  (steer toward fixed target position)
+--  Think
 -- ============================================================
 function ENT:Think()
-    -- Abort cleanly if target was never set (e.g. self-destruct path)
     if not self._target then
         self:NextThink(CurTime() + 0.1)
         return true
     end
 
-    local now = CurTime()
-    local age = now - (self._spawnTime or now)
-
-    -- Speed ramp: SPEED_INITIAL -> SPEED_CRUISE over SPEED_RAMP_TIME seconds
-    -- math.Lerp(t, a, b) is the correct server-safe call (not bare Lerp)
-    local speed = math.Lerp(
-        math.Clamp(age / SPEED_RAMP_TIME, 0, 1),
-        SPEED_INITIAL, SPEED_CRUISE
-    )
+    local age   = CurTime() - (self._spawnTime or CurTime())
+    local t     = clamp(age / SPEED_RAMP_TIME, 0, 1)
+    local speed = lerp(t, SPEED_INITIAL, SPEED_CRUISE)
 
     local pos  = self:GetPos()
     local want = (self._target - pos):GetNormalized()
     local cur  = self:GetForward()
 
-    -- Steer toward target.
-    -- math.Lerp on each component is server-safe; LerpVector is client-only.
-    local lerpT  = math.Clamp(TURN_RATE * FrameTime(), 0, 1)
-    local newDir = Vector(
-        math.Lerp(lerpT, cur.x, want.x),
-        math.Lerp(lerpT, cur.y, want.y),
-        math.Lerp(lerpT, cur.z, want.z)
-    )
-    if newDir:LengthSqr() < 0.0001 then newDir = want end
-    newDir:Normalize()
+    -- Steer: inline per-component lerp, fully server-safe
+    local f   = clamp(TURN_RATE, 0, 1)
+    local nx  = cur.x + (want.x - cur.x) * f
+    local ny  = cur.y + (want.y - cur.y) * f
+    local nz  = cur.z + (want.z - cur.z) * f
+    local len = math.sqrt(nx*nx + ny*ny + nz*nz)
+    if len < 0.0001 then
+        nx, ny, nz = want.x, want.y, want.z
+    else
+        nx = nx/len ; ny = ny/len ; nz = nz/len
+    end
 
+    local newDir = Vector(nx, ny, nz)
     self:SetAngles(newDir:Angle())
-    local vel = newDir * speed
-    self:SetLocalVelocity(vel)
-    local phys = self:GetPhysicsObject()
-    if IsValid(phys) then phys:SetVelocity(vel) end
+    self:SetLocalVelocity(newDir * speed)
 
-    -- Proximity detonation
     if pos:Distance(self._target) < PROX_DETONATE then
         self:Detonate()
         return
     end
 
-    self:NextThink(CurTime() + THINK_INTERVAL)
+    self:NextThink(CurTime())
     return true
 end
 
 -- ============================================================
---  Touch  (contact detonation)
+--  Touch
 -- ============================================================
 function ENT:Touch(other)
     if IsValid(self:GetOwner()) and other == self:GetOwner() then
@@ -167,7 +143,7 @@ function ENT:Detonate()
     util.BlastDamage(self, attacker, pos, BLAST_RADIUS, BLAST_DAMAGE)
     local eff = EffectData()
     eff:SetOrigin(pos) ; eff:SetNormal(self:GetForward())
-    eff:SetScale(1)    ; eff:SetMagnitude(3)
+    eff:SetScale(1) ; eff:SetMagnitude(3)
     util.Effect(FX_EXPLODE, eff)
     self:EmitSound(SND_DETONATE, 120, 100, 1)
     self:Remove()
