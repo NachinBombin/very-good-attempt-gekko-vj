@@ -5,31 +5,36 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Missile  (sent_gekko_nikita)
 --
---  Direct copy of sent_npc_trackmissile flight model with:
---    * No ballistic / ceiling phase  (tracks forever)
---    * Speed capped at 600 u/s       (slow, dodgeable)
---    * Scale 2x model
---    * Health 50 HP -- can be shot down
---    * Larger explosion radius
+--  Slow cruise missile. Almost runnable from.
+--  Tracks forever (no ballistic ceiling phase).
+--  Can be shot down (50 HP).
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
-local FORCE_PER_TICK        = 120000
-local SPEED_CAP             = 600        -- slow cruise missile
+-- Very low force so it takes several seconds to reach cruise speed.
+-- 120000 (trackmissile) hits cap in ~1 tick. 800 ramps gently over ~3s.
+local FORCE_PER_TICK        = 800
+
+-- Hard absolute speed ceiling in u/s.
+-- Player jog ~200, sprint ~340. 280 = nearly outrunnable.
+local SPEED_CAP             = 280
+
+-- How lazily the missile turns. 0.03 = very slow yaw, wide arcs.
+local TRACK_LERP            = 0.03
+
 local LIFETIME              = 45
 local COLLISION_IMMUNE_TIME = 0.5
-local TRACK_LERP            = 0.12       -- same as trackmissile
-local KICK_UP_SPEED         = 900        -- same as trackmissile
+local KICK_UP_SPEED         = 90      -- gentle initial loft
 
 -- ============================================================
 --  Initialize
 -- ============================================================
 function ENT:Initialize()
     self:SetModel( "models/weapons/w_missile_launch.mdl" )
-    self:SetModelScale( 2, 0 )           -- bigger than trackmissile
+    self:SetModelScale( 2, 0 )
     self:PhysicsInit( SOLID_VPHYSICS )
     self:SetMoveType( MOVETYPE_VPHYSICS )
     self:SetSolid( SOLID_VPHYSICS )
@@ -41,7 +46,6 @@ function ENT:Initialize()
         phys:SetMass( 500 )
         phys:EnableDrag( true )
         phys:EnableGravity( true )
-        -- CRITICAL: registers PhysicsUpdate callback with the physics engine
         self:StartMotionController()
     end
 
@@ -63,7 +67,6 @@ function ENT:Initialize()
 
     self:SetTargetPos( self.Target )
 
-    -- Deferred upward kick identical to trackmissile
     local selfRef = self
     timer.Simple( 0, function()
         if not IsValid( selfRef ) then return end
@@ -85,13 +88,13 @@ function ENT:Initialize()
 end
 
 -- ============================================================
---  FireEngine  (+0.75 s)  -- identical to trackmissile
+--  FireEngine
 -- ============================================================
 function ENT:FireEngine()
     if self.Destroyed then return end
 
     self.Damage = math.random( 2500, 4500 )
-    self.Radius = math.random( 700,  1024 )  -- bigger than trackmissile
+    self.Radius = math.random( 700,  1024 )
     self.EngineSound:PlayEx( 511, 100 )
     self.ActivatedAlmonds = true
     self:SetNWBool( "EngineStarted", true )
@@ -113,6 +116,38 @@ function ENT:FireEngine()
 end
 
 -- ============================================================
+--  PhysicsUpdate  -- guidance + thrust + hard velocity clamp
+-- ============================================================
+function ENT:PhysicsUpdate( phys, deltatime )
+    if not self.ActivatedAlmonds then return end
+    if not IsValid( phys ) then return end
+
+    -- Hard velocity clamp: prevents momentum/gravity from
+    -- carrying the missile past SPEED_CAP regardless of force.
+    local vel = self:GetVelocity()
+    local spd = vel:Length()
+    if spd > SPEED_CAP then
+        phys:SetVelocity( vel * ( SPEED_CAP / spd ) )
+    end
+
+    -- Resolve aim position
+    local aimPos
+    if IsValid( self.TrackEnt ) then
+        aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
+    elseif self.Target then
+        aimPos = self.Target
+    else
+        phys:ApplyForceCenter( self:GetForward() * FORCE_PER_TICK )
+        return
+    end
+
+    local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
+    self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
+
+    phys:ApplyForceCenter( self:GetForward() * FORCE_PER_TICK )
+end
+
+-- ============================================================
 --  PhysicsCollide
 -- ============================================================
 function ENT:PhysicsCollide( data, physobj )
@@ -120,34 +155,6 @@ function ENT:PhysicsCollide( data, physobj )
     if CurTime() - self.SpawnTime < COLLISION_IMMUNE_TIME then return end
     if not self.ActivatedAlmonds then return end
     self:MissileDoExplosion()
-end
-
--- ============================================================
---  PhysicsUpdate  -- guidance + thrust (no ballistic phase)
--- ============================================================
-function ENT:PhysicsUpdate( phys, deltatime )
-    if not self.ActivatedAlmonds then return end
-    if not IsValid( phys ) then return end
-
-    if self:GetVelocity():Length() < SPEED_CAP then
-        self.SpeedValue = math.min( self.SpeedValue + FORCE_PER_TICK, FORCE_PER_TICK * 10 )
-    end
-
-    -- Resolve live aim position
-    local aimPos
-    if IsValid( self.TrackEnt ) then
-        aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
-    elseif self.Target then
-        aimPos = self.Target
-    else
-        phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
-        return
-    end
-
-    local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
-    self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
-
-    phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
 end
 
 -- ============================================================
