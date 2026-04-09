@@ -8,8 +8,10 @@ include( "shared.lua" )
 --  CHANGE LOG:
 --    - SND_WARN changed to buttons/button17.wav (loud electronic
 --      alarm beep) at max volume 511 from npc init caller
---    - Velocity kick fires in Initialize() so missile is moving
---      before FireEngine() fires at +0.75s
+--    - Velocity kick deferred to timer.Simple(0) so physobj has
+--      simulated at least one tick before velocity is applied.
+--      (SetVelocityInstantaneous was being zeroed by the engine
+--      on the first physics step in recent GMod builds.)
 --    - 22-degree tilt REMOVED
 --    - FORCE_PER_TICK = 120000 N sustains ~2000 u/s
 --    - PhysicsCollide 0.5 s immunity window (self-collision fix)
@@ -61,17 +63,21 @@ function ENT:Initialize()
         print( "[TopMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
-    if IsValid( self.PhysObj ) then
-        self.PhysObj:SetVelocityInstantaneous( self:GetForward() * 108450 )
-        self.PhysObj:SetVelocity( self:GetForward() * 108450 )
-    end
+    -- Deferred velocity kick: wait one physics tick so the engine does not
+    -- zero the velocity when it first simulates the freshly-woken physobj.
+    local selfRef = self
+    timer.Simple( 0, function()
+        if not IsValid( selfRef ) then return end
+        local phys = selfRef:GetPhysicsObject()
+        if not IsValid( phys ) then return end
+        phys:SetVelocity( selfRef:GetForward() * 108450 )
+    end )
 
     -- Max-volume electronic beep on launch
     sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
 
     self.EngineSound = CreateSound( self, SND_ENGINE )
 
-    local selfRef = self
     timer.Simple( 0.75, function()
         if IsValid( selfRef ) and not selfRef.Destroyed then
             selfRef:FireEngine()

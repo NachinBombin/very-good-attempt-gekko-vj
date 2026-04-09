@@ -33,6 +33,8 @@ include( "shared.lua" )
 --    - COLLISION_IMMUNE_TIME = 0.5 s: ignores PhysicsCollide
 --      during the launch kick window.
 --    - MinDist check in FireTrackMissile(): re-rolls if too close.
+--    - Velocity kick deferred to timer.Simple(0) so physobj has
+--      simulated at least one tick before velocity is applied.
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
@@ -46,11 +48,10 @@ local COLLISION_IMMUNE_TIME = 0.5
 
 -- Height above spawn Z at which active tracking is cut off
 -- and the missile becomes purely ballistic.
--- 600 units ~ one storey above the NPC launch point.
 local TRACK_CEILING = 600
 
 -- How aggressively the missile steers toward the target
--- while in active-tracking phase.  0.12 = snappy but not instant.
+-- while in active-tracking phase.
 local TRACK_LERP = 0.12
 
 -- ============================================================
@@ -73,16 +74,13 @@ function ENT:Initialize()
 
     self.SpeedValue        = 0
     self.Destroyed         = false
-    self.ActivatedAlmonds  = false   -- true once FireEngine() runs
-    self.Ballistic         = false   -- true once ceiling is breached
+    self.ActivatedAlmonds  = false
+    self.Ballistic         = false
     self.SpawnTime         = CurTime()
-    self.SpawnZ            = nil     -- set after first PhysicsUpdate tick
+    self.SpawnZ            = nil
     self.HealthVal         = 50
     self.Damage            = 0
     self.Radius            = 0
-    -- Target is a Vector set by the NPC before Spawn()
-    -- TrackEnt is the live entity to follow during active tracking
-    -- (set by the NPC; falls back to Target vector if invalid)
 
     if not self.Target or type( self.Target ) ~= "Vector" then
         local fwd = self:GetForward()
@@ -92,16 +90,19 @@ function ENT:Initialize()
         print( "[TrackMissile] WARNING: no Target set before Spawn -- using fallback" )
     end
 
-    -- Initial kick straight up (same as topmissile)
-    if IsValid( self.PhysObj ) then
-        self.PhysObj:SetVelocityInstantaneous( self:GetForward() * 108450 )
-        self.PhysObj:SetVelocity( self:GetForward() * 108450 )
-    end
+    -- Deferred velocity kick: wait one physics tick so the engine does not
+    -- zero the velocity when it first simulates the freshly-woken physobj.
+    local selfRef = self
+    timer.Simple( 0, function()
+        if not IsValid( selfRef ) then return end
+        local phys = selfRef:GetPhysicsObject()
+        if not IsValid( phys ) then return end
+        phys:SetVelocity( selfRef:GetForward() * 108450 )
+    end )
 
     sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
     self.EngineSound = CreateSound( self, SND_ENGINE )
 
-    local selfRef = self
     timer.Simple( 0.75, function()
         if IsValid( selfRef ) and not selfRef.Destroyed then
             selfRef:FireEngine()
@@ -164,14 +165,12 @@ function ENT:PhysicsUpdate()
     local phys = self:GetPhysicsObject()
     if not IsValid( phys ) then return end
 
-    -- Ramp thrust while below speed cap
     if self:GetVelocity():Length() < SPEED_CAP then
         self.SpeedValue = math.min( self.SpeedValue + FORCE_PER_TICK, FORCE_PER_TICK * 10 )
     end
 
     local mp = self:GetPos()
 
-    -- Check ceiling to decide if we should switch to ballistic
     if not self.Ballistic and self.SpawnZ then
         if mp.z >= self.SpawnZ + TRACK_CEILING then
             self.Ballistic = true
@@ -183,13 +182,11 @@ function ENT:PhysicsUpdate()
     end
 
     if self.Ballistic then
-        -- Pure ballistic: thrust only along current forward, no steering
         phys:ApplyForceCenter( self:GetForward() * self.SpeedValue )
         return
     end
 
     -- ---- ACTIVE TRACKING ----
-    -- Resolve live target position
     local aimPos
     if IsValid( self.TrackEnt ) then
         aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
@@ -200,7 +197,6 @@ function ENT:PhysicsUpdate()
         return
     end
 
-    -- Steer toward live target
     local wantAngle = ( aimPos - mp ):GetNormalized():Angle()
     self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
 
@@ -220,7 +216,6 @@ function ENT:Think()
     end
 
     if self.ActivatedAlmonds then
-        -- Proximity: use live entity pos if available, else stored vector
         local checkPos
         if IsValid( self.TrackEnt ) then
             checkPos = self.TrackEnt:GetPos()

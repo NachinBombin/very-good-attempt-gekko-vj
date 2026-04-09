@@ -664,6 +664,42 @@ local function FireGrenadeLauncher(ent, enemy)
 end
 
 -- ============================================================
+--  Weapon: Orbit RPG (7th)
+--  MUST be declared before FireTopMissile and FireTrackMissile
+--  so their re-roll fallback upvalue is in scope.
+-- ============================================================
+local function FireOrbitRpg(ent, enemy)
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local attData = ent:GetAttachment(attIdx)
+    local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
+    local dir     = (aimPos - src):GetNormalized()
+
+    local eff = EffectData()
+    eff:SetOrigin(src)
+    eff:SetNormal(dir)
+    eff:SetScale(0.6)
+    eff:SetMagnitude(1)
+    util.Effect("SmokeEffect", eff)
+
+    local rpg = ents.Create("sent_orbital_rpg")
+    if not IsValid(rpg) then
+        print("[GekkoORBIT] ERROR: sent_orbital_rpg create failed -- falling back")
+        return FireMissile(ent, enemy)
+    end
+    rpg:SetPos(src)
+    rpg:SetAngles(dir:Angle())
+    rpg:SetOwner(ent)
+    rpg:Spawn()
+    rpg:Activate()
+
+    print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f",
+        attIdx, ent:GetPos():Distance(enemy:GetPos())))
+    return true
+end
+
+-- ============================================================
 --  Weapon: top-attack terror missile  (5th)
 -- ============================================================
 local function FireTopMissile(ent, enemy)
@@ -729,40 +765,6 @@ local function FireTrackMissile(ent, enemy)
 end
 
 -- ============================================================
---  Weapon: Orbit RPG (7th)
--- ============================================================
-local function FireOrbitRpg(ent, enemy)
-    ent._missileCount = (ent._missileCount or 0) + 1
-    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    local attData = ent:GetAttachment(attIdx)
-    local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
-    local dir     = (aimPos - src):GetNormalized()
-
-    local eff = EffectData()
-    eff:SetOrigin(src)
-    eff:SetNormal(dir)
-    eff:SetScale(0.6)
-    eff:SetMagnitude(1)
-    util.Effect("SmokeEffect", eff)
-
-    local rpg = ents.Create("sent_orbital_rpg")
-    if not IsValid(rpg) then
-        print("[GekkoORBIT] ERROR: sent_orbital_rpg create failed -- falling back")
-        return FireMissile(ent, enemy)
-    end
-    rpg:SetPos(src)
-    rpg:SetAngles(dir:Angle())
-    rpg:SetOwner(ent)
-    rpg:Spawn()
-    rpg:Activate()
-
-    print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f",
-        attIdx, ent:GetPos():Distance(enemy:GetPos())))
-    return true
-end
-
--- ============================================================
 --  Weapon: Nikita homing missile  (8th)
 --
 --  sent_nikita uses base_entity, whose ENT methods are only
@@ -791,8 +793,6 @@ local function FireNikita(ent, enemy)
     eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
 
-    -- SWEP_FireNikita handles Spawn()+Activate()+SetTarget() in the
-    -- correct order, avoiding the base_entity metatable race.
     if not SWEP_FireNikita then
         print("[GekkoNikita] ERROR: SWEP_FireNikita not found -- is sent_nikita loaded? Falling back.")
         return FireMissile(ent, enemy)
