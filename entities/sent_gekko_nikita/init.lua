@@ -5,39 +5,29 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Missile  (sent_gekko_nikita)
 --
---  Flight model based on the reference player-controlled Nikita:
---    phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
+--  Uses ENTITY:PhysicsSimulate via StartMotionController.
+--  PhysicsSimulate is called by the motion controller every
+--  tick and is NEVER skipped due to the physobj sleeping.
+--  (PhysicsUpdate was silently skipped because SetVelocity +
+--  no gravity caused the physobj to sleep between ticks.)
 --
---  This fully decouples thrust from steering:
---    * Forward speed is ALWAYS exactly CRUISE_SPEED, every tick.
---    * Steering is ONLY SetAngles() via LerpAngle.
---    * No ApplyForceCenter, no accumulation, no momentum bleed.
---    * Gravity disabled so speed stays constant on any heading.
---
---  Result: missile turns effortlessly at any TRACK_LERP value
---  without the speed changing at all.  Tune only two values:
---    CRUISE_SPEED  -- how fast it moves forward
---    TRACK_LERP    -- how tightly it turns per tick (0=never, 1=instant)
+--  Thrust and steering are fully decoupled:
+--    * Steering: SetAngles via LerpAngle only
+--    * Thrust:   return angular/linear velocity from PhysicsSimulate
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
--- Forward speed in u/s, locked every tick. Player sprint ~340.
--- 220 = slower than a sprinting player, very dodgeable.
-local CRUISE_SPEED          = 220
+-- Forward speed in u/s. Player sprint ~340. 220 = nearly outrunnable.
+local CRUISE_SPEED = 220
 
--- Turning rate per physics tick. 0.04 = lazy wide arcs.
--- Completely independent of speed now -- changing this only
--- affects how tightly it curves, never how fast it goes.
-local TRACK_LERP            = 0.04
+-- Turning rate per tick. 0.04 = lazy wide arcs.
+local TRACK_LERP   = 0.04
 
 local LIFETIME              = 45
 local COLLISION_IMMUNE_TIME = 0.5
-
--- Brief upward kick before engine ignites (no gravity during kick
--- either, so this just sets initial direction cleanly).
 local KICK_UP_SPEED         = 180
 
 -- ============================================================
@@ -55,8 +45,11 @@ function ENT:Initialize()
     if IsValid( phys ) then
         phys:Wake()
         phys:SetMass( 500 )
-        phys:EnableDrag( false )    -- no drag: speed is set directly
-        phys:EnableGravity( false ) -- no gravity: speed is set directly
+        phys:EnableDrag( false )
+        phys:EnableGravity( false )
+        -- StartMotionController registers PhysicsSimulate.
+        -- Unlike PhysicsUpdate, PhysicsSimulate is driven by the
+        -- motion controller and is NEVER skipped due to sleep.
         self:StartMotionController()
     end
 
@@ -77,7 +70,6 @@ function ENT:Initialize()
 
     self:SetTargetPos( self.Target )
 
-    -- Initial upward kick so missile visually lofts before engine
     local selfRef = self
     timer.Simple( 0, function()
         if not IsValid( selfRef ) then return end
@@ -127,19 +119,22 @@ function ENT:FireEngine()
 end
 
 -- ============================================================
---  PhysicsUpdate
+--  PhysicsSimulate
 --
---  KEY PATTERN (from reference player-nikita):
---    phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
+--  Called by the motion controller every tick -- never skipped
+--  due to physobj sleep.  This is the correct hook to use with
+--  StartMotionController.
 --
---  SetVelocity replaces the velocity entirely each tick.
---  The missile always moves at exactly CRUISE_SPEED in whatever
---  direction it is currently facing.  Steering (SetAngles) and
---  thrust (SetVelocity) are 100% independent.
+--  Returns SIM_GLOBAL_ACCELERATION to let the engine apply our
+--  requested velocity each tick.
 -- ============================================================
-function ENT:PhysicsUpdate( phys, deltatime )
-    if not self.ActivatedAlmonds then return end
-    if not IsValid( phys ) then return end
+function ENT:PhysicsSimulate( phys, deltaTime )
+    -- Always keep physobj awake
+    phys:Wake()
+
+    if not self.ActivatedAlmonds then
+        return
+    end
 
     -- Resolve aim position
     local aimPos
@@ -149,14 +144,16 @@ function ENT:PhysicsUpdate( phys, deltatime )
         aimPos = self.Target
     end
 
-    -- Steer toward aim: only changes facing angle, never speed
+    -- Steer: only changes facing angle, never affects speed
     if aimPos then
         local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
         self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
     end
 
-    -- Lock forward speed exactly: no accumulation, no momentum, no gravity bleed
+    -- Thrust: lock velocity to exactly CRUISE_SPEED along current forward
     phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
+
+    return SIM_NOTHING  -- we set velocity directly, no further sim needed
 end
 
 -- ============================================================
