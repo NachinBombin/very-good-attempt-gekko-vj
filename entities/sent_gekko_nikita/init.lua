@@ -5,24 +5,32 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Homing Cruise Missile
 --
---  Steering: LerpVector( FrameTime() * TURN_SPEED, forward, desired )
---            Operates on 3D direction vector -- no gimbal jitter.
+--  ROOT CAUSE OF ACCELERATION BUG:
+--    MOVETYPE_NOCLIP does NOT zero velocity between ticks.
+--    SetVelocity() ADDS to the current velocity.
+--    Every Think() was stacking +CRUISE_SPEED on top of the
+--    previous value, causing exponential acceleration.
 --
---  Movetype: NOCLIP so SetVelocity is fully authoritative.
+--  FIX: Use SetAbsVelocity() which REPLACES velocity outright.
+--    This is the only safe way to drive constant-speed motion
+--    on MOVETYPE_NOCLIP entities in GMod.
 --
---  Homing target: NWEntity "NikitaTrackEnt" set by FireNikita
---  immediately after Spawn()+Activate(). Survives the engine
---  post-Spawn table reset that wiped plain Lua fields.
+--  Steering: LerpVector on 3D direction vector, framerate-independent.
+--  Collision: util.TraceHull each tick (more reliable than line trace).
+--  Homing: NWEntity "NikitaTrackEnt" set post-Spawn by FireNikita.
 -- ============================================================
 
-local SND_EXPLODE    = "ambient/explosions/explode_8.wav"
+local SND_EXPLODE   = "ambient/explosions/explode_8.wav"
 
-local CRUISE_SPEED   = 380
-local TURN_SPEED     = 4.5
-local LIFETIME       = 45
-local PROX_RADIUS    = 180
-local ENGINE_DELAY   = 0.5
-local TARGET_Z_OFFS  = 80
+local CRUISE_SPEED  = 400    -- true u/s, no accumulation
+local TURN_SPEED    = 4.5    -- LerpVector t per second
+local LIFETIME      = 45
+local PROX_RADIUS   = 180
+local ENGINE_DELAY  = 0.5
+local TARGET_Z_OFFS = 80
+
+local HULL_MINS = Vector( -8, -8, -8 )
+local HULL_MAXS = Vector(  8,  8,  8 )
 
 local function SafeAimPos( ent )
     local p  = ent:GetPos()
@@ -52,7 +60,9 @@ function ENT:Initialize()
     self._nextDebug   = 0
 
     self:SetNWEntity( "NikitaTrackEnt", NULL )
-    self:SetVelocity( self:GetForward() * 120 )
+
+    -- Launch nudge: SetAbsVelocity replaces velocity, does not accumulate
+    self:SetAbsVelocity( self:GetForward() * 80 )
 
     local selfRef = self
     timer.Simple( ENGINE_DELAY, function()
@@ -78,6 +88,7 @@ function ENT:Think()
 
     if not self.EngineActive then return true end
 
+    -- Resolve homing target
     local trackEnt = self:GetNWEntity( "NikitaTrackEnt", NULL )
     local aimPos
     if IsValid( trackEnt ) then
@@ -86,24 +97,34 @@ function ENT:Think()
         aimPos = self.FallbackTarget
     end
 
+    -- Compute steering direction
+    local currentDir = self:GetForward()
+    local moveDir
+
     if aimPos then
+        -- Proximity detonation
         if ( self:GetPos() - aimPos ):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
             self:MissileDoExplosion() ; return true
         end
 
-        local currentDir = self:GetForward()
         local desiredDir = ( aimPos - self:GetPos() ):GetNormalized()
-        local newDir     = LerpVector( FrameTime() * TURN_SPEED, currentDir, desiredDir ):GetNormalized()
-
-        self:SetAngles( newDir:Angle() )
-        self:SetVelocity( newDir * CRUISE_SPEED )
+        moveDir = LerpVector( FrameTime() * TURN_SPEED, currentDir, desiredDir ):GetNormalized()
     else
-        self:SetVelocity( self:GetForward() * CRUISE_SPEED )
+        moveDir = currentDir
     end
 
-    local tr = util.TraceLine({
+    self:SetAngles( moveDir:Angle() )
+
+    -- SetAbsVelocity REPLACES velocity -- no accumulation, true constant speed
+    self:SetAbsVelocity( moveDir * CRUISE_SPEED )
+
+    -- Hull collision sweep ahead
+    local stepDist = CRUISE_SPEED * FrameTime() + 16
+    local tr = util.TraceHull({
         start  = self:GetPos(),
-        endpos = self:GetPos() + self:GetForward() * ( CRUISE_SPEED * FrameTime() + 20 ),
+        endpos = self:GetPos() + moveDir * stepDist,
+        mins   = HULL_MINS,
+        maxs   = HULL_MAXS,
         mask   = MASK_SHOT,
         filter = { self, IsValid( self.NikitaOwner ) and self.NikitaOwner or self },
     })
@@ -116,14 +137,14 @@ function ENT:Think()
         end
     end
 
+    -- Debug ticker
     if CurTime() > self._nextDebug then
         self._nextDebug = CurTime() + 0.5
         print( string.format(
-            "[NikitaDBG] homing=%s aimPos=%s ang=%s spd=%.0f",
+            "[NikitaDBG] homing=%s spd=%.0f ang=%s",
             tostring( IsValid( trackEnt ) ),
-            tostring( aimPos ),
-            tostring( self:GetAngles() ),
-            self:GetVelocity():Length()
+            self:GetAbsVelocity():Length(),
+            tostring( self:GetAngles() )
         ))
     end
 
