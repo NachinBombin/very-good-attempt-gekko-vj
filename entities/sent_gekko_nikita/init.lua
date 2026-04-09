@@ -5,163 +5,128 @@ include( "shared.lua" )
 -- ============================================================
 --  SERVER  -  Gekko Nikita Missile  (sent_gekko_nikita)
 --
---  Movement: StartMotionController + PhysicsSimulate
---   Steering = LerpAngle toward target every sim tick
---   Thrust   = SetVelocity along current forward  (never accumulates)
+--  MOVETYPE_FLY: no VPhysics object at all.
+--  Steering and thrust run in Think() every tick.
+--  This mirrors exactly how the reference Nikita weapon works
+--  (SetVelocity on a non-VPhysics entity = instant, reliable).
+--
+--  Decoupled knobs:
+--    CRUISE_SPEED = forward speed in u/s  (never changes)
+--    TRACK_LERP   = per-tick angle blend   (controls turn radius)
 -- ============================================================
 
 local SND_LAUNCH  = "buttons/button17.wav"
 local SND_ENGINE  = "vehicles/combine_apc/apc_rocket_launch1.wav"
 local SND_EXPLODE = "ambient/explosions/explode_8.wav"
 
-local CRUISE_SPEED          = 280      -- u/s forward at all times
-local TRACK_LERP            = 0.05     -- per-tick angle blend  (bigger = tighter)
-local LIFETIME              = 45       -- seconds until self-destruct
-local PROXIMITY_RADIUS      = 180      -- u to target for proximity det
-local COLLISION_IMMUNE_TIME = 0.6      -- seconds after spawn, ignore collisions
-local ENGINE_DELAY          = 0.5      -- seconds before engine + tracking start
+local CRUISE_SPEED     = 280    -- u/s forward at all times
+local TRACK_LERP       = 0.05   -- per-tick angle blend (bigger = tighter turns)
+local LIFETIME         = 45     -- seconds until self-destruct
+local PROXIMITY_RADIUS = 180    -- u to target for proximity detonation
+local ENGINE_DELAY     = 0.5    -- seconds before homing + full speed engage
 
 -- ============================================================
 --  Initialize
 -- ============================================================
 function ENT:Initialize()
-    -- Use a compact model with a tiny VPhysics hull so it never
-    -- clips through the floor on spawn.  No SetModelScale -- that
-    -- resizes the visual only, NOT the VPhysics collision hull.
     self:SetModel( "models/weapons/w_missile_launch.mdl" )
-    self:PhysicsInit( SOLID_VPHYSICS )
-    self:SetMoveType( MOVETYPE_VPHYSICS )
-    self:SetSolid( SOLID_VPHYSICS )
+
+    -- MOVETYPE_FLY: pure kinematic movement, no VPhysics object.
+    -- Entity:SetVelocity() works every Think() tick with zero overhead.
+    self:SetMoveType( MOVETYPE_FLY )
+    self:SetSolid( SOLID_BBOX )
     self:SetCollisionGroup( COLLISION_GROUP_PROJECTILE )
+    self:SetCollisionBounds( Vector( -8, -8, -8 ), Vector( 8, 8, 8 ) )
 
-    -- Ignore ALL entities for the first COLLISION_IMMUNE_TIME seconds.
-    -- This prevents the missile from immediately detonating against
-    -- the Gekko or the ground it spawned near.
-    self:SetOwner( self.Owner )
-    self:CollisionRulesChanged()
-    local selfRef = self
-    timer.Simple( COLLISION_IMMUNE_TIME, function()
-        if not IsValid( selfRef ) then return end
-        selfRef:SetCollisionGroup( COLLISION_GROUP_PROJECTILE )
-        selfRef:CollisionRulesChanged()
-    end )
-
-    local phys = self:GetPhysicsObject()
-    if IsValid( phys ) then
-        phys:Wake()
-        phys:SetMass( 60 )
-        phys:EnableDrag( false )
-        phys:EnableGravity( false )
-        -- Give it a gentle initial nudge in the forward direction so it
-        -- doesn't sit motionless for ENGINE_DELAY seconds.
-        phys:SetVelocity( self:GetForward() * 120 )
-        -- StartMotionController registers PhysicsSimulate.
-        -- PhysicsSimulate is called every tick by the controller and is
-        -- NEVER skipped due to physics sleep (unlike PhysicsUpdate).
-        self:StartMotionController()
-    end
-
-    self.Destroyed       = false
-    self.EngineActive    = false
-    self.SpawnTime       = CurTime()
-    self.HealthVal       = 50
-    self.Damage          = 0
-    self.Radius          = 0
+    self.Destroyed    = false
+    self.EngineActive = false
+    self.SpawnTime    = CurTime()
+    self.HealthVal    = 50
+    self.Damage       = 0
+    self.Radius       = 0
 
     if not self.Target or type( self.Target ) ~= "Vector" then
         local fwd = self:GetForward()
         self.Target = self:GetPos() + fwd * 2000
         print( "[GekkoNikita] WARNING: no Target set -- using fallback" )
     end
-
     self:SetTargetPos( self.Target )
+    self:SetEngineStarted( false )
+
+    -- Gentle nudge so it moves immediately even before engine fires
+    self:SetVelocity( self:GetForward() * 120 )
 
     sound.Play( SND_LAUNCH, self:GetPos(), 511, 60 )
     self.EngineSound = CreateSound( self, SND_ENGINE )
 
-    -- Delay homing + full speed until missile has cleared the spawn area
+    local selfRef = self
     timer.Simple( ENGINE_DELAY, function()
         if not IsValid( selfRef ) or selfRef.Destroyed then return end
         selfRef.Damage = math.random( 2500, 4500 )
         selfRef.Radius = math.random( 700,  1024 )
         selfRef.EngineSound:PlayEx( 1.0, 100 )
         selfRef.EngineActive = true
-        selfRef:SetNWBool( "EngineStarted", true )
+        selfRef:SetEngineStarted( true )
     end )
 
     self:NextThink( CurTime() )
 end
 
 -- ============================================================
---  PhysicsSimulate  (motion controller tick -- never sleeps)
--- ============================================================
-function ENT:PhysicsSimulate( phys, deltaTime )
-    phys:Wake()
-
-    if not self.EngineActive then
-        -- Engine not started yet: coast on initial nudge velocity, no steering
-        return SIM_NOTHING
-    end
-
-    -- Resolve aim position (live entity takes priority over static vector)
-    local aimPos
-    if IsValid( self.TrackEnt ) then
-        aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
-    elseif self.Target then
-        aimPos = self.Target
-    end
-
-    -- Steering: rotate facing toward target, leave speed untouched
-    if aimPos then
-        local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
-        self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
-    end
-
-    -- Thrust: always exactly CRUISE_SPEED along current facing
-    phys:SetVelocity( self:GetForward() * CRUISE_SPEED )
-
-    return SIM_NOTHING
-end
-
--- ============================================================
---  PhysicsCollide
--- ============================================================
-function ENT:PhysicsCollide( data, physobj )
-    if self.Destroyed then return end
-    if CurTime() - self.SpawnTime < COLLISION_IMMUNE_TIME then return end
-    self:MissileDoExplosion()
-end
-
--- ============================================================
---  Think  --  proximity detonation + lifetime
+--  Think  --  steering + thrust + lifetime + proximity det
 -- ============================================================
 function ENT:Think()
     self:NextThink( CurTime() )
     if self.Destroyed then return true end
 
+    -- Lifetime check
     if CurTime() - self.SpawnTime > LIFETIME then
         self:MissileDoExplosion()
         return true
     end
 
     if self.EngineActive then
-        local checkPos
+        -- Resolve aim position
+        local aimPos
         if IsValid( self.TrackEnt ) then
-            checkPos = self.TrackEnt:GetPos()
+            aimPos = self.TrackEnt:GetPos() + Vector( 0, 0, 40 )
         elseif self.Target then
-            checkPos = self.Target
+            aimPos = self.Target
         end
-        if checkPos and ( self:GetPos() - checkPos ):Length() < PROXIMITY_RADIUS then
-            self:MissileDoExplosion()
-            return true
+
+        if aimPos then
+            -- Proximity detonation
+            if ( self:GetPos() - aimPos ):Length() < PROXIMITY_RADIUS then
+                self:MissileDoExplosion()
+                return true
+            end
+
+            -- Steering: blend current facing toward target
+            -- Only changes angle, never touches speed
+            local wantAngle = ( aimPos - self:GetPos() ):GetNormalized():Angle()
+            self:SetAngles( LerpAngle( TRACK_LERP, self:GetAngles(), wantAngle ) )
         end
+
+        -- Thrust: always exactly CRUISE_SPEED along current facing
+        -- SetVelocity on MOVETYPE_FLY is applied instantly, no accumulation
+        self:SetVelocity( self:GetForward() * CRUISE_SPEED )
     end
 
     return true
 end
 
 -- ============================================================
---  OnTakeDamage  -- can be shot down
+--  Touch  --  collision detection (replaces PhysicsCollide)
+-- ============================================================
+function ENT:Touch( ent )
+    if self.Destroyed then return end
+    if CurTime() - self.SpawnTime < 0.3 then return end   -- brief spawn immunity
+    if ent == self.Owner then return end
+    self:MissileDoExplosion()
+end
+
+-- ============================================================
+--  OnTakeDamage  --  can be shot down
 -- ============================================================
 function ENT:OnTakeDamage( dmginfo )
     if self.Destroyed then return end
