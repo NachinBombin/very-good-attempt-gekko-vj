@@ -16,15 +16,17 @@ include("shared.lua")
 --    5. Clearance probe + wall-kick for collision resilience.
 --    6. Corridor detection with boosted turn speed.
 --
---  Because the guide sees geometry the same way the missile does,
---  it can thread doors and windows reliably, and the missile
---  (which steers toward the guide) inherits that knowledge.
+--  SPEED NOTE:
+--  The guide must be FASTER than the missile (missile = 310).
+--  At 400 it stays far enough ahead to act as a real lead point.
+--  If the guide were slower, the missile would catch up and both
+--  would stall together at whatever obstacle the guide is solving.
 -- ============================================================
 
 -- ---------------------------------------------------------
 --  TUNING
 -- ---------------------------------------------------------
-local GUIDE_SPEED          = 280   -- slightly slower than missile so it leads cleanly
+local GUIDE_SPEED          = 400   -- MUST exceed missile cruise speed (310) so guide leads
 local GUIDE_TURN           = 8.0   -- radians/sec max turn rate
 local LEAD_TIME            = 0.6
 local TARGET_Z_OFFS        = 40
@@ -574,7 +576,6 @@ function ENT:OnThink()
     if tr.Hit and tr.HitWorld then
         local dead = BumpArmor(self, now)
         if dead then
-            -- Fully stuck: teleport slightly toward aim to break free
             self:SetPos(myPos + (aimPos - myPos):GetNormalized() * 32)
             self._armorHP    = ARMOR_MAX
             self._bumpStreak = 0
