@@ -4,7 +4,7 @@ include("shared.lua")
 
 -- ============================================================
 --  Nikita Homing Missile  -  server
---  v4.1 - syntax fix: GetVelocity method guard
+--  v4.2 - fix: PhysicsInit removed (was overriding MOVETYPE_NOCLIP)
 -- ============================================================
 
 -- ---------------------------------------------------------
@@ -132,7 +132,6 @@ local RAYS_STRAT = {
 --  HELPERS
 -- ---------------------------------------------------------
 
--- Safe velocity fetch: works for players, NPCs, props, anything
 local function GetEntVelocity(ent)
     if ent.GetVelocity then
         return ent:GetVelocity()
@@ -144,7 +143,6 @@ local function GetEntVelocity(ent)
     return Vector(0, 0, 0)
 end
 
--- Predictive aim position with last-known-pos fallback
 local function GetAimPos(self)
     local trackEnt = self.TrackEnt
     if IsValid(trackEnt) then
@@ -159,7 +157,6 @@ local function GetAimPos(self)
             p.z + TARGET_Z_OFFS + vel.z * LEAD_TIME
         )
     end
-    -- Extrapolate from last known position
     if self._lastKnownPos and self._lastKnownTime then
         local age = CurTime() - self._lastKnownTime
         if age < LAST_KNOWN_TIMEOUT then
@@ -233,7 +230,6 @@ local function WideSlabScan(hitPos, hitNormal, missilePos, aimPos, filter)
     local probeDir    = -hitNormal
     local toTarget    = (aimPos - hitPos):GetNormalized()
 
-    -- Pass 1: coarse quick-line scan
     local bestCoarseScore = -math.huge
     local bestCoarsePt    = nil
 
@@ -263,7 +259,6 @@ local function WideSlabScan(hitPos, hitNormal, missilePos, aimPos, filter)
 
     if not bestCoarsePt then return nil, nil end
 
-    -- Pass 2: fine hull-sweep around best coarse point
     local bestFineScore = -math.huge
     local bestFinePoint = nil
 
@@ -351,7 +346,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Advance through existing waypoints
     if self._waypoints and #self._waypoints > 0 then
         local wp = self._waypoints[self._wpIndex]
         if wp then
@@ -379,11 +373,9 @@ local function UpdatePath(self, myPos, aimPos, filter)
                 self._aptLocked = true
                 return
             end
-            -- Waypoint occluded, fall through to rebuild
         end
     end
 
-    -- Check direct path
     local directTr = util.TraceHull({
         start  = myPos,
         endpos = aimPos,
@@ -411,7 +403,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Fallback: best scout ray
     local toTarget  = (aimPos - myPos):GetNormalized()
     local bestScore = -math.huge
     local bestDir   = nil
@@ -502,18 +493,13 @@ function ENT:Initialize()
     self:SetModelScale(7, 0)
     self:SetMoveType(MOVETYPE_NOCLIP)
 
+    -- SOLID_BBOX lets bullets/traces register hits via OnTakeDamage.
+    -- Do NOT call PhysicsInit here - it resets movetype to MOVETYPE_VPHYSICS
+    -- and the missile becomes immobile. SOLID_BBOX alone is sufficient.
     self:SetSolid(SOLID_BBOX)
-    self:PhysicsInit(SOLID_BBOX)
     self:SetCollisionGroup(COLLISION_GROUP_PROJECTILE)
     self:SetHealth(MISSILE_HP)
     self:SetMaxHealth(MISSILE_HP)
-
-    local phys = self:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:EnableMotion(false)
-        phys:EnableGravity(false)
-        phys:Sleep()
-    end
 
     self.Destroyed    = false
     self.EngineActive = false
