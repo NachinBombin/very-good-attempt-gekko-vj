@@ -4,7 +4,7 @@ include("shared.lua")
 
 -- ============================================================
 --  Nikita Homing Missile  -  server
---  v4.2 - fix: PhysicsInit removed (was overriding MOVETYPE_NOCLIP)
+--  v4.3 - aperture: radial ring scanner (angle-invariant)
 -- ============================================================
 
 -- ---------------------------------------------------------
@@ -40,21 +40,24 @@ local LAST_KNOWN_TIMEOUT = 4.0
 --  PATHFINDING CONSTANTS
 -- ---------------------------------------------------------
 
-local PATHFIND_INTERVAL  = 0.5
+local PATHFIND_INTERVAL  = 0.15   -- faster repath for tight spaces
 
 local SCOUT_RAY_DIST     = 2000
 local PATH_BLEND_NORMAL  = 0.70
-local PATH_BLEND_LOCKED  = 0.96
+local PATH_BLEND_LOCKED  = 0.97   -- very committed when aperture is found
 local SCORE_ANGLE_WEIGHT = 1.5
 local SCORE_DIST_WEIGHT  = 1.0
 local SCORE_APT_BONUS    = 4.0
 
-local SLAB_COARSE_HALF = 1000
-local SLAB_COARSE_STEP = 100
-local SLAB_FINE_HALF   = 80
-local SLAB_FINE_STEP   = 36
-local SLAB_PROBE_LEN   = 160
-local SLAB_EXIT_FRAC   = 0.6
+-- Ring aperture scanner settings
+-- Coarse pass: RING_RADII_COARSE gives search circles around the hit point
+-- Fine  pass:  once best coarse ring found, rescan that ring at smaller steps
+local RING_PROBE_LEN       = 220   -- how far through the wall each probe travels
+local RING_EXIT_FRAC       = 0.55  -- waypoint placed this fraction along probe
+local RING_RADII_COARSE    = { 0, 40, 80, 140, 220, 320, 440, 600, 800 }
+local RING_STEPS_COARSE    = 16    -- angular steps per coarse ring
+local RING_FINE_RADIUS     = 60    -- fine search radius around best coarse point
+local RING_STEPS_FINE      = 24    -- angular steps for fine ring
 
 local APERTURE_REACHED_DIST = 120
 local WAYPOINT_MAX          = 2
@@ -133,13 +136,9 @@ local RAYS_STRAT = {
 -- ---------------------------------------------------------
 
 local function GetEntVelocity(ent)
-    if ent.GetVelocity then
-        return ent:GetVelocity()
-    end
+    if ent.GetVelocity then return ent:GetVelocity() end
     local phys = ent:GetPhysicsObject()
-    if IsValid(phys) then
-        return phys:GetVelocity()
-    end
+    if IsValid(phys) then return phys:GetVelocity() end
     return Vector(0, 0, 0)
 end
 
@@ -222,67 +221,96 @@ local function BuildTangents(normal)
 end
 
 -- ---------------------------------------------------------
---  TWO-PASS WIDE SLAB APERTURE SCANNER
+--  RADIAL RING APERTURE SCANNER
+--
+--  Problem with the old flat-grid slab scan:
+--    - Grid axes were built from the wall normal, so if the missile
+--      approaches at an oblique angle the grid is rotated wrong and
+--      a doorway / window opening falls between rows entirely.
+--    - O(n²) probes, very coarse at the centre.
+--
+--  New approach: concentric rings radiating outward from the hit point
+--  in the plane of the wall.  Each probe is a hull-sweep through the
+--  wall (not a line trace) so the full missile body must clear.
+--  Rotationally invariant – works at any approach angle.
+--
+--  Pass 1 – coarse rings up to RING_RADII_COARSE max, RING_STEPS_COARSE
+--           angular samples each.  First ring that yields a passing probe
+--           records the best-scored point.
+--  Pass 2 – fine ring of radius RING_FINE_RADIUS centred on that point,
+--           RING_STEPS_FINE samples.  Returns best fine point as waypoint.
 -- ---------------------------------------------------------
-local function WideSlabScan(hitPos, hitNormal, missilePos, aimPos, filter)
+local function RingApertureScan(hitPos, hitNormal, missilePos, aimPos, filter)
     local right, tang = BuildTangents(hitNormal)
-    local wallOrigin  = hitPos + hitNormal * (BODY_HALF + 8)
-    local probeDir    = -hitNormal
+    -- Step back from the wall so our probe origin is on the missile side
+    local wallOrigin  = hitPos + hitNormal * (BODY_HALF + 4)
+    local probeDir    = -hitNormal   -- direction that goes through the wall
     local toTarget    = (aimPos - hitPos):GetNormalized()
+    local pi2         = math.pi * 2
 
+    local function ScorePoint(pt)
+        -- How much progress does flying through here give toward the target?
+        local progressDot = (aimPos - pt):GetNormalized():Dot(-hitNormal)
+        -- Does the missile actually reach this point without hitting something first?
+        local missileToPt = (pt - missilePos):GetNormalized()
+        local approachDot = math.max(0, missileToPt:Dot(toTarget))
+        -- Prefer openings close to the missile's current altitude
+        local zScore = 1.0 - math.Clamp(math.abs(pt.z - missilePos.z) / 400, 0, 1)
+        return progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
+    end
+
+    -- Pass 1: coarse rings
     local bestCoarseScore = -math.huge
     local bestCoarsePt    = nil
 
-    for row = -SLAB_COARSE_HALF, SLAB_COARSE_HALF, SLAB_COARSE_STEP do
-        for col = -SLAB_COARSE_HALF, SLAB_COARSE_HALF, SLAB_COARSE_STEP do
-            local pt  = wallOrigin + right * col + tang * row
-            local qTr = util.TraceLine({
-                start  = pt,
-                endpos = pt + probeDir * SLAB_PROBE_LEN,
-                mask   = MASK_SOLID_BRUSHONLY,
-                filter = filter,
-            })
-            if not qTr.Hit then
-                local aptToTarget = (aimPos - pt):GetNormalized()
-                local progressDot = aptToTarget:Dot(-hitNormal)
-                local missileToPt = (pt - missilePos):GetNormalized()
-                local approachDot = math.max(0, missileToPt:Dot(toTarget))
-                local zScore      = 1.0 - math.Clamp(math.abs(pt.z - missilePos.z) / 500, 0, 1)
-                local score = progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
+    for _, radius in ipairs(RING_RADII_COARSE) do
+        local steps = (radius == 0) and 1 or RING_STEPS_COARSE
+        for i = 0, steps - 1 do
+            local angle = (i / steps) * pi2
+            local offset = right * (math.cos(angle) * radius)
+                         + tang  * (math.sin(angle) * radius)
+            local pt = wallOrigin + offset
+
+            -- Hull-sweep through wall: missile body must fully fit
+            local _, fits = BodyFits(pt, probeDir, RING_PROBE_LEN, filter)
+            if fits then
+                local score = ScorePoint(pt)
                 if score > bestCoarseScore then
                     bestCoarseScore = score
                     bestCoarsePt    = pt
                 end
             end
         end
+        -- Early exit: if we found a hit at a small radius, no need for large rings
+        -- (a small opening near centre is almost always better than a distant one)
+        if bestCoarsePt and radius <= 80 then break end
     end
 
     if not bestCoarsePt then return nil, nil end
 
-    local bestFineScore = -math.huge
-    local bestFinePoint = nil
+    -- Pass 2: fine ring around best coarse point
+    local bestFineScore = bestCoarseScore
+    local bestFinePt    = bestCoarsePt
 
-    for row = -SLAB_FINE_HALF, SLAB_FINE_HALF, SLAB_FINE_STEP do
-        for col = -SLAB_FINE_HALF, SLAB_FINE_HALF, SLAB_FINE_STEP do
-            local pt      = bestCoarsePt + right * col + tang * row
-            local _, fits = BodyFits(pt, probeDir, SLAB_PROBE_LEN, filter)
-            if fits then
-                local aptToTarget = (aimPos - pt):GetNormalized()
-                local progressDot = aptToTarget:Dot(-hitNormal)
-                local missileToPt = (pt - missilePos):GetNormalized()
-                local approachDot = math.max(0, missileToPt:Dot(toTarget))
-                local zScore      = 1.0 - math.Clamp(math.abs(pt.z - missilePos.z) / 500, 0, 1)
-                local score = progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
-                if score > bestFineScore then
-                    bestFineScore = score
-                    bestFinePoint = pt
-                end
+    for i = 0, RING_STEPS_FINE - 1 do
+        local angle  = (i / RING_STEPS_FINE) * pi2
+        local offset = right * (math.cos(angle) * RING_FINE_RADIUS)
+                     + tang  * (math.sin(angle) * RING_FINE_RADIUS)
+        local pt = bestCoarsePt + offset
+
+        local _, fits = BodyFits(pt, probeDir, RING_PROBE_LEN, filter)
+        if fits then
+            local score = ScorePoint(pt)
+            if score > bestFineScore then
+                bestFineScore = score
+                bestFinePt    = pt
             end
         end
     end
 
-    local finalPt = bestFinePoint or bestCoarsePt
-    local exitPt  = finalPt + probeDir * (SLAB_PROBE_LEN * SLAB_EXIT_FRAC)
+    -- Place the waypoint just past the opening so the missile is already
+    -- inside/through before the next repath tick.
+    local exitPt = bestFinePt + probeDir * (RING_PROBE_LEN * RING_EXIT_FRAC)
     return exitPt, hitNormal
 end
 
@@ -299,7 +327,7 @@ local function ScanAhead(myPos, aimPos, filter)
         filter = filter,
     })
     if not directTr.Hit then return nil, nil end
-    return WideSlabScan(directTr.HitPos, directTr.HitNormal, myPos, aimPos, filter)
+    return RingApertureScan(directTr.HitPos, directTr.HitNormal, myPos, aimPos, filter)
 end
 
 local function RebuildWaypoints(self, myPos, aimPos, filter)
@@ -311,6 +339,7 @@ local function RebuildWaypoints(self, myPos, aimPos, filter)
     local wp1Pos, wp1Normal = ScanAhead(myPos, aimPos, filter)
     if not wp1Pos then return end
 
+    -- Verify we can reach the waypoint without hitting something first
     local tr1 = util.TraceLine({
         start  = myPos,
         endpos = wp1Pos,
@@ -346,6 +375,7 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
+    -- Advance past reached waypoints
     if self._waypoints and #self._waypoints > 0 then
         local wp = self._waypoints[self._wpIndex]
         if wp then
@@ -359,6 +389,7 @@ local function UpdatePath(self, myPos, aimPos, filter)
                     return
                 end
             end
+            -- Still have a valid waypoint – verify the line to it is still clear
             local verTr = util.TraceLine({
                 start  = myPos,
                 endpos = wp.pos,
@@ -376,6 +407,7 @@ local function UpdatePath(self, myPos, aimPos, filter)
         end
     end
 
+    -- Direct path check
     local directTr = util.TraceHull({
         start  = myPos,
         endpos = aimPos,
@@ -391,6 +423,7 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
+    -- Obstruction found – rebuild waypoints via ring scanner
     RebuildWaypoints(self, myPos, aimPos, filter)
 
     if self._waypoints and self._waypoints[1] then
@@ -403,6 +436,7 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
+    -- Fallback: hemisphere scout rays
     local toTarget  = (aimPos - myPos):GetNormalized()
     local bestScore = -math.huge
     local bestDir   = nil
@@ -494,8 +528,8 @@ function ENT:Initialize()
     self:SetMoveType(MOVETYPE_NOCLIP)
 
     -- SOLID_BBOX lets bullets/traces register hits via OnTakeDamage.
-    -- Do NOT call PhysicsInit here - it resets movetype to MOVETYPE_VPHYSICS
-    -- and the missile becomes immobile. SOLID_BBOX alone is sufficient.
+    -- Do NOT call PhysicsInit – it resets movetype to MOVETYPE_VPHYSICS
+    -- and the missile becomes immobile.
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionGroup(COLLISION_GROUP_PROJECTILE)
     self:SetHealth(MISSILE_HP)
