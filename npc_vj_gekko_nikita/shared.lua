@@ -3,7 +3,7 @@ ENT.Type          = "ai"
 ENT.PrintName     = "Gekko Nikita"
 ENT.Author        = "NachinBombin"
 ENT.Contact       = ""
-ENT.Purpose       = "Slow, nodegraph-aware cruise missile for Gekko"
+ENT.Purpose       = "Fast, self-steering cruise missile for Gekko"
 ENT.Instructions  = ""
 ENT.Category      = "Gekko"
 
@@ -21,13 +21,15 @@ ENT.HasRangeAttack        = false
 ENT.DisableFootStepSound  = true
 ENT.HasHull               = false
 
--- Use VJ's flying movement + CAI_FlyingPathfinder when nodes exist
+-- VJ_MOVETYPE_AERIAL keeps the NPC aerial (no ground nav, correct hull).
+-- Speeds are set to 0 so VJ's scheduler never issues its own movement
+-- commands. All velocity is driven manually in CustomOnThink_AIEnabled.
 ENT.MovementType                 = VJ_MOVETYPE_AERIAL
-ENT.Aerial_FlyingSpeed_Calm      = 200
-ENT.Aerial_FlyingSpeed_Alerted   = 230
+ENT.Aerial_FlyingSpeed_Calm      = 0
+ENT.Aerial_FlyingSpeed_Alerted   = 0
+ENT.Aerial_AdvanceSpeed          = 0
 ENT.Aerial_AnimTbl_Calm          = {"Fly"}
 ENT.Aerial_AnimTbl_Alerted       = {"Fly"}
-ENT.Aerial_AdvanceSpeed          = 160
 ENT.Aerial_AllowPitchChanges     = true
 ENT.Aerial_AllowPitchWhenMoving  = true
 ENT.Aerial_NextMoveTime          = 0
