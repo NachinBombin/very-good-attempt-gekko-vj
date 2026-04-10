@@ -5,23 +5,20 @@ include("shared.lua")
 --
 --  Locomotion model
 --  ─────────────────
---  VJ_MOVETYPE_AERIAL keeps the NPC in the aerial category
---  (no ground navigation, correct relationship system, VJ lifecycle).
---  However VJ's aerial AI scheduler is PARKED via SCHED_IDLE_STAND
---  and zero flying speeds, so it never issues conflicting movement.
+--  VJ_MOVETYPE_AERIAL is declared in shared.lua so VJ recognises
+--  the entity as an aerial NPC (relationships, hull, AI hooks).
 --
---  All steering is driven manually every tick in CustomOnThink_AIEnabled
---  using the same ray-cast brain as the old missile:
---    1. Lead-predicted aim toward enemy / last-known position
---    2. Ring aperture scanner – finds gaps in walls (doors, windows)
---    3. Waypoint chain – up to 2 aperture hops planned ahead
---    4. Emergency / tactical / strategic repulsion fans
---    5. Corridor detection with boosted turn rate
---    6. Clearance probe + wall-kick for collision resilience
---    7. Stuck teleport recovery
+--  HOWEVER: VJ's locomotion task runner calls SetAbsVelocity(0)
+--  after every SCHED_IDLE_STAND tick, overwriting any velocity we
+--  set in CustomOnThink_AIEnabled.  To win the write-order race we:
 --
---  This gives the missile manhack-style geometry awareness on ANY map,
---  with or without info_node_air, without needing a second guide entity.
+--    1. Force MOVETYPE_NOCLIP in CustomOnPostInitialize (runs AFTER
+--       VJ finishes its own init, so it sticks).
+--    2. Drive velocity from CustomOnThink (unconditional think) rather
+--       than CustomOnThink_AIEnabled (gated behind AI scheduler).
+--    3. Never touch SetSchedule – let VJ run SCHED_IDLE_STAND harmlessly;
+--       our MOVETYPE_NOCLIP entity ignores the locomotor's zero-velocity
+--       output because noclip entities are not moved by the locomotor.
 -- ============================================================
 
 -- ---------------------------------------------------------
@@ -179,7 +176,6 @@ end
 
 -- ---------------------------------------------------------
 --  RING APERTURE SCANNER
---  Finds the best gap in a wall to pass through.
 -- ---------------------------------------------------------
 local function RingApertureScan(hitPos, hitNormal, myPos, aimPos, filter)
     local right, tang = BuildTangents(hitNormal)
@@ -272,7 +268,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Advance through existing waypoint chain
     if self._wp and #self._wp > 0 then
         local wp = self._wp[self._wpIdx]
         if wp then
@@ -296,7 +291,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         end
     end
 
-    -- Check if path to aim is clear
     local dt = util.TraceHull({ start=myPos, endpos=aimPos,
         mins=Vector(-BODY_HALF,-BODY_HALF,-BODY_HALF),
         maxs=Vector( BODY_HALF, BODY_HALF, BODY_HALF),
@@ -306,7 +300,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Rebuild aperture waypoints
     RebuildWaypoints(self, myPos, aimPos, filter)
 
     if self._wp and self._wp[1] then
@@ -318,7 +311,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Fallback: best open scout ray
     local toTarget = (aimPos - myPos):GetNormalized()
     local bestS, bestD = -math.huge, nil
     for _, ray in ipairs(SCOUT_RAYS) do
@@ -416,36 +408,40 @@ function ENT:CustomOnInitialize()
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-12,-12,-12), Vector(12,12,12))
 
-    -- Park the VJ AI task runner so it never issues movement commands
-    self:SetSchedule(SCHED_IDLE_STAND)
-
-    -- Lifetime
     self.Nikita_SpawnTime  = CurTime()
     self.Nikita_ExpireTime = CurTime() + self.Nikita_LifeTime
     self.Nikita_Exploded   = false
 
-    -- No attacks
-    self.HasMeleeAttack  = false
-    self.HasRangeAttack  = false
+    self.HasMeleeAttack = false
+    self.HasRangeAttack = false
 
-    -- Nav state
     self._wp           = {}
     self._wpIdx        = 1
     self._pathDir      = nil
     self._aptLock      = false
     self._nextPath     = 0
 
-    -- Collision resilience
     self._armorHP      = ARMOR_MAX
     self._lastBump     = -999
     self._bumpStreak   = 0
     self._streakStart  = CurTime()
     self._nextArmorReg = CurTime() + ARMOR_REGEN_INT
 
-    -- Last-known tracking
     self._lkPos        = nil
     self._lkVel        = nil
     self._lkTime       = nil
+end
+
+-- *** KEY FIX ***
+-- VJ resets movetype during its own init chain which runs AFTER
+-- CustomOnInitialize.  PostInitialize fires after VJ is fully done,
+-- so our MOVETYPE_NOCLIP survives.  NOCLIP entities are not moved
+-- by the NPC locomotor, so VJ's SCHED_IDLE_STAND zero-velocity
+-- output is silently ignored by the engine.
+function ENT:CustomOnPostInitialize()
+    self:SetMoveType(MOVETYPE_NOCLIP)
+    self:SetSolid(SOLID_NONE)
+    self:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
 end
 
 -- ---------------------------------------------------------
@@ -456,8 +452,8 @@ function ENT:Nikita_DoExplosion(dmginfo)
     self.Nikita_Exploded = true
 
     local pos   = self:GetPos()
-    local dmg   = self.Nikita_Damage  or 120
-    local rad   = self.Nikita_Radius  or 700
+    local dmg   = self.Nikita_Damage or 120
+    local rad   = self.Nikita_Radius or 700
     local owner = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
     sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
@@ -483,36 +479,38 @@ function ENT:Nikita_DoExplosion(dmginfo)
 end
 
 -- ---------------------------------------------------------
---  MAIN THINK  –  full ray-cast self-steering
+--  MAIN THINK
+--  Uses CustomOnThink (unconditional) instead of
+--  CustomOnThink_AIEnabled (gated behind AI scheduler state).
+--  Enemy resolution still uses self:GetEnemy() so VJ's aggro
+--  system feeds us the target for free.
 -- ---------------------------------------------------------
-function ENT:CustomOnThink_AIEnabled()
+function ENT:CustomOnThink()
     if self.Nikita_Exploded then return end
+
+    -- Guard: PostInitialize may not have run yet on the very first tick
+    if self:GetMoveType() ~= MOVETYPE_NOCLIP then
+        self:SetMoveType(MOVETYPE_NOCLIP)
+        self:SetSolid(SOLID_NONE)
+        return
+    end
 
     local now = CurTime()
     local dt  = math.max(FrameTime(), 0.001)
 
-    -- Expire
     if self.Nikita_ExpireTime and now > self.Nikita_ExpireTime then
         self:Nikita_DoExplosion(); return
     end
 
-    -- Armor regen
     if now >= self._nextArmorReg then
         self._nextArmorReg = now + ARMOR_REGEN_INT
         self._armorHP = math.min(self._armorHP + 1, ARMOR_MAX)
-    end
-
-    -- Keep AI task runner parked
-    local sched = self:GetCurrentSchedule()
-    if sched ~= SCHED_IDLE_STAND then
-        self:SetSchedule(SCHED_IDLE_STAND)
     end
 
     local myPos      = self:GetPos()
     local currentDir = self:GetForward()
     local filter     = { self }
 
-    -- Resolve aim
     local aimPos = GetAimPos(self)
     if not aimPos then return end
 
@@ -535,7 +533,6 @@ function ENT:CustomOnThink_AIEnabled()
 
     local noseTip = myPos + currentDir * 20
 
-    -- Repulsion fans
     local eRep, eHit, eMin = ComputeRepulsion(self, noseTip, RAYS_EMERG, EMERG_DIST, filter)
     local tRep, tHit, tMin = ComputeRepulsion(self, noseTip, RAYS_TACT,  TACT_DIST,  filter)
 
@@ -553,7 +550,6 @@ function ENT:CustomOnThink_AIEnabled()
         sRep, sHit = ComputeRepulsion(self, noseTip, RAYS_STRAT, STRAT_DIST, filter)
     end
 
-    -- Homing direction
     local rawHoming = (aimPos - myPos):GetNormalized()
     local pathBlend = self._aptLock and PATH_BLEND_LOCKED or PATH_BLEND_NORMAL
     local homingDir = rawHoming
@@ -562,7 +558,6 @@ function ENT:CustomOnThink_AIEnabled()
         homingDir:Normalize()
     end
 
-    -- Blend repulsion
     local totalRep = Vector(0,0,0)
     if eHit then local n=eRep:Length(); if n>0 then totalRep=totalRep+(eRep/n)*EMERG_STRENGTH end end
     if tHit then local n=tRep:Length(); if n>0 then totalRep=totalRep+(tRep/n)*TACT_STRENGTH  end end
@@ -588,14 +583,12 @@ function ENT:CustomOnThink_AIEnabled()
         desiredDir = homingDir
     end
 
-    -- Clearance probe
     local fits, slideDir = ClearanceProbe(myPos, desiredDir, filter)
     if not fits and slideDir then
         desiredDir = LerpVector(0.7, desiredDir, slideDir)
         desiredDir:Normalize()
     end
 
-    -- Angular speed limit
     local maxAng = activeTurn * dt
     local cosA   = math.Clamp(currentDir:Dot(desiredDir), -1, 1)
     local ang    = math.acos(cosA)
@@ -608,11 +601,9 @@ function ENT:CustomOnThink_AIEnabled()
         moveDir:Normalize()
     end
 
-    -- Apply movement directly — bypasses VJ scheduler entirely
     self:SetAngles(moveDir:Angle())
     self:SetAbsVelocity(moveDir * CRUISE_SPEED)
 
-    -- Step collision check
     local stepDist = CRUISE_SPEED * dt + 16
     local tr = util.TraceHull({
         start  = myPos,
@@ -623,7 +614,6 @@ function ENT:CustomOnThink_AIEnabled()
     if tr.Hit and tr.HitWorld then
         local dead = BumpArmor(self, now)
         if dead then
-            -- Fully stuck: teleport toward aim to break free
             self:SetPos(myPos + (aimPos - myPos):GetNormalized() * 32)
             self._armorHP    = ARMOR_MAX
             self._bumpStreak = 0
@@ -633,9 +623,10 @@ function ENT:CustomOnThink_AIEnabled()
     end
 end
 
--- ---------------------------------------------------------
---  DEATH / KILL HOOKS
--- ---------------------------------------------------------
+-- Keep AIEnabled hook alive for VJ enemy detection / relationship system
+function ENT:CustomOnThink_AIEnabled()
+end
+
 function ENT:CustomOnKilled(dmginfo, hitgroup)
     self:Nikita_DoExplosion(dmginfo)
 end
