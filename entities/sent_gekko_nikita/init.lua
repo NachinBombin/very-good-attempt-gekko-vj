@@ -3,59 +3,97 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 -- ============================================================
---  SERVER  -  Gekko Nikita Autonomous Homing Missile
+--  Nikita Homing Missile  –  server
 --
---  DESIGN:
---    * Purely autonomous: chases self.TrackEnt (enemy) every tick.
---      FireNikita sets:
---          nikita.TrackEnt    = enemy
---          nikita.NikitaOwner = ent
---    * Constant cruise speed with random fuel-burst pulses:
---        Every 3 s: 50% chance -> ramp speed up +100 u/s over 1 s,
---                                 then ramp back to cruise over 1 s.
---    * NWFloat "NikitaBoost" (0..1) tells the client how "boosted"
---      the missile currently is, so particles can swell.
+--  MOVEMENT:  MOVETYPE_NOCLIP + SetAbsVelocity (constant 210 u/s)
+--  HOMING:    self.TrackEnt (plain Lua field, set by spawner)
+--  AVOIDANCE: 10-ray fan from nose tip, averaged into a safe
+--             waypoint, blended with the homing target.
+--             Technique learned from LVS starfighter sv_ai.lua
+--             but re-implemented independently for a missile.
 -- ============================================================
 
-local SND_EXPLODE   = "ambient/explosions/explode_8.wav"
+local CRUISE_SPEED  = 310       -- u/s, constant, never changes
+local TURN_SPEED    = 8.0       -- lerp factor / second (lateral agility)
+local AVOID_WEIGHT  = 0.72      -- how strongly avoidance overrides homing (0-1)
+local RAY_LENGTH    = 1800      -- how far ahead we scan for walls
+local AVOID_THRESH  = 600       -- if a ray hits within this dist, avoidance kicks in
+local PROX_RADIUS   = 180       -- proximity detonation radius around aim point
+local TARGET_Z_OFFS = 40        -- aim slightly above ground on tracked entity
+local LIFETIME      = 45
+local ENGINE_DELAY  = 0.5
 
-local CRUISE_SPEED  = 310    -- units / second, constant baseline
-local BOOST_EXTRA   = 100    -- extra u/s at peak boost
-local TURN_SPEED    = 10.0   -- Lerp factor per second
+-- 10-ray fan definition: { pitch, yaw } in local missile space
+-- Forward center + horizontal spread + vertical spread + diagonals + straight up/down
+local RAYS = {
+    { 0,    0   },   -- dead ahead (forward)
+    { 0,    25  },   -- left
+    { 0,   -25  },   -- right
+    {-25,   0   },   -- up
+    { 25,   0   },   -- down
+    {-20,   50  },   -- upper-left diagonal
+    {-20,  -50  },   -- upper-right diagonal
+    { 20,   50  },   -- lower-left diagonal
+    { 20,  -50  },   -- lower-right diagonal
+    { 0,    0   },   -- duplicate forward so forward is weighted 2x
+}
 
-local BOOST_RAMP_UP   = 1.0  -- seconds to reach full boost
-local BOOST_RAMP_DOWN = 1.0  -- seconds to return to cruise
-local BOOST_INTERVAL  = 3.0  -- seconds between roll attempts
-local BOOST_CHANCE    = 0.50 -- probability per interval
+-- ----------------------------------------------------------------
+-- helpers
+-- ----------------------------------------------------------------
 
-local LIFETIME    = 45
-local PROX_RADIUS = 180
-local ENGINE_DELAY = 0.5
-local TARGET_Z_OFFS = 40
-
-local HULL_MINS = Vector(-8, -8, -8)
-local HULL_MAXS = Vector( 8,  8,  8)
-
--- Boost FSM states
-local BOOST_IDLE  = 0
-local BOOST_UP    = 1
-local BOOST_DOWN  = 2
-
-local function GetAimPos(trackEnt)
+local function GetAimPos(trackEnt, fallback)
     if IsValid(trackEnt) then
         local p = trackEnt:GetPos()
         return Vector(p.x, p.y, p.z + TARGET_Z_OFFS)
     end
-    return nil
+    return fallback  -- may be nil
 end
+
+-- Returns a "safe steering point" computed from the avoidance rays,
+-- and a boolean indicating whether any ray actually hit something close.
+-- originPos  : world position of the missile nose
+-- missileEnt : the missile entity (used as trace filter)
+-- minDist    : push-off distance from hit normals
+local function ComputeAvoidanceTarget(originPos, missileEnt, minDist, owner)
+    local filter = { missileEnt }
+    if IsValid(owner) then filter[#filter+1] = owner end
+
+    local accumulator = Vector(0, 0, 0)
+    local anyClose = false
+
+    for _, ray in ipairs(RAYS) do
+        local dir = missileEnt:LocalToWorldAngles(Angle(ray[1], ray[2], 0)):Forward()
+        local tr  = util.TraceLine({
+            start  = originPos,
+            endpos = originPos + dir * RAY_LENGTH,
+            mask   = MASK_SOLID_BRUSHONLY,
+            filter = filter,
+        })
+
+        -- safe point = hit pos + push off along hit normal
+        local safePoint = tr.HitPos + tr.HitNormal * minDist
+
+        if tr.Hit and (originPos - tr.HitPos):Length() < AVOID_THRESH then
+            anyClose = true
+        end
+
+        accumulator = accumulator + safePoint
+    end
+
+    return accumulator / #RAYS, anyClose
+end
+
+-- ----------------------------------------------------------------
+-- entity lifecycle
+-- ----------------------------------------------------------------
 
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile_launch.mdl")
     self:SetModelScale(7, 0)
 
     self:SetMoveType(MOVETYPE_NOCLIP)
-    self:SetSolid(SOLID_BBOX)
-    self:SetCollisionBounds(HULL_MINS, HULL_MAXS)
+    self:SetSolid(SOLID_NONE)
     self:SetCollisionGroup(COLLISION_GROUP_PROJECTILE)
 
     self.Destroyed    = false
@@ -64,19 +102,11 @@ function ENT:Initialize()
     self.HealthVal    = 50
     self.Damage       = 0
     self.Radius       = 0
-    self._nextDebug   = 0
 
-    -- Boost system state
-    self._boostState     = BOOST_IDLE
-    self._boostPhaseT    = 0      -- CurTime() when current phase started
-    self._nextBoostRoll  = CurTime() + ENGINE_DELAY + BOOST_INTERVAL
-    self._boostValue     = 0      -- 0..1, replicated to client
-
-    self:SetNWFloat("NikitaBoost", 0)
-
-    -- FireNikita sets:
-    --   self.TrackEnt    = enemy
-    --   self.NikitaOwner = ent
+    -- Spawner sets these:
+    --   self.TrackEnt       = <entity or nil>
+    --   self.FallbackTarget = <Vector or nil>
+    --   self.NikitaOwner    = <entity>
 
     self:SetAbsVelocity(self:GetForward() * 80)
 
@@ -84,59 +114,16 @@ function ENT:Initialize()
     timer.Simple(ENGINE_DELAY, function()
         if not IsValid(selfRef) or selfRef.Destroyed then return end
         selfRef.Damage       = math.random(25, 45)
-        selfRef.Radius       = math.random(180, 500)
+        selfRef.Radius       = math.random(700, 1024)
         selfRef.EngineActive = true
-        print(string.format(
-            "[NikitaDBG] Engine ACTIVE | track=%s",
-            tostring(selfRef.TrackEnt)
-        ))
     end)
 
     self:NextThink(CurTime())
 end
 
--- ============================================================
---  Boost pulse update  (called every Think tick)
---  Returns the current effective speed (units/s).
--- ============================================================
-function ENT:UpdateBoost()
-    local now = CurTime()
-
-    -- Roll for new burst when idle and timer has elapsed
-    if self._boostState == BOOST_IDLE and now >= self._nextBoostRoll then
-        self._nextBoostRoll = now + BOOST_INTERVAL
-        if math.random() < BOOST_CHANCE then
-            -- Start ramp-up phase
-            self._boostState  = BOOST_UP
-            self._boostPhaseT = now
-        end
-    end
-
-    -- Advance boost state machine
-    if self._boostState == BOOST_UP then
-        local t = math.Clamp((now - self._boostPhaseT) / BOOST_RAMP_UP, 0, 1)
-        self._boostValue = t
-        if t >= 1 then
-            -- Peak reached -> start ramp-down
-            self._boostState  = BOOST_DOWN
-            self._boostPhaseT = now
-        end
-
-    elseif self._boostState == BOOST_DOWN then
-        local t = math.Clamp((now - self._boostPhaseT) / BOOST_RAMP_DOWN, 0, 1)
-        self._boostValue = 1 - t
-        if t >= 1 then
-            -- Fully back to cruise
-            self._boostState = BOOST_IDLE
-            self._boostValue = 0
-        end
-    end
-
-    -- Replicate to client (cheap NWFloat update each tick)
-    self:SetNWFloat("NikitaBoost", self._boostValue)
-
-    return CRUISE_SPEED + self._boostValue * BOOST_EXTRA
-end
+-- ----------------------------------------------------------------
+-- think  –  homing + avoidance + velocity
+-- ----------------------------------------------------------------
 
 function ENT:Think()
     self:NextThink(CurTime())
@@ -147,45 +134,63 @@ function ENT:Think()
         return true
     end
 
-    if not self.EngineActive then
+    if not self.EngineActive then return true end
+
+    local myPos      = self:GetPos()
+    local currentDir = self:GetForward()
+
+    -- ── 1. Homing target ────────────────────────────────────────
+    local aimPos = GetAimPos(self.TrackEnt, self.FallbackTarget)
+
+    -- ── 2. Proximity detonation ──────────────────────────────────
+    if aimPos and (myPos - aimPos):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
+        self:MissileDoExplosion()
         return true
     end
 
-    -- Resolve current speed (includes boost pulse)
-    local currentSpeed = self:UpdateBoost()
+    -- ── 3. Obstacle avoidance rays from nose tip ─────────────────
+    -- Nose tip: missile forward * half bounding-box length ahead
+    local noseTip   = myPos + currentDir * 20
+    local minDist   = CRUISE_SPEED * 1.5   -- push-off scales with speed
 
-    local aimPos = GetAimPos(self.TrackEnt)
-    local currentDir = self:GetForward()
-    local moveDir
+    local avoidPoint, wallClose = ComputeAvoidanceTarget(
+        noseTip, self, minDist, self.NikitaOwner
+    )
+
+    -- ── 4. Choose steering target ─────────────────────────────────
+    local steerTarget
 
     if aimPos then
-        if (self:GetPos() - aimPos):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
-            self:MissileDoExplosion()
-            return true
+        if wallClose then
+            -- Blend: avoidance is dominant but still drifts toward goal
+            steerTarget = LerpVector(AVOID_WEIGHT, aimPos, avoidPoint)
+        else
+            -- Clear path: pure homing, avoidance is near zero influence
+            steerTarget = aimPos
         end
-
-        local desiredDir = (aimPos - self:GetPos()):GetNormalized()
-        moveDir = LerpVector(FrameTime() * TURN_SPEED, currentDir, desiredDir)
-        moveDir:Normalize()
     else
-        moveDir = currentDir
+        -- No target: avoid walls and fly straight
+        steerTarget = avoidPoint
     end
 
-    self:SetAngles(moveDir:Angle())
-    self:SetAbsVelocity(moveDir * currentSpeed)
+    -- ── 5. Compute desired direction and turn ─────────────────────
+    local desiredDir = (steerTarget - myPos):GetNormalized()
+    local moveDir    = LerpVector(FrameTime() * TURN_SPEED, currentDir, desiredDir)
+    moveDir:Normalize()
 
-    -- Collision sweep ahead
-    local stepDist = currentSpeed * FrameTime() + 16
+    -- ── 6. Apply constant speed + orientation ────────────────────
+    self:SetAngles(moveDir:Angle())
+    self:SetAbsVelocity(moveDir * CRUISE_SPEED)
+
+    -- ── 7. Ahead-trace collision detection ───────────────────────
+    local stepDist = CRUISE_SPEED * FrameTime() + 16
     local tr = util.TraceHull({
-        start  = self:GetPos(),
-        endpos = self:GetPos() + moveDir * stepDist,
-        mins   = HULL_MINS,
-        maxs   = HULL_MAXS,
+        start  = myPos,
+        endpos = myPos + moveDir * stepDist,
+        mins   = Vector(-8, -8, -8),
+        maxs   = Vector( 8,  8,  8),
         mask   = MASK_SHOT,
-        filter = {
-            self,
-            IsValid(self.NikitaOwner) and self.NikitaOwner or self
-        },
+        filter = { self, IsValid(self.NikitaOwner) and self.NikitaOwner or self },
     })
 
     if tr.Hit then
@@ -199,19 +204,12 @@ function ENT:Think()
         end
     end
 
-    if CurTime() > self._nextDebug then
-        self._nextDebug = CurTime() + 0.5
-        print(string.format(
-            "[NikitaDBG] trackValid=%s spd=%.0f boost=%.2f ang=%s",
-            tostring(IsValid(self.TrackEnt)),
-            currentSpeed,
-            self._boostValue,
-            tostring(self:GetAngles())
-        ))
-    end
-
     return true
 end
+
+-- ----------------------------------------------------------------
+-- Touch / damage / explosion
+-- ----------------------------------------------------------------
 
 function ENT:Touch(ent)
     if self.Destroyed then return end
@@ -223,15 +221,12 @@ end
 function ENT:OnTakeDamage(dmginfo)
     if self.Destroyed then return end
     self.HealthVal = self.HealthVal - dmginfo:GetDamage()
-    if self.HealthVal <= 0 then
-        self:MissileDoExplosion()
-    end
+    if self.HealthVal <= 0 then self:MissileDoExplosion() end
 end
 
 function ENT:MissileDoExplosion()
     if self.Destroyed then return end
     self.Destroyed = true
-
     self:StopParticles()
 
     local pos   = self:GetPos()
@@ -239,7 +234,7 @@ function ENT:MissileDoExplosion()
     local rad   = self.Radius > 0 and self.Radius or 700
     local owner = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
-    sound.Play(SND_EXPLODE, pos, 100, 100)
+    sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
     util.ScreenShake(pos, 16, 200, 1, 3000)
 
     local ed = EffectData()
@@ -252,13 +247,12 @@ function ENT:MissileDoExplosion()
         pe:SetKeyValue("Magnitude",  tostring(math.floor(dmg * 5)))
         pe:SetKeyValue("radius",     tostring(rad))
         pe:SetKeyValue("spawnflags", "19")
-        pe:Spawn()
-        pe:Activate()
+        pe:Spawn(); pe:Activate()
         pe:Fire("Explode", "", 0)
         pe:Fire("Kill",    "", 0.5)
     end
 
-    util.BlastDamage(self, owner, pos + Vector(0, 0, 50), rad, dmg)
+    util.BlastDamage(self, owner, pos + Vector(0,0,50), rad, dmg)
     self:Remove()
 end
 
