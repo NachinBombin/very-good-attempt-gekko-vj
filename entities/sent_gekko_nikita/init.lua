@@ -5,12 +5,18 @@ include("shared.lua")
 -- ============================================================
 --  Nikita Homing Missile  –  server
 --
---  MOVEMENT:  MOVETYPE_NOCLIP + SetAbsVelocity (constant 210 u/s)
+--  MOVEMENT:  MOVETYPE_NOCLIP + SetAbsVelocity (constant 310 u/s)
 --  HOMING:    self.TrackEnt (plain Lua field, set by spawner)
 --  AVOIDANCE: 10-ray fan from nose tip, averaged into a safe
 --             waypoint, blended with the homing target.
---             Technique learned from LVS starfighter sv_ai.lua
---             but re-implemented independently for a missile.
+--
+--  DETONATION FIXES (overshoot / orbit bug):
+--    1. PROX_RADIUS raised 180 -> 280 (was too small for tangential passes)
+--    2. Secondary proximity check against raw TrackEnt:GetPos() (no Z offset)
+--       catches cases where the missile passes through the body below aimPos.
+--    3. Fly-past detector: if distance to aimPos was shrinking last tick
+--       but is now growing AND we are within 4*PROX_RADIUS, we just flew
+--       past the closest point -> detonate immediately.
 -- ============================================================
 
 local CRUISE_SPEED  = 310       -- u/s, constant, never changes
@@ -18,13 +24,12 @@ local TURN_SPEED    = 8.0       -- lerp factor / second (lateral agility)
 local AVOID_WEIGHT  = 0.72      -- how strongly avoidance overrides homing (0-1)
 local RAY_LENGTH    = 1800      -- how far ahead we scan for walls
 local AVOID_THRESH  = 600       -- if a ray hits within this dist, avoidance kicks in
-local PROX_RADIUS   = 180       -- proximity detonation radius around aim point
+local PROX_RADIUS   = 280       -- FIX #1: was 180, raised to catch tangential passes
 local TARGET_Z_OFFS = 40        -- aim slightly above ground on tracked entity
 local LIFETIME      = 45
 local ENGINE_DELAY  = 0.5
 
 -- 10-ray fan definition: { pitch, yaw } in local missile space
--- Forward center + horizontal spread + vertical spread + diagonals + straight up/down
 local RAYS = {
     { 0,    0   },   -- dead ahead (forward)
     { 0,    25  },   -- left
@@ -50,11 +55,6 @@ local function GetAimPos(trackEnt, fallback)
     return fallback  -- may be nil
 end
 
--- Returns a "safe steering point" computed from the avoidance rays,
--- and a boolean indicating whether any ray actually hit something close.
--- originPos  : world position of the missile nose
--- missileEnt : the missile entity (used as trace filter)
--- minDist    : push-off distance from hit normals
 local function ComputeAvoidanceTarget(originPos, missileEnt, minDist, owner)
     local filter = { missileEnt }
     if IsValid(owner) then filter[#filter+1] = owner end
@@ -71,7 +71,6 @@ local function ComputeAvoidanceTarget(originPos, missileEnt, minDist, owner)
             filter = filter,
         })
 
-        -- safe point = hit pos + push off along hit normal
         local safePoint = tr.HitPos + tr.HitNormal * minDist
 
         if tr.Hit and (originPos - tr.HitPos):Length() < AVOID_THRESH then
@@ -102,6 +101,9 @@ function ENT:Initialize()
     self.HealthVal    = 50
     self.Damage       = 0
     self.Radius       = 0
+
+    -- FIX #3: track previous distance-squared to aimPos for fly-past detection
+    self._prevDistSqr = math.huge
 
     -- Spawner sets these:
     --   self.TrackEnt       = <entity or nil>
@@ -143,15 +145,42 @@ function ENT:Think()
     local aimPos = GetAimPos(self.TrackEnt, self.FallbackTarget)
 
     -- ── 2. Proximity detonation ──────────────────────────────────
-    if aimPos and (myPos - aimPos):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
-        self:MissileDoExplosion()
-        return true
+    if aimPos then
+        local distSqr = (myPos - aimPos):LengthSqr()
+
+        -- FIX #1: larger sphere catches tangential/glancing approaches
+        if distSqr < PROX_RADIUS * PROX_RADIUS then
+            self:MissileDoExplosion()
+            return true
+        end
+
+        -- FIX #2: secondary check against raw entity origin (no Z offset).
+        -- The +40 Z shifts aimPos above the body; the missile can pass
+        -- through the torso without ever entering the aimPos sphere.
+        if IsValid(self.TrackEnt) then
+            local rawPos = self.TrackEnt:GetPos()
+            if (myPos - rawPos):LengthSqr() < PROX_RADIUS * PROX_RADIUS then
+                self:MissileDoExplosion()
+                return true
+            end
+        end
+
+        -- FIX #3: fly-past detector.
+        -- If distance was closing last tick but is now opening AND we are
+        -- within 4x the prox radius, we just crossed closest approach -> detonate.
+        local FLY_PAST_GATE_SQR = (PROX_RADIUS * 4) * (PROX_RADIUS * 4)
+        if distSqr > self._prevDistSqr and distSqr < FLY_PAST_GATE_SQR then
+            self:MissileDoExplosion()
+            return true
+        end
+        self._prevDistSqr = distSqr
+    else
+        self._prevDistSqr = math.huge
     end
 
     -- ── 3. Obstacle avoidance rays from nose tip ─────────────────
-    -- Nose tip: missile forward * half bounding-box length ahead
     local noseTip   = myPos + currentDir * 20
-    local minDist   = CRUISE_SPEED * 1.5   -- push-off scales with speed
+    local minDist   = CRUISE_SPEED * 1.5
 
     local avoidPoint, wallClose = ComputeAvoidanceTarget(
         noseTip, self, minDist, self.NikitaOwner
@@ -162,14 +191,11 @@ function ENT:Think()
 
     if aimPos then
         if wallClose then
-            -- Blend: avoidance is dominant but still drifts toward goal
             steerTarget = LerpVector(AVOID_WEIGHT, aimPos, avoidPoint)
         else
-            -- Clear path: pure homing, avoidance is near zero influence
             steerTarget = aimPos
         end
     else
-        -- No target: avoid walls and fly straight
         steerTarget = avoidPoint
     end
 
