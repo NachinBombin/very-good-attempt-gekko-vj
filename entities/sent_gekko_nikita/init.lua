@@ -286,7 +286,7 @@ local function RingApertureScan(hitPos, hitNormal, missilePos, aimPos, filter)
     local bestFinePt    = bestCoarsePt
 
     for i = 0, RING_STEPS_FINE - 1 do
-        local angle  = (i / RING_STEPS_FINE) * pi2
+        local angle  = (i / RING_STEPS_FINE) * math.pi * 2
         local offset = right * (math.cos(angle) * RING_FINE_RADIUS)
                      + tang  * (math.sin(angle) * RING_FINE_RADIUS)
         local pt = bestCoarsePt + offset
@@ -584,16 +584,21 @@ function ENT:Think()
 
     local aimPos = GetAimPos(self)
 
-    if aimPos then
-        local distSqr = (myPos - aimPos):LengthSqr()
+    -- Use the actual tracked enemy for detonation heuristics when possible,
+    -- so that the missile does not instantly detonate just because the guide
+    -- SNPC is very close to it.
+    local detRefPos = nil
+    local trackEnt  = self.TrackEnt
+    if IsValid(trackEnt) then
+        detRefPos = trackEnt:GetPos() + Vector(0, 0, TARGET_Z_OFFS)
+    elseif aimPos and not IsValid(self.PathGuide) then
+        detRefPos = aimPos
+    end
+
+    if detRefPos then
+        local distSqr = (myPos - detRefPos):LengthSqr()
         if distSqr < PROX_RADIUS * PROX_RADIUS then
             self:MissileDoExplosion(); return true
-        end
-        if IsValid(self.TrackEnt) then
-            local rawSqr = (myPos - self.TrackEnt:GetPos()):LengthSqr()
-            if rawSqr < PROX_RADIUS * PROX_RADIUS then
-                self:MissileDoExplosion(); return true
-            end
         end
         local gate = (PROX_RADIUS * 4) * (PROX_RADIUS * 4)
         if distSqr > self._prevDistSqr and distSqr < gate then
@@ -680,7 +685,7 @@ function ENT:Think()
         desiredDir:Normalize()
     end
 
-    local maxAngle = activeTurnSpeed * dt
+    local maxAngle = TURN_SPEED * dt
     local cosAngle = math.Clamp(currentDir:Dot(desiredDir), -1, 1)
     local angle    = math.acos(cosAngle)
 
