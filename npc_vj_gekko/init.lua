@@ -8,9 +8,7 @@
 --  5. Top-attack terror missile (sent_npc_topmissile)
 --  6. Active-track missile      (sent_npc_trackmissile)
 --  7. Orbit RPG                 (sent_orbital_rpg)
---  8. Nikita cruise missile     (sent_gekko_nikita)
---     8.1 Optional VJ SNPC guide (npc_vj_gekko_nikita_guide)
---  + Sonar Lock net message for TRACKMISSILE
+--  8. Nikita cruise missile     (npc_vj_gekko_nikita)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -619,7 +617,7 @@ local function FireTrackMissile( ent, enemy )
 end
 
 -- ============================================================
---  Weapon: Nikita homing cruise missile
+--  Weapon: Nikita homing cruise missile (full VJ SNPC)
 -- ============================================================
 local function FireNikita( ent, enemy )
     local dist = ent:GetPos():Distance(enemy:GetPos())
@@ -639,45 +637,30 @@ local function FireNikita( ent, enemy )
     local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
     local launchDir = (aimPos - spawnPos):GetNormalized()
 
-    local nikita = ents.Create("sent_gekko_nikita")
+    local nikita = ents.Create("npc_vj_gekko_nikita")
     if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: create failed")
+        print("[GekkoNikita] ERROR: npc_vj_gekko_nikita create failed")
         return FireMissile(ent, enemy)
     end
 
-    nikita:SetPos( spawnPos )
-    nikita:SetAngles( launchDir:Angle() )
+    nikita:SetPos(spawnPos)
+    nikita:SetAngles(launchDir:Angle())
+    nikita:SetOwner(ent)
+    nikita.NikitaOwner     = ent
+    nikita.NikitaTargetEnt = enemy
+
     nikita:Spawn()
     nikita:Activate()
 
-    -- Optional VJ Base aerial guide NPC. If creation fails we simply
-    -- fall back to the classic direct-homing behaviour.
-    local guide = ents.Create("npc_vj_gekko_nikita_guide")
-    if IsValid(guide) then
-        guide:SetPos(spawnPos)
-        guide:SetAngles(launchDir:Angle())
-        guide:SetOwner(ent)
-        guide:Spawn()
-        guide:Activate()
-
-        if IsValid(enemy) then
-            guide:SetEnemy(enemy)
-            if guide.VJ_DoSetEnemy then
-                guide:VJ_DoSetEnemy(enemy, true, true)
-            end
+    if IsValid(enemy) then
+        if nikita.VJ_DoSetEnemy then
+            nikita:VJ_DoSetEnemy(enemy, true, true)
+        else
+            nikita:SetEnemy(enemy)
         end
-
-        guide.NikitaMissile = nikita
-        nikita.PathGuide    = guide
     end
 
-    nikita.TrackEnt       = enemy
-    nikita.NikitaOwner    = ent
-    nikita:SetNWEntity( "NikitaTrackEnt", enemy )
-    nikita:SetOwner( ent )
-
-    print(string.format("[GekkoNikita] Launched | dist=%.0f homing=%s target=%s guide=%s",
-        dist, tostring(IsValid(enemy)), tostring(enemy), tostring(IsValid(guide) and guide or nil)))
+    print(string.format("[GekkoNikita] Launched NPC | dist=%.0f target=%s", dist, tostring(enemy)))
     return true
 end
 
