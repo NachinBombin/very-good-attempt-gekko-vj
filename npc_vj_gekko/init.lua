@@ -8,7 +8,8 @@
 --  5. Top-attack terror missile (sent_npc_topmissile)
 --  6. Active-track missile      (sent_npc_trackmissile)
 --  7. Orbit RPG                 (sent_orbital_rpg)
---  8. Nikita cruise missile     (sent_gekko_nikita)  <-- self-contained
+--  8. Nikita cruise missile     (sent_gekko_nikita)
+--     8.1 Optional VJ SNPC guide (npc_vj_gekko_nikita_guide)
 --  + Sonar Lock net message for TRACKMISSILE
 -- ============================================================
 include("shared.lua")
@@ -635,8 +636,7 @@ local function FireNikita( ent, enemy )
                    + toTarget2D * NIKITA_SPAWN_FORWARD
                    + Vector(0, 0, NIKITA_SPAWN_Z)
 
-    -- Aim toward the enemy's current position (center-mass height)
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
     local launchDir = (aimPos - spawnPos):GetNormalized()
 
     local nikita = ents.Create("sent_gekko_nikita")
@@ -650,16 +650,34 @@ local function FireNikita( ent, enemy )
     nikita:Spawn()
     nikita:Activate()
 
-    -- THE FIX: set the plain Lua field TrackEnt that the missile's
-    -- Think loop reads every tick for homing.
-    -- NikitaTrackEnt (NWEntity) is kept for client-side HUD/effects only.
-    nikita.TrackEnt       = enemy   -- <-- THIS was the missing line
+    -- Optional VJ Base aerial guide NPC. If creation fails we simply
+    -- fall back to the classic direct-homing behaviour.
+    local guide = ents.Create("npc_vj_gekko_nikita_guide")
+    if IsValid(guide) then
+        guide:SetPos(spawnPos)
+        guide:SetAngles(launchDir:Angle())
+        guide:SetOwner(ent)
+        guide:Spawn()
+        guide:Activate()
+
+        if IsValid(enemy) then
+            guide:SetEnemy(enemy)
+            if guide.VJ_DoSetEnemy then
+                guide:VJ_DoSetEnemy(enemy, true, true)
+            end
+        end
+
+        guide.NikitaMissile = nikita
+        nikita.PathGuide    = guide
+    end
+
+    nikita.TrackEnt       = enemy
     nikita.NikitaOwner    = ent
     nikita:SetNWEntity( "NikitaTrackEnt", enemy )
     nikita:SetOwner( ent )
 
-    print(string.format("[GekkoNikita] Launched | dist=%.0f homing=%s target=%s",
-        dist, tostring(IsValid(enemy)), tostring(enemy)))
+    print(string.format("[GekkoNikita] Launched | dist=%.0f homing=%s target=%s guide=%s",
+        dist, tostring(IsValid(enemy)), tostring(enemy), tostring(IsValid(guide) and guide or nil)))
     return true
 end
 

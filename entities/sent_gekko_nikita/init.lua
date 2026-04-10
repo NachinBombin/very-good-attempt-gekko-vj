@@ -5,6 +5,7 @@ include("shared.lua")
 -- ============================================================
 --  Nikita Homing Missile  -  server
 --  v4.3 - aperture: radial ring scanner (angle-invariant)
+--  v5.0 - optional VJ SNPC path guide support
 -- ============================================================
 
 -- ---------------------------------------------------------
@@ -143,6 +144,20 @@ local function GetEntVelocity(ent)
 end
 
 local function GetAimPos(self)
+    -- 1) Prefer the VJ SNPC path guide if present. It already knows the
+    --    nodegraph and interior topology, so steering toward it gives
+    --    the missile a "map-aware" path while still keeping all of the
+    --    local avoidance from this file.
+    local guide = self.PathGuide
+    if IsValid(guide) then
+        local gp = guide:GetPos()
+        self._lastKnownPos  = Vector(gp.x, gp.y, gp.z + TARGET_Z_OFFS)
+        self._lastKnownVel  = GetEntVelocity(guide)
+        self._lastKnownTime = CurTime()
+        return Vector(gp.x, gp.y, gp.z + TARGET_Z_OFFS)
+    end
+
+    -- 2) Fall back to the direct tracked entity, with lead prediction.
     local trackEnt = self.TrackEnt
     if IsValid(trackEnt) then
         local p   = trackEnt:GetPos()
@@ -156,6 +171,9 @@ local function GetAimPos(self)
             p.z + TARGET_Z_OFFS + vel.z * LEAD_TIME
         )
     end
+
+    -- 3) If both are gone, coast toward the last-known position for a
+    --    short grace window, then revert to the generic fallback.
     if self._lastKnownPos and self._lastKnownTime then
         local age = CurTime() - self._lastKnownTime
         if age < LAST_KNOWN_TIMEOUT then
@@ -163,6 +181,7 @@ local function GetAimPos(self)
             return self._lastKnownPos + lkv * age
         end
     end
+
     return self.FallbackTarget
 end
 
@@ -222,44 +241,22 @@ end
 
 -- ---------------------------------------------------------
 --  RADIAL RING APERTURE SCANNER
---
---  Problem with the old flat-grid slab scan:
---    - Grid axes were built from the wall normal, so if the missile
---      approaches at an oblique angle the grid is rotated wrong and
---      a doorway / window opening falls between rows entirely.
---    - O(n²) probes, very coarse at the centre.
---
---  New approach: concentric rings radiating outward from the hit point
---  in the plane of the wall.  Each probe is a hull-sweep through the
---  wall (not a line trace) so the full missile body must clear.
---  Rotationally invariant – works at any approach angle.
---
---  Pass 1 – coarse rings up to RING_RADII_COARSE max, RING_STEPS_COARSE
---           angular samples each.  First ring that yields a passing probe
---           records the best-scored point.
---  Pass 2 – fine ring of radius RING_FINE_RADIUS centred on that point,
---           RING_STEPS_FINE samples.  Returns best fine point as waypoint.
 -- ---------------------------------------------------------
 local function RingApertureScan(hitPos, hitNormal, missilePos, aimPos, filter)
     local right, tang = BuildTangents(hitNormal)
-    -- Step back from the wall so our probe origin is on the missile side
     local wallOrigin  = hitPos + hitNormal * (BODY_HALF + 4)
-    local probeDir    = -hitNormal   -- direction that goes through the wall
+    local probeDir    = -hitNormal
     local toTarget    = (aimPos - hitPos):GetNormalized()
     local pi2         = math.pi * 2
 
     local function ScorePoint(pt)
-        -- How much progress does flying through here give toward the target?
         local progressDot = (aimPos - pt):GetNormalized():Dot(-hitNormal)
-        -- Does the missile actually reach this point without hitting something first?
         local missileToPt = (pt - missilePos):GetNormalized()
         local approachDot = math.max(0, missileToPt:Dot(toTarget))
-        -- Prefer openings close to the missile's current altitude
         local zScore = 1.0 - math.Clamp(math.abs(pt.z - missilePos.z) / 400, 0, 1)
         return progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
     end
 
-    -- Pass 1: coarse rings
     local bestCoarseScore = -math.huge
     local bestCoarsePt    = nil
 
@@ -271,7 +268,6 @@ local function RingApertureScan(hitPos, hitNormal, missilePos, aimPos, filter)
                          + tang  * (math.sin(angle) * radius)
             local pt = wallOrigin + offset
 
-            -- Hull-sweep through wall: missile body must fully fit
             local _, fits = BodyFits(pt, probeDir, RING_PROBE_LEN, filter)
             if fits then
                 local score = ScorePoint(pt)
@@ -281,14 +277,11 @@ local function RingApertureScan(hitPos, hitNormal, missilePos, aimPos, filter)
                 end
             end
         end
-        -- Early exit: if we found a hit at a small radius, no need for large rings
-        -- (a small opening near centre is almost always better than a distant one)
         if bestCoarsePt and radius <= 80 then break end
     end
 
     if not bestCoarsePt then return nil, nil end
 
-    -- Pass 2: fine ring around best coarse point
     local bestFineScore = bestCoarseScore
     local bestFinePt    = bestCoarsePt
 
@@ -308,8 +301,6 @@ local function RingApertureScan(hitPos, hitNormal, missilePos, aimPos, filter)
         end
     end
 
-    -- Place the waypoint just past the opening so the missile is already
-    -- inside/through before the next repath tick.
     local exitPt = bestFinePt + probeDir * (RING_PROBE_LEN * RING_EXIT_FRAC)
     return exitPt, hitNormal
 end
@@ -339,7 +330,6 @@ local function RebuildWaypoints(self, myPos, aimPos, filter)
     local wp1Pos, wp1Normal = ScanAhead(myPos, aimPos, filter)
     if not wp1Pos then return end
 
-    -- Verify we can reach the waypoint without hitting something first
     local tr1 = util.TraceLine({
         start  = myPos,
         endpos = wp1Pos,
@@ -375,7 +365,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Advance past reached waypoints
     if self._waypoints and #self._waypoints > 0 then
         local wp = self._waypoints[self._wpIndex]
         if wp then
@@ -389,7 +378,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
                     return
                 end
             end
-            -- Still have a valid waypoint – verify the line to it is still clear
             local verTr = util.TraceLine({
                 start  = myPos,
                 endpos = wp.pos,
@@ -407,7 +395,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         end
     end
 
-    -- Direct path check
     local directTr = util.TraceHull({
         start  = myPos,
         endpos = aimPos,
@@ -423,7 +410,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Obstruction found – rebuild waypoints via ring scanner
     RebuildWaypoints(self, myPos, aimPos, filter)
 
     if self._waypoints and self._waypoints[1] then
@@ -436,7 +422,6 @@ local function UpdatePath(self, myPos, aimPos, filter)
         return
     end
 
-    -- Fallback: hemisphere scout rays
     local toTarget  = (aimPos - myPos):GetNormalized()
     local bestScore = -math.huge
     local bestDir   = nil
@@ -527,9 +512,6 @@ function ENT:Initialize()
     self:SetModelScale(7, 0)
     self:SetMoveType(MOVETYPE_NOCLIP)
 
-    -- SOLID_BBOX lets bullets/traces register hits via OnTakeDamage.
-    -- Do NOT call PhysicsInit – it resets movetype to MOVETYPE_VPHYSICS
-    -- and the missile becomes immobile.
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionGroup(COLLISION_GROUP_PROJECTILE)
     self:SetHealth(MISSILE_HP)
@@ -773,10 +755,22 @@ function ENT:OnTakeDamage(dmginfo)
     if self.HealthVal <= 0 then self:MissileDoExplosion() end
 end
 
+local function SafeRemoveGuide(self)
+    local guide = self.PathGuide
+    if IsValid(guide) then
+        guide.NikitaMissile = nil
+        guide:Remove()
+    end
+    self.PathGuide = nil
+end
+
 function ENT:MissileDoExplosion()
     if self.Destroyed then return end
     self.Destroyed = true
     self:StopParticles()
+
+    -- Ensure the guide SNPC is cleaned up as soon as we are done
+    SafeRemoveGuide(self)
 
     local pos   = self:GetPos()
     local dmg   = self.Damage > 0 and self.Damage or 1200
@@ -808,4 +802,5 @@ end
 function ENT:OnRemove()
     self.Destroyed = true
     self:StopParticles()
+    SafeRemoveGuide(self)
 end
