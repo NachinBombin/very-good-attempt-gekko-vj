@@ -3,53 +3,46 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 -- ============================================================
---  Nikita Homing Missile  -  server
---  v3 – Wide-Scan Omniscient Pathfinder
+--  Nikita Homing Missile  –  server
+--  v4 – Shootable + 1000u Scan + Predictive Homing + Waypoint Chain
 --
---  MOVEMENT:    MOVETYPE_NOCLIP + SetAbsVelocity (310 u/s constant)
---  HOMING:      self.TrackEnt (set by spawner)
+--  MOVEMENT :  MOVETYPE_NOCLIP + SetAbsVelocity (constant speed)
+--  HOMING   :  self.TrackEnt  (set by spawner)
 --
 -- ┌──────────────────────────────────────────────────────────┐
--- │  PATHFINDING v3 – KEY FIXES OVER v2                     │
+-- │  v4 CHANGES OVER v3                                      │
 -- │                                                          │
--- │  Problem: missile looped beside large openings (garage   │
--- │  doors) because:                                         │
--- │    1. FindAperture only searched near the hit point      │
--- │       (7×7 @ 28u = 168u span) – too small for big doors  │
--- │    2. Apertures scored by grid-centre proximity, not by  │
--- │       "best path to target", so a wide door off-axis     │
--- │       scored lower than a tiny hole straight ahead       │
--- │    3. Scout rays were biased toward missile's fwd facing │
--- │       – a door at 90° scored near zero on dot()         │
--- │    4. PATH_BLEND = 0.70 still leaked 0.30 raw-homing     │
--- │       back toward the wall during approach               │
--- │    5. No approach-angle alignment: entering at steep     │
--- │       angle caused hull clearance to fail at the frame   │
+-- │  DESTRUCTIBILITY (bug fix)                               │
+-- │    v3 used SOLID_NONE, so bullets passed through with    │
+-- │    zero collision – OnTakeDamage never fired.            │
+-- │    Fix: SOLID_BBOX + PhysicsInit(SOLID_BBOX) +           │
+-- │    SetHealth so the engine actually registers bullet     │
+-- │    hits and routes them to OnTakeDamage.                 │
+-- │    DEBRIS_DAMAGE_THRESHOLD lowered 15→8 so small-arms   │
+-- │    fire can destroy it in a burst.                       │
 -- │                                                          │
--- │  v3 Solutions:                                           │
--- │    A. WIDE SLAB SCAN: instead of one hit-point grid,     │
--- │       cast a dense slab of hull-sweeps across the entire │
--- │       blocking plane up to SLAB_HALF_SIZE (300u) in      │
--- │       both tangent axes. Finds garage doors, room        │
--- │       openings, and any gap the missile can fit through. │
--- │    B. TARGET-AWARE APERTURE SCORING: each candidate      │
--- │       aperture is scored by how well flying through it   │
--- │       continues progress toward the target, not by       │
--- │       proximity to where the missile happened to hit.    │
--- │    C. APPROACH ALIGNMENT: when an aperture is chosen,    │
--- │       the approach direction is blended with the         │
--- │       aperture's wall-normal so the missile enters       │
--- │       perpendicular to the opening instead of slicing    │
--- │       through the frame at an angle.                     │
--- │    D. FULL-SPHERE SCOUT RAYS (not hemisphere): the 48    │
--- │       scout rays now cover a full sphere. When the       │
--- │       opening is behind-left, a hemisphere scan misses   │
--- │       it entirely.                                       │
--- │    E. STICKY APERTURE: once an aperture is found, the    │
--- │       missile commits to it (PATH_BLEND rises to 0.92)   │
--- │       until it has flown through. Prevents the homing    │
--- │       residual from pulling it back into the wall.       │
--- │    F. INTERVAL: 0.5s (as requested).                     │
+-- │  SLAB SCAN 1000u (two-pass)                              │
+-- │    Coarse pass: 100u step over ±1000u → ~21×21=441       │
+-- │    probes (most skipped by quick line-check).            │
+-- │    Fine pass: 36u step over ±80u around best coarse      │
+-- │    candidate → ≤25 hull probes. Total CPU ≈ v3.          │
+-- │    Aperture exit-point is projected through the wall     │
+-- │    so the missile destination is inside the opening,     │
+-- │    not on the approach face.                             │
+-- │                                                          │
+-- │  PREDICTIVE HOMING                                       │
+-- │    aimPos leads the target by velocity × look-ahead.     │
+-- │    Falls back to last-known-pos + velocity extrapolation │
+-- │    for up to 4 s when TrackEnt disappears.               │
+-- │                                                          │
+-- │  WAYPOINT CHAIN                                          │
+-- │    Up to 2 intermediate waypoints stored in             │
+-- │    _waypoints[].  After passing through aperture 1 the  │
+-- │    missile immediately recalculates for aperture 2.     │
+-- │    Prevents getting stuck in multi-wall rooms.           │
+-- │                                                          │
+-- │  SCOUT RAYS extended 1200→2000u.                        │
+-- │  PATH_BLEND_LOCKED raised 0.92→0.96.                    │
 -- └──────────────────────────────────────────────────────────┘
 -- ============================================================
 
@@ -64,6 +57,10 @@ local LIFETIME      = 45
 local ENGINE_DELAY  = 0.5
 local PROX_RADIUS   = 280
 
+-- Missile HP – shootable
+local MISSILE_HP                = 50
+local DEBRIS_DAMAGE_THRESHOLD   = 8    -- single hit ≥ this destroys immediately
+
 local EMERG_DIST    = 200
 local TACT_DIST     = 600
 local STRAT_DIST    = 1800
@@ -76,38 +73,36 @@ local TACT_CLOSE_BOOST_DIST = 180
 local CORRIDOR_TURN_MULT    = 1.6
 local BODY_HALF             = 14
 
+-- Predictive homing
+local LEAD_TIME             = 0.55   -- seconds to lead target by
+local LAST_KNOWN_TIMEOUT    = 4.0    -- seconds to track last-known-pos
+
 -- ─────────────────────────────────────────────────────────────
 --  PATHFINDING CONSTANTS
 -- ─────────────────────────────────────────────────────────────
 
-local PATHFIND_INTERVAL  = 0.5      -- seconds between full path recalculations
+local PATHFIND_INTERVAL  = 0.5
 
-local SCOUT_RAY_DIST     = 1200     -- how far scout rays reach
-local PATH_BLEND_NORMAL  = 0.70     -- blend when no aperture locked
-local PATH_BLEND_LOCKED  = 0.92     -- blend when committed to an aperture
+local SCOUT_RAY_DIST     = 2000
+local PATH_BLEND_NORMAL  = 0.70
+local PATH_BLEND_LOCKED  = 0.96
 local SCORE_ANGLE_WEIGHT = 1.5
 local SCORE_DIST_WEIGHT  = 1.0
 local SCORE_APT_BONUS    = 4.0
 
--- Wide slab scan for aperture detection
--- Scans a grid across the blocking surface.
--- SLAB_HALF_SIZE = how far (in units) to scan left/right/up/down from hit centre.
--- SLAB_STEP      = spacing between probe points (should be ~2x BODY_HALF).
--- Using 300u half-size and 36u step → ~(17×17 = 289 probes) max.
--- A standard garage door is 200–300u wide; this will cover it.
-local SLAB_HALF_SIZE = 300
-local SLAB_STEP      = 36
-local SLAB_PROBE_LEN = 120   -- depth of each probe through the wall
+-- Two-pass slab scan
+local SLAB_COARSE_HALF   = 1000   -- ±1000u coarse pass
+local SLAB_COARSE_STEP   = 100    -- 100u spacing  → ≤21×21 = 441 quick-line checks
+local SLAB_FINE_HALF     = 80     -- ±80u  fine pass around best coarse point
+local SLAB_FINE_STEP     = 36     -- 36u spacing   → ≤5×5  = 25 hull checks
+local SLAB_PROBE_LEN     = 160    -- depth of each probe through the wall
+local SLAB_EXIT_FRAC     = 0.6    -- aperture point pushed this fraction through wall
 
--- After finding an aperture, how close must the missile fly to it
--- before we consider it "entered" and release the sticky lock.
 local APERTURE_REACHED_DIST = 120
+local WAYPOINT_MAX          = 2   -- max chained waypoints
 
--- Full-sphere scout ray table: {pitch, yaw}
--- 48 rays covering a full sphere at ~30° intervals,
--- denser in the forward hemisphere where we spend most time.
+-- Full-sphere scout rays – 48 directions
 local SCOUT_RAYS = {
-    -- Forward hemisphere (denser)
     {  0,   0 },
     {  0,  30 }, {  0, -30 }, {  0,  60 }, {  0, -60 },
     {  0,  90 }, {  0, -90 }, {  0, 120 }, {  0,-120 },
@@ -118,9 +113,7 @@ local SCOUT_RAYS = {
     { 30, 135 }, { 30,-135 }, {-30, 135 }, {-30,-135 },
     { 60,  60 }, { 60, -60 }, {-60,  60 }, {-60, -60 },
     { 60,  90 }, { 60, -90 }, {-60,  90 }, {-60, -90 },
-    -- Straight up/down
     { 90,   0 }, {-90,   0 },
-    -- Diagonal up/down
     { 45,   0 }, {-45,   0 }, { 45, 180 }, {-45, 180 },
     { 45,  90 }, { 45, -90 }, {-45,  90 }, {-45, -90 },
 }
@@ -138,10 +131,9 @@ local STREAK_WINDOW           = 1.5
 local WALL_KICK_STRENGTH      = 0.6
 local PROP_MASS_LIMIT         = 80
 local PROP_KNOCKBACK          = 28000
-local DEBRIS_DAMAGE_THRESHOLD = 15
 
 -- ─────────────────────────────────────────────────────────────
---  REACTIVE RAY FANS (every tick)
+--  REACTIVE RAY FANS
 -- ─────────────────────────────────────────────────────────────
 
 local RAYS_EMERG = {
@@ -183,12 +175,29 @@ local RAYS_STRAT = {
 --  HELPERS
 -- ─────────────────────────────────────────────────────────────
 
-local function GetAimPos(trackEnt, fallback)
+-- Predictive aim position with last-known-pos fallback
+local function GetAimPos(self)
+    local trackEnt = self.TrackEnt
     if IsValid(trackEnt) then
-        local p = trackEnt:GetPos()
-        return Vector(p.x, p.y, p.z + TARGET_Z_OFFS)
+        local p   = trackEnt:GetPos()
+        local vel = trackEnt:GetVelocity and trackEnt:GetVelocity() or Vector(0,0,0)
+        -- store last-known for fallback
+        self._lastKnownPos  = Vector(p.x, p.y, p.z + TARGET_Z_OFFS)
+        self._lastKnownVel  = vel
+        self._lastKnownTime = CurTime()
+        return Vector(p.x + vel.x * LEAD_TIME,
+                      p.y + vel.y * LEAD_TIME,
+                      p.z + TARGET_Z_OFFS + vel.z * LEAD_TIME)
     end
-    return fallback
+    -- extrapolate from last known position
+    if self._lastKnownPos and self._lastKnownTime then
+        local age = CurTime() - self._lastKnownTime
+        if age < LAST_KNOWN_TIMEOUT then
+            local lkv = self._lastKnownVel or Vector(0,0,0)
+            return self._lastKnownPos + lkv * age
+        end
+    end
+    return self.FallbackTarget
 end
 
 local function CastLocalRay(ent, origin, pitch, yaw, maxDist, filter)
@@ -206,7 +215,6 @@ local function ComputeRepulsion(ent, origin, rayTable, maxDist, pushDist, filter
     local repulsion = Vector(0, 0, 0)
     local anyHit    = false
     local minDist   = math.huge
-
     for _, ray in ipairs(rayTable) do
         local tr, dir = CastLocalRay(ent, origin, ray[1], ray[2], maxDist, filter)
         if tr.Hit then
@@ -218,7 +226,6 @@ local function ComputeRepulsion(ent, origin, rayTable, maxDist, pushDist, filter
             anyHit    = true
         end
     end
-
     return repulsion, anyHit, minDist
 end
 
@@ -236,7 +243,6 @@ local function BodyFits(origin, dir, len, filter)
     return (origin - tr.HitPos):Length(), false
 end
 
--- Build two orthonormal tangent vectors for a given normal.
 local function BuildTangents(normal)
     local up    = Vector(0, 0, 1)
     local right = normal:Cross(up)
@@ -250,135 +256,96 @@ local function BuildTangents(normal)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  WIDE SLAB APERTURE SCANNER  (v3 core improvement)
+--  TWO-PASS WIDE SLAB APERTURE SCANNER  (v4)
 --
---  Casts a dense grid of hull-sweeps across the entire blocking
---  surface.  Each open cell is scored by how well flying through
---  it continues progress toward aimPos.
+--  Pass 1 – Coarse: quick line-checks over ±SLAB_COARSE_HALF at
+--            SLAB_COARSE_STEP intervals. Finds the best open zone.
+--  Pass 2 – Fine: hull-sweeps over ±SLAB_FINE_HALF around the
+--            best coarse point at SLAB_FINE_STEP.
 --
---  hitPos    – world pos where direct trace hit the wall
---  hitNormal – outward face normal of the blocking surface
---  missilePos– missile's current position
---  aimPos    – world pos of the target
---  filter    – trace filter
---
---  Returns:
---    bestPoint   (Vector)  – world-space centre of best aperture, or nil
---    bestNormal  (Vector)  – wall-outward normal (approach axis), or nil
+--  The returned aperture point is projected THROUGH the wall by
+--  SLAB_EXIT_FRAC so the missile aims into the opening, not at
+--  its approach face.
 -- ─────────────────────────────────────────────────────────────
 local function WideSlabScan(hitPos, hitNormal, missilePos, aimPos, filter)
     local right, tang = BuildTangents(hitNormal)
+    local wallOrigin  = hitPos + hitNormal * (BODY_HALF + 8)
+    local probeDir    = -hitNormal
+    local toTarget    = (aimPos - hitPos):GetNormalized()
 
-    -- Step back from the surface so probes start in open air
-    local origin = hitPos + hitNormal * (BODY_HALF + 8)
+    -- ── Pass 1: coarse quick-line scan ───────────────────────
+    local bestCoarseScore = -math.huge
+    local bestCoarsePt    = nil
 
-    -- Direction through the wall (away from missile)
-    local probeDir = -hitNormal
-
-    -- Direction from hit point toward target (used for scoring)
-    local toTarget = (aimPos - hitPos):GetNormalized()
-
-    local bestPoint  = nil
-    local bestNormal = nil
-    local bestScore  = -math.huge
-
-    local half = SLAB_HALF_SIZE
-    local step = SLAB_STEP
-
-    for row = -half, half, step do
-        for col = -half, half, step do
-            local pt = origin + right * col + tang * row
-
-            -- Quick line check first – skip expensive hull if even a ray is blocked
-            local quickTr = util.TraceLine({
+    for row = -SLAB_COARSE_HALF, SLAB_COARSE_HALF, SLAB_COARSE_STEP do
+        for col = -SLAB_COARSE_HALF, SLAB_COARSE_HALF, SLAB_COARSE_STEP do
+            local pt = wallOrigin + right * col + tang * row
+            local qTr = util.TraceLine({
                 start  = pt,
                 endpos = pt + probeDir * SLAB_PROBE_LEN,
                 mask   = MASK_SOLID_BRUSHONLY,
                 filter = filter,
             })
-            if not quickTr.Hit then
-                -- Full hull sweep to confirm the missile body fits
-                local _, fits = BodyFits(pt, probeDir, SLAB_PROBE_LEN, filter)
-                if fits then
-                    -- Score 1: does flying through here continue progress toward target?
-                    local aptToTarget  = (aimPos - pt):GetNormalized()
-                    local progressDot  = aptToTarget:Dot(-hitNormal)
-
-                    -- Score 2: how well does the missile's approach angle align?
-                    local missileToPt  = (pt - missilePos):GetNormalized()
-                    local approachDot  = math.max(0, missileToPt:Dot(toTarget))
-
-                    -- Score 3: altitude match – prefer apertures at missile's Z
-                    local zDiff  = math.abs(pt.z - missilePos.z)
-                    local zScore = 1.0 - math.Clamp(zDiff / 300, 0, 1)
-
-                    local score = progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
-
-                    if score > bestScore then
-                        bestScore  = score
-                        bestPoint  = pt
-                        bestNormal = hitNormal
-                    end
+            if not qTr.Hit then
+                local aptToTarget = (aimPos - pt):GetNormalized()
+                local progressDot = aptToTarget:Dot(-hitNormal)
+                local missileToPt = (pt - missilePos):GetNormalized()
+                local approachDot = math.max(0, missileToPt:Dot(toTarget))
+                local zDiff       = math.abs(pt.z - missilePos.z)
+                local zScore      = 1.0 - math.Clamp(zDiff / 500, 0, 1)
+                local score = progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
+                if score > bestCoarseScore then
+                    bestCoarseScore = score
+                    bestCoarsePt    = pt
                 end
             end
         end
     end
 
-    return bestPoint, bestNormal
+    if not bestCoarsePt then return nil, nil end
+
+    -- ── Pass 2: fine hull-sweep around best coarse point ─────
+    local bestFineScore  = -math.huge
+    local bestFinePoint  = nil
+
+    for row = -SLAB_FINE_HALF, SLAB_FINE_HALF, SLAB_FINE_STEP do
+        for col = -SLAB_FINE_HALF, SLAB_FINE_HALF, SLAB_FINE_STEP do
+            local pt = bestCoarsePt + right * col + tang * row
+            local _, fits = BodyFits(pt, probeDir, SLAB_PROBE_LEN, filter)
+            if fits then
+                local aptToTarget = (aimPos - pt):GetNormalized()
+                local progressDot = aptToTarget:Dot(-hitNormal)
+                local missileToPt = (pt - missilePos):GetNormalized()
+                local approachDot = math.max(0, missileToPt:Dot(toTarget))
+                local zDiff       = math.abs(pt.z - missilePos.z)
+                local zScore      = 1.0 - math.Clamp(zDiff / 500, 0, 1)
+                local score = progressDot * 2.0 + approachDot * 1.5 + zScore * 0.8
+                if score > bestFineScore then
+                    bestFineScore = score
+                    bestFinePoint = pt
+                end
+            end
+        end
+    end
+
+    -- Fall back to coarse if fine found nothing (wide open cell)
+    local finalPt = bestFinePoint or bestCoarsePt
+
+    -- Project through wall so missile aims INTO the opening
+    local exitPt = finalPt + probeDir * (SLAB_PROBE_LEN * SLAB_EXIT_FRAC)
+
+    return exitPt, hitNormal
 end
 
 -- ─────────────────────────────────────────────────────────────
---  3-D OMNISCIENT PATHFINDER  (v3)
+--  WAYPOINT-CHAIN PATHFINDER  (v4)
 --
---  Called every PATHFIND_INTERVAL seconds.
---  Writes into self:
---    _pathDir       (Vector|nil)  – steering override direction
---    _aptPoint      (Vector|nil)  – locked aperture world-pos
---    _aptNormal     (Vector|nil)  – aperture wall-normal
---    _aptLocked     (bool)        – missile is committed to an aperture
+--  self._waypoints  = { {pos, normal}, ... }  up to WAYPOINT_MAX
+--  self._wpIndex    = current target waypoint index
+--  self._aptLocked  = committed to current waypoint
 -- ─────────────────────────────────────────────────────────────
-local function UpdatePath(self, myPos, aimPos, filter)
-    if not aimPos then
-        self._pathDir   = nil
-        self._aptPoint  = nil
-        self._aptNormal = nil
-        self._aptLocked = false
-        return
-    end
-
-    -- ── Check if we have already passed through a locked aperture ────
-    if self._aptLocked and self._aptPoint then
-        local distToApt = (myPos - self._aptPoint):Length()
-        if distToApt < APERTURE_REACHED_DIST then
-            -- Through the opening: release lock
-            self._aptLocked = false
-            self._aptPoint  = nil
-            self._aptNormal = nil
-            self._pathDir   = nil
-            return
-        end
-        -- Still approaching: verify the aperture is still reachable
-        local verifyTr = util.TraceLine({
-            start  = myPos,
-            endpos = self._aptPoint,
-            mask   = MASK_SOLID_BRUSHONLY,
-            filter = filter,
-        })
-        if not verifyTr.Hit then
-            -- Clear line to aperture: fly straight at it, blended with approach normal
-            local toApt   = (self._aptPoint - myPos):GetNormalized()
-            local aligned = LerpVector(0.35, toApt, -self._aptNormal)
-            aligned:Normalize()
-            self._pathDir = aligned
-            return
-        end
-        -- Blocked (door closed?): release lock and re-scan below
-        self._aptLocked = false
-        self._aptPoint  = nil
-        self._aptNormal = nil
-    end
-
-    -- ── Step 1: hull-trace directly to target ────────────────────────
+local function ScanAhead(myPos, aimPos, filter, self)
+    -- Hull-trace to aimPos; if blocked, run WideSlabScan
     local directTr = util.TraceHull({
         start  = myPos,
         endpos = aimPos,
@@ -387,54 +354,128 @@ local function UpdatePath(self, myPos, aimPos, filter)
         mask   = MASK_SOLID_BRUSHONLY,
         filter = filter,
     })
+    if not directTr.Hit then return nil, nil end
+    return WideSlabScan(directTr.HitPos, directTr.HitNormal, myPos, aimPos, filter)
+end
 
-    if not directTr.Hit then
+local function RebuildWaypoints(self, myPos, aimPos, filter)
+    self._waypoints = {}
+    self._wpIndex   = 1
+    self._aptLocked = false
+    self._pathDir   = nil
+
+    -- Waypoint 1: first wall between missile and target
+    local wp1Pos, wp1Normal = ScanAhead(myPos, aimPos, filter, self)
+    if not wp1Pos then return end  -- clear path, no waypoints needed
+
+    -- Verify wp1 is reachable
+    local tr1 = util.TraceLine({
+        start  = myPos,
+        endpos = wp1Pos,
+        mask   = MASK_SOLID_BRUSHONLY,
+        filter = filter,
+    })
+    if tr1.Hit then return end  -- can't even see waypoint 1
+
+    self._waypoints[1] = { pos = wp1Pos, normal = wp1Normal }
+
+    if WAYPOINT_MAX < 2 then return end
+
+    -- Waypoint 2: wall between wp1 and target
+    local wp2Pos, wp2Normal = ScanAhead(wp1Pos, aimPos, filter, self)
+    if not wp2Pos then return end
+
+    local tr2 = util.TraceLine({
+        start  = wp1Pos,
+        endpos = wp2Pos,
+        mask   = MASK_SOLID_BRUSHONLY,
+        filter = filter,
+    })
+    if not tr2.Hit then
+        self._waypoints[2] = { pos = wp2Pos, normal = wp2Normal }
+    end
+end
+
+local function UpdatePath(self, myPos, aimPos, filter)
+    if not aimPos then
+        self._waypoints = {}
+        self._wpIndex   = 1
+        self._aptLocked = false
         self._pathDir   = nil
-        self._aptPoint  = nil
-        self._aptNormal = nil
-        self._aptLocked = false
         return
     end
 
-    -- ── Step 2: wide slab scan on the blocking surface ───────────────
-    local aptPoint, aptNormal = WideSlabScan(
-        directTr.HitPos, directTr.HitNormal,
-        myPos, aimPos, filter
-    )
-
-    if aptPoint then
-        local toAptTr = util.TraceLine({
-            start  = myPos,
-            endpos = aptPoint,
-            mask   = MASK_SOLID_BRUSHONLY,
-            filter = filter,
-        })
-
-        if not toAptTr.Hit then
-            -- Lock onto this aperture
-            self._aptPoint  = aptPoint
-            self._aptNormal = aptNormal
-            self._aptLocked = true
-
-            local toApt   = (aptPoint - myPos):GetNormalized()
-            local aligned = LerpVector(0.35, toApt, -aptNormal)
-            aligned:Normalize()
-            self._pathDir = aligned
-            return
+    -- ── Advance through waypoints ────────────────────────────
+    if self._waypoints and #self._waypoints > 0 then
+        local wp = self._waypoints[self._wpIndex]
+        if wp then
+            local dist = (myPos - wp.pos):Length()
+            if dist < APERTURE_REACHED_DIST then
+                -- Passed this waypoint
+                self._wpIndex = self._wpIndex + 1
+                wp = self._waypoints[self._wpIndex]
+                if not wp then
+                    -- All waypoints exhausted – direct homing
+                    self._waypoints = {}
+                    self._aptLocked = false
+                    self._pathDir   = nil
+                    return
+                end
+            end
+            -- Verify still visible
+            local verTr = util.TraceLine({
+                start  = myPos,
+                endpos = wp.pos,
+                mask   = MASK_SOLID_BRUSHONLY,
+                filter = filter,
+            })
+            if not verTr.Hit then
+                -- Steer toward current waypoint
+                local toWp    = (wp.pos - myPos):GetNormalized()
+                local aligned = LerpVector(0.35, toWp, -wp.normal)
+                aligned:Normalize()
+                self._pathDir   = aligned
+                self._aptLocked = true
+                return
+            end
+            -- Waypoint occluded – rebuild
         end
+    end
 
-        -- Aperture reachable only as soft bias
-        local toApt = (aptPoint - myPos):GetNormalized()
-        self._pathDir   = toApt
+    -- ── Rebuild waypoint chain ───────────────────────────────
+    -- Check if path to target is clear first
+    local directTr = util.TraceHull({
+        start  = myPos,
+        endpos = aimPos,
+        mins   = Vector(-BODY_HALF, -BODY_HALF, -BODY_HALF),
+        maxs   = Vector( BODY_HALF,  BODY_HALF,  BODY_HALF),
+        mask   = MASK_SOLID_BRUSHONLY,
+        filter = filter,
+    })
+    if not directTr.Hit then
+        self._waypoints = {}
         self._aptLocked = false
+        self._pathDir   = nil
         return
     end
 
-    -- ── Step 3: no aperture found – fall back to best scout ray ──────
+    RebuildWaypoints(self, myPos, aimPos, filter)
+
+    -- After rebuild, steer toward first waypoint if available
+    if self._waypoints and self._waypoints[1] then
+        local wp      = self._waypoints[1]
+        local toWp    = (wp.pos - myPos):GetNormalized()
+        local aligned = LerpVector(0.35, toWp, -wp.normal)
+        aligned:Normalize()
+        self._pathDir   = aligned
+        self._aptLocked = true
+        return
+    end
+
+    -- ── No aperture found – best scout ray ───────────────────
     local toTarget  = (aimPos - myPos):GetNormalized()
     local bestScore = -math.huge
     local bestDir   = nil
-
     for _, ray in ipairs(SCOUT_RAYS) do
         local dir = self:LocalToWorldAngles(Angle(ray[1], ray[2], 0)):Forward()
         local openDist, fits = BodyFits(myPos, dir, SCOUT_RAY_DIST, filter)
@@ -442,19 +483,17 @@ local function UpdatePath(self, myPos, aimPos, filter)
         local distScore = openDist / SCOUT_RAY_DIST
         local aptBonus  = fits and SCORE_APT_BONUS or 0
         local score = SCORE_ANGLE_WEIGHT * dot + SCORE_DIST_WEIGHT * distScore + aptBonus
-
         if score > bestScore then
             bestScore = score
             bestDir   = dir
         end
     end
-
     self._pathDir   = bestDir
     self._aptLocked = false
 end
 
 -- ─────────────────────────────────────────────────────────────
---  CLEARANCE PROBE  (immediate obstacle slide)
+--  CLEARANCE PROBE
 -- ─────────────────────────────────────────────────────────────
 local function ClearanceProbe(origin, moveDir, filter)
     local trC = util.TraceHull({
@@ -466,7 +505,6 @@ local function ClearanceProbe(origin, moveDir, filter)
         filter = filter,
     })
     if not trC.Hit then return true, nil end
-
     local normal = trC.HitNormal
     local slide  = moveDir - normal * moveDir:Dot(normal)
     if slide:LengthSqr() < 0.001 then
@@ -524,22 +562,40 @@ function ENT:Initialize()
     self:SetModel("models/weapons/w_missile_launch.mdl")
     self:SetModelScale(7, 0)
     self:SetMoveType(MOVETYPE_NOCLIP)
-    self:SetSolid(SOLID_NONE)
+
+    -- SOLID_BBOX so bullets/traces actually hit the entity
+    self:SetSolid(SOLID_BBOX)
+    self:PhysicsInit(SOLID_BBOX)
     self:SetCollisionGroup(COLLISION_GROUP_PROJECTILE)
+    self:SetHealth(MISSILE_HP)
+    self:SetMaxHealth(MISSILE_HP)
+
+    -- Keep physics from taking over movement
+    local phys = self:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:EnableMotion(false)
+        phys:EnableGravity(false)
+        phys:Sleep()
+    end
 
     self.Destroyed    = false
     self.EngineActive = false
     self.SpawnTime    = CurTime()
-    self.HealthVal    = 50
+    self.HealthVal    = MISSILE_HP
     self.Damage       = 0
     self.Radius       = 0
 
     self._prevDistSqr = math.huge
 
-    -- Path state
+    -- Predictive homing fallback state
+    self._lastKnownPos  = nil
+    self._lastKnownVel  = nil
+    self._lastKnownTime = nil
+
+    -- Waypoint chain
+    self._waypoints   = {}
+    self._wpIndex     = 1
     self._pathDir     = nil
-    self._aptPoint    = nil
-    self._aptNormal   = nil
     self._aptLocked   = false
     self._nextPathTime= 0
 
@@ -551,11 +607,6 @@ function ENT:Initialize()
     self._nextArmorRegen= CurTime() + ARMOR_REGEN_INTERVAL
 
     self:SetNWFloat("NikitaBoost", 0)
-
-    -- Spawner must set:
-    --   self.TrackEnt       = <entity or nil>
-    --   self.FallbackTarget = <Vector or nil>
-    --   self.NikitaOwner    = <entity>
 
     self:SetAbsVelocity(self:GetForward() * 80)
 
@@ -597,8 +648,8 @@ function ENT:Think()
     local currentDir = self:GetForward()
     local filter     = { self, IsValid(self.NikitaOwner) and self.NikitaOwner or self }
 
-    -- 1. HOMING TARGET
-    local aimPos = GetAimPos(self.TrackEnt, self.FallbackTarget)
+    -- 1. HOMING TARGET (predictive)
+    local aimPos = GetAimPos(self)
 
     -- 2. PROXIMITY DETONATION
     if aimPos then
@@ -621,13 +672,13 @@ function ENT:Think()
         self._prevDistSqr = math.huge
     end
 
-    -- 3. PATH UPDATE (every PATHFIND_INTERVAL)
+    -- 3. PATH UPDATE
     if now >= self._nextPathTime then
         self._nextPathTime = now + PATHFIND_INTERVAL
         UpdatePath(self, myPos, aimPos, filter)
     end
 
-    -- 4. THREE-LAYER SPATIAL AWARENESS (reactive, every tick)
+    -- 4. THREE-LAYER SPATIAL AWARENESS
     local noseTip = myPos + currentDir * 20
 
     local emergRepulsion, emergHit, emergMin =
@@ -651,11 +702,10 @@ function ENT:Think()
             ComputeRepulsion(self, noseTip, RAYS_STRAT, STRAT_DIST, STRAT_DIST * 0.3, filter)
     end
 
-    -- 5. COMPOSE STEERING DIRECTION
+    -- 5. COMPOSE STEERING
     local rawHomingDir = aimPos and (aimPos - myPos):GetNormalized() or currentDir
 
     local pathBlend = self._aptLocked and PATH_BLEND_LOCKED or PATH_BLEND_NORMAL
-
     local homingDir = rawHomingDir
     if self._pathDir then
         homingDir = LerpVector(pathBlend, rawHomingDir, self._pathDir)
@@ -687,7 +737,6 @@ function ENT:Think()
         else
             blendFactor = STRAT_STRENGTH * 0.5
         end
-        -- When locked onto aperture, suppress repulsion except emergency
         if self._aptLocked and not (emergHit and emergMin < EMERG_DIST) then
             blendFactor = blendFactor * 0.4
         end
@@ -741,7 +790,7 @@ function ENT:Think()
         elseif IsValid(tr.Entity) then
             local ent = tr.Entity
             if ent == self.NikitaOwner then
-                -- ignore
+                -- ignore owner
             elseif ent:IsPlayer() or ent:IsNPC() then
                 self:MissileDoExplosion(); return true
             else
@@ -774,6 +823,7 @@ end
 function ENT:OnTakeDamage(dmginfo)
     if self.Destroyed then return end
     local dmg = dmginfo:GetDamage()
+    -- Single powerful hit (explosion, shotgun burst) destroys immediately
     if dmg >= DEBRIS_DAMAGE_THRESHOLD then
         self:MissileDoExplosion(); return
     end
