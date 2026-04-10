@@ -4,36 +4,39 @@ include("shared.lua")
 
 -- ============================================================
 --  Nikita Homing Missile  -  server
+--  v2 – Omniscient 3D Pathfinder Edition
 --
---  MOVEMENT:   MOVETYPE_NOCLIP + SetAbsVelocity (310 u/s constant)
---  HOMING:     self.TrackEnt (set by spawner)
+--  MOVEMENT:    MOVETYPE_NOCLIP + SetAbsVelocity (310 u/s constant)
+--  HOMING:      self.TrackEnt (set by spawner)
 --
---  SPATIAL AWARENESS SYSTEM:
---    Layer 1 - EMERGENCY (< 200 u): dense 26-ray sphere, full deflection.
---    Layer 2 - TACTICAL  (200-600 u): 18-ray forward hemisphere.
---    Layer 3 - STRATEGIC (600-1800 u): 5-ray long-range scout.
---    NavMesh path assist: 1-hop waypoint when direct path blocked.
---    Clearance probe: hull-sweep to fit through gaps.
---
---  COLLISION RESILIENCE SYSTEM:
---    self.ArmorHP       = separate hit pool for world/brush collisions.
---    Wall-kick          = on brush hit, reflect off normal and continue.
---    BumpCooldown       = min 0.15s between armor drains (scrape protection).
---    ArmorHP regen      = +1 every ARMOR_REGEN_INTERVAL seconds.
---    BumpStreak         = consecutive bumps within STREAK_WINDOW seconds.
---                         > STREAK_MAX bumps → detonate (grinding prevention).
---    Debris/props       = light props (mass < PROP_MASS_LIMIT) get knocked aside.
---                         heavy props/NPCs → detonate on contact.
---    OnTakeDamage       = damage > DEBRIS_DAMAGE_THRESHOLD → detonate
---                         (player fire, explosions, interactive debris).
---                         lighter hits are absorbed by HealthVal only.
---
---  DETONATION:
---    - Primary sphere (280 u) around aimPos
---    - Secondary sphere (280 u) around raw TrackEnt origin
---    - Fly-past detector: distance growing inside 4x sphere -> detonate
---    - ArmorHP <= 0 (sustained grinding)
---    - BumpStreak > STREAK_MAX (corner-hugging)
+-- ┌──────────────────────────────────────────────────────────
+-- │  PATHFINDING – "APERTURE SEEKER"                        │
+-- │                                                          │
+-- │  Every PATHFIND_INTERVAL seconds the missile builds a    │
+-- │  lightweight path:                                       │
+-- │    1. Cast a ray from self → target.                     │
+-- │       If clear  → direct path, no waypoint needed.       │
+-- │    2. If blocked, fire a hemi-sphere of SCOUT_RAYS rays  │
+-- │       from the missile. Each ray is scored:              │
+-- │         + angular proximity to target                    │
+-- │         + distance remaining clear                       │
+-- │         + aperture width (hull-sweep to check if Nikita  │
+-- │           body fits through each candidate opening)      │
+-- │    3. Best-scoring open direction becomes _pathDir.      │
+-- │    4. Additional GAP_RAYS spiral pattern scans for       │
+-- │       apertures (doors/windows) in the wall that blocked │
+-- │       the direct path; if found, _pathDir biases toward  │
+-- │       the aperture centre.                               │
+-- │                                                          │
+-- │  SPATIAL AWARENESS  (reactive, every Think tick)         │
+-- │    Layer 1 – EMERGENCY  (<200 u)  : 26-ray dense sphere  │
+-- │    Layer 2 – TACTICAL   (200-600 u): 18-ray hemisphere   │
+-- │    Layer 3 – STRATEGIC  (600-1800 u): 5-ray scout        │
+-- │                                                          │
+-- │  COLLISION RESILIENCE                                    │
+-- │    ArmorHP, wall-kick, BumpStreak, prop knockback        │
+-- │    (unchanged from v1; see constants below)              │
+-- └──────────────────────────────────────────────────────────
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
@@ -41,7 +44,7 @@ include("shared.lua")
 -- ─────────────────────────────────────────────────────────────
 
 local CRUISE_SPEED  = 310
-local TURN_SPEED    = 9.0
+local TURN_SPEED    = 9.0          -- rad/s equivalent (time-based, not frame-based)
 local TARGET_Z_OFFS = 40
 local LIFETIME      = 45
 local ENGINE_DELAY  = 0.5
@@ -59,54 +62,75 @@ local STRAT_STRENGTH  = 0.30
 
 local TACT_CLOSE_BOOST_DIST = 180
 
--- NavMesh assist
-local NAVMESH_SCAN_DIST = 900
-local NAVMESH_WEIGHT    = 0.55
-local NAVMESH_INTERVAL  = 0.20
-
 -- Corridor mode
 local CORRIDOR_TURN_MULT = 1.6
 
--- Missile body half-width for clearance probe
+-- Missile body half-width for clearance probes
 local BODY_HALF = 14
+
+-- ─────────────────────────────────────────────────────────────
+--  PATHFINDING CONSTANTS
+-- ─────────────────────────────────────────────────────────────
+
+-- How often to recompute the 3-D path (seconds)
+local PATHFIND_INTERVAL  = 0.15
+
+-- How far ahead each scout ray reaches when building the path
+local SCOUT_RAY_DIST     = 900
+
+-- Weight given to path direction vs raw homing (0..1)
+-- Higher = missile prioritises finding gaps over bee-lining to target
+local PATH_BLEND         = 0.70
+
+-- Angular cost: penalise directions far from the target angle
+local SCORE_ANGLE_WEIGHT = 2.0
+-- Distance score: reward rays that stay open further
+local SCORE_DIST_WEIGHT  = 1.0
+-- Aperture bonus: reward directions where the missile body fits
+local SCORE_APT_BONUS    = 3.0
+
+-- Scout ray fan (pitch, yaw) offsets – hemisphere forward + up/down arcs
+-- These 37 rays are only cast during the path-update interval, not every tick.
+local SCOUT_RAYS = {
+    {  0,   0 },
+    {  0,  20 }, {  0, -20 }, {  0,  40 }, {  0, -40 },
+    {  0,  60 }, {  0, -60 }, {  0,  80 }, {  0, -80 },
+    {  0, 100 }, {  0,-100 }, {  0, 120 }, {  0,-120 },
+    { 20,   0 }, {-20,   0 }, { 30,   0 }, {-30,   0 },
+    { 45,   0 }, {-45,   0 },
+    { 20,  30 }, { 20, -30 }, {-20,  30 }, {-20, -30 },
+    { 30,  45 }, { 30, -45 }, {-30,  45 }, {-30, -45 },
+    { 15,  60 }, { 15, -60 }, {-15,  60 }, {-15, -60 },
+    { 45,  45 }, { 45, -45 }, {-45,  45 }, {-45, -45 },
+    { 10,  10 }, {-10, -10 },
+}
+
+-- How many aperture-search rays to fire inside the blocking wall plane
+-- when the direct path is blocked.  Arranged as a 2-D grid spanning
+-- APERTURE_GRID_HALF rows/cols on each side of the hit point.
+local APERTURE_GRID_HALF = 3     -- rows/cols each side of centre
+local APERTURE_STEP      = 28    -- units between grid points (approx 2x BODY_HALF)
+local APERTURE_PROBE_LEN = 80    -- length of each grid probe
 
 -- ─────────────────────────────────────────────────────────────
 --  COLLISION RESILIENCE CONSTANTS
 -- ─────────────────────────────────────────────────────────────
 
--- Armor pool: how many world-brush bumps Nikita can survive
 local ARMOR_MAX           = 8
-
--- Minimum seconds between armor drain events (scrape guard)
 local BUMP_COOLDOWN       = 0.15
-
--- ArmorHP regenerates this many points per interval
 local ARMOR_REGEN_AMOUNT  = 1
 local ARMOR_REGEN_INTERVAL= 2.0
-
--- BumpStreak: if Nikita bumps world geometry more than this many times
--- within STREAK_WINDOW seconds, it has been grinding and detonates.
-local STREAK_MAX          = 5
+local STREAK_MAX          = 7        -- raised from 5 (less hair-trigger in tight gaps)
 local STREAK_WINDOW       = 1.5
-
--- Wall-kick reflection strength (0 = no bounce, 1 = full mirror reflect)
 local WALL_KICK_STRENGTH  = 0.6
-
--- Props lighter than this (kg) get knocked aside instead of detonating Nikita
 local PROP_MASS_LIMIT     = 80
-
--- Force applied to light props when Nikita grazes them
 local PROP_KNOCKBACK      = 28000
-
--- OnTakeDamage: hits above this threshold detonate immediately
--- (explosions, bullets, interactive debris).  Smaller hits absorbed by HealthVal.
 local DEBRIS_DAMAGE_THRESHOLD = 15
 
 -- ─────────────────────────────────────────────────────────────
---  RAY FANS
+--  RAY FANS  (reactive, every tick)
 -- ─────────────────────────────────────────────────────────────
 
--- LAYER 1 - EMERGENCY: dense sphere, 26 rays
 local RAYS_EMERG = {
     { 0,    0,    1.2 },
     { 0,    45,   1.0 }, { 0,   -45,  1.0 },
@@ -123,7 +147,6 @@ local RAYS_EMERG = {
     { 0,   22,    1.1 }, { 0,  -22,   1.1 },
 }
 
--- LAYER 2 - TACTICAL: forward hemisphere, 18 rays
 local RAYS_TACT = {
     { 0,    0,    1.4 },
     { 0,    15,   1.2 }, { 0,  -15,   1.2 },
@@ -137,7 +160,6 @@ local RAYS_TACT = {
     { 0,   90,    0.7 }, { 0,  -90,   0.7 },
 }
 
--- LAYER 3 - STRATEGIC: long-range 5-ray scout
 local RAYS_STRAT = {
     { 0,    0,    1.0 },
     { 0,   18,    0.8 }, { 0,  -18,   0.8 },
@@ -191,32 +213,155 @@ local function ComputeRepulsion(ent, origin, rayTable, maxDist, pushDist, filter
     return repulsion, anyHit, minDist
 end
 
-local function NavMeshWaypoint(fromPos, toPos)
-    local fromArea = navmesh.GetNearestNavArea(fromPos, false, 300, false, false)
-    if not fromArea then return nil end
+-- Body-fitting clearance check: hull-trace along dir for len units.
+-- Returns open distance (full len if unblocked) and whether it fits.
+local function BodyFits(origin, dir, len, filter)
+    local tr = util.TraceHull({
+        start  = origin,
+        endpos = origin + dir * len,
+        mins   = Vector(-BODY_HALF, -BODY_HALF, -BODY_HALF),
+        maxs   = Vector( BODY_HALF,  BODY_HALF,  BODY_HALF),
+        mask   = MASK_SOLID_BRUSHONLY,
+        filter = filter,
+    })
+    if not tr.Hit then return len, true end
+    local d = (origin - tr.HitPos):Length()
+    return d, false
+end
 
-    local toArea = navmesh.GetNearestNavArea(toPos, false, 300, false, false)
-    if not toArea then return nil end
+-- ─────────────────────────────────────────────────────────────
+--  APERTURE DETECTOR
+--
+--  Given the world position of a wall-hit and the wall normal,
+--  scan a grid of points across the wall face and probe each with
+--  a short hull-trace to find openings (doors / windows).
+--
+--  Returns: best aperture centre (Vector) or nil
+-- ─────────────────────────────────────────────────────────────
+local function FindAperture(hitPos, hitNormal, filter)
+    -- Build two tangent axes perpendicular to the normal
+    local up    = Vector(0, 0, 1)
+    local right = hitNormal:Cross(up)
+    if right:LengthSqr() < 0.001 then
+        right = hitNormal:Cross(Vector(1, 0, 0))
+    end
+    right:Normalize()
+    local tang  = right:Cross(hitNormal)
+    tang:Normalize()
 
-    if fromArea == toArea then return nil end
+    -- Probe origin: step slightly back from the wall so we start in open air
+    local probeOrigin = hitPos + hitNormal * (BODY_HALF + 4)
 
-    local neighbors = fromArea:GetAdjacentAreas()
-    if not neighbors or #neighbors == 0 then return nil end
+    local bestPos   = nil
+    local bestScore = -1
 
-    local bestDist = math.huge
-    local bestPos  = nil
-    for _, area in ipairs(neighbors) do
-        local center = area:GetCenter()
-        local d = (center - toPos):LengthSqr()
-        if d < bestDist then
-            bestDist = d
-            bestPos  = center + Vector(0, 0, 40)
+    for row = -APERTURE_GRID_HALF, APERTURE_GRID_HALF do
+        for col = -APERTURE_GRID_HALF, APERTURE_GRID_HALF do
+            local offset = right * (col * APERTURE_STEP) + tang * (row * APERTURE_STEP)
+            local pt     = probeOrigin + offset
+
+            -- Hull-probe in the direction of travel (into the wall)
+            local probeDir = -hitNormal
+            local openDist, fits = BodyFits(pt, probeDir, APERTURE_PROBE_LEN, filter)
+
+            if fits then
+                -- Score: prefer cells close to the centre of the grid
+                local centreDist = math.sqrt(row*row + col*col)
+                local score = APERTURE_PROBE_LEN - centreDist * APERTURE_STEP * 0.5
+                if score > bestScore then
+                    bestScore = score
+                    bestPos   = pt
+                end
+            end
         end
     end
 
-    return bestPos
+    return bestPos  -- nil if no opening found
 end
 
+-- ─────────────────────────────────────────────────────────────
+--  3-D SCOUT PATHFINDER
+--
+--  Called every PATHFIND_INTERVAL seconds.
+--  Sets self._pathDir (normalised Vector) or nil (direct path clear).
+-- ─────────────────────────────────────────────────────────────
+local function UpdatePath(self, myPos, aimPos, filter)
+    if not aimPos then
+        self._pathDir      = nil
+        self._apertureHint = nil
+        return
+    end
+
+    local toTarget = (aimPos - myPos):GetNormalized()
+
+    -- Step 1: is the direct path clear?
+    local directTr = util.TraceHull({
+        start  = myPos,
+        endpos = aimPos,
+        mins   = Vector(-BODY_HALF, -BODY_HALF, -BODY_HALF),
+        maxs   = Vector( BODY_HALF,  BODY_HALF,  BODY_HALF),
+        mask   = MASK_SOLID_BRUSHONLY,
+        filter = filter,
+    })
+
+    if not directTr.Hit then
+        self._pathDir      = nil
+        self._apertureHint = nil
+        return
+    end
+
+    -- Step 2: scan for best open direction via scored scout rays
+    local bestScore = -math.huge
+    local bestDir   = nil
+
+    for _, ray in ipairs(SCOUT_RAYS) do
+        local dir = self:LocalToWorldAngles(Angle(ray[1], ray[2], 0)):Forward()
+
+        local openDist, fits = BodyFits(myPos, dir, SCOUT_RAY_DIST, filter)
+
+        -- Angular score: how close is this direction to the target?
+        local dot = math.max(0, dir:Dot(toTarget))
+
+        -- Distance score: further clear = better
+        local distScore = openDist / SCOUT_RAY_DIST
+
+        -- Aperture bonus: reward directions where the body fits
+        local aptBonus = fits and SCORE_APT_BONUS or 0
+
+        local score = SCORE_ANGLE_WEIGHT * dot + SCORE_DIST_WEIGHT * distScore + aptBonus
+
+        if score > bestScore then
+            bestScore = score
+            bestDir   = dir
+        end
+    end
+
+    -- Step 3: aperture search in the blocking wall
+    local apertureHint = FindAperture(directTr.HitPos, directTr.HitNormal, filter)
+    self._apertureHint = apertureHint
+
+    -- If we found an aperture, strongly bias bestDir toward it
+    if apertureHint then
+        local toApt = (apertureHint - myPos):GetNormalized()
+        local aptTr = util.TraceLine({
+            start  = myPos,
+            endpos = apertureHint,
+            mask   = MASK_SOLID_BRUSHONLY,
+            filter = filter,
+        })
+        if not aptTr.Hit then
+            -- Unobstructed path to the aperture: strongly bias toward it
+            bestDir = LerpVector(0.80, bestDir or toApt, toApt)
+            bestDir:Normalize()
+        end
+    end
+
+    self._pathDir = bestDir
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  CLEARANCE PROBE  (immediate obstacle slide)
+-- ─────────────────────────────────────────────────────────────
 local function ClearanceProbe(origin, moveDir, filter)
     local probeLen = 80
     local probeEnd = origin + moveDir * probeLen
@@ -235,7 +380,11 @@ local function ClearanceProbe(origin, moveDir, filter)
     local normal = trC.HitNormal
     local slide  = moveDir - normal * moveDir:Dot(normal)
     if slide:LengthSqr() < 0.001 then
-        slide = moveDir:Angle():Up()
+        -- Improved fallback: pick the tangent axis most aligned with moveDir
+        local up    = Vector(0, 0, 1)
+        local tangA = normal:Cross(up); tangA:Normalize()
+        local tangB = normal:Cross(tangA); tangB:Normalize()
+        slide = math.abs(tangA:Dot(moveDir)) >= math.abs(tangB:Dot(moveDir)) and tangA or tangB
     end
     slide:Normalize()
     return false, slide
@@ -245,10 +394,7 @@ end
 --  COLLISION RESILIENCE HELPERS
 -- ─────────────────────────────────────────────────────────────
 
--- Drain one ArmorHP with cooldown and streak tracking.
--- Returns true if the missile should detonate (armor depleted or streak exceeded).
 local function BumpArmor(self, now)
-    -- Enforce cooldown between drains (scrape guard)
     if now - self._lastBumpTime < BUMP_COOLDOWN then
         return false
     end
@@ -256,26 +402,18 @@ local function BumpArmor(self, now)
     self._lastBumpTime = now
     self.ArmorHP = self.ArmorHP - 1
 
-    -- Streak tracking: reset if too much time has passed
     if now - self._streakStart > STREAK_WINDOW then
-        self._bumpStreak = 0
+        self._bumpStreak  = 0
         self._streakStart = now
     end
     self._bumpStreak = self._bumpStreak + 1
 
-    -- Detonation conditions
-    if self.ArmorHP <= 0 then
-        return true   -- armor exhausted
-    end
-    if self._bumpStreak > STREAK_MAX then
-        return true   -- sustained grinding
-    end
+    if self.ArmorHP <= 0             then return true end
+    if self._bumpStreak > STREAK_MAX then return true end
 
     return false
 end
 
--- Reflect the missile off a surface normal (wall-kick).
--- Blends between current direction and mirror-reflect by WALL_KICK_STRENGTH.
 local function WallKick(self, hitNormal)
     local cur     = self:GetForward()
     local reflect = cur - hitNormal * (2 * cur:Dot(hitNormal))
@@ -285,26 +423,16 @@ local function WallKick(self, hitNormal)
     self:SetAbsVelocity(kicked * CRUISE_SPEED)
 end
 
--- Try to knock a light physics prop aside.
--- Returns true if the prop was knocked (missile should NOT detonate),
--- false if the prop is too heavy (missile should detonate).
 local function HandlePropContact(self, ent)
     if not IsValid(ent) then return false end
-    if not ent:IsValid() then return false end
-
-    -- Only physics objects can be knocked
     local phys = ent:GetPhysicsObject()
     if not IsValid(phys) then return false end
-
     local mass = phys:GetMass()
     if mass < PROP_MASS_LIMIT then
-        -- Light prop: knock it away, missile survives
         local pushDir = (ent:GetPos() - self:GetPos()):GetNormalized()
         phys:ApplyForceCenter(pushDir * PROP_KNOCKBACK)
         return true
     end
-
-    -- Heavy prop or NPC: detonate
     return false
 end
 
@@ -327,21 +455,24 @@ function ENT:Initialize()
     self.Damage        = 0
     self.Radius        = 0
 
-    -- Fly-past detector
     self._prevDistSqr  = math.huge
 
-    -- NavMesh assist state
-    self._navWaypoint   = nil
-    self._nextNavSample = 0
+    -- 3-D path state
+    self._pathDir       = nil
+    self._apertureHint  = nil
+    self._nextPathTime  = 0
 
-    -- ── Collision resilience state ──────────────────────────
+    -- Collision resilience state
     self.ArmorHP        = ARMOR_MAX
     self._lastBumpTime  = -999
     self._bumpStreak    = 0
     self._streakStart   = CurTime()
     self._nextArmorRegen= CurTime() + ARMOR_REGEN_INTERVAL
 
-    -- Spawner sets:
+    -- NWFloat for client visual boost
+    self:SetNWFloat("NikitaBoost", 0)
+
+    -- Spawner must set:
     --   self.TrackEnt       = <entity or nil>
     --   self.FallbackTarget = <Vector or nil>
     --   self.NikitaOwner    = <entity>
@@ -368,6 +499,7 @@ function ENT:Think()
     if self.Destroyed then return true end
 
     local now = CurTime()
+    local dt  = math.max(FrameTime(), 0.001)
 
     if now - self.SpawnTime > LIFETIME then
         self:MissileDoExplosion()
@@ -376,7 +508,7 @@ function ENT:Think()
 
     if not self.EngineActive then return true end
 
-    -- ── Armor HP regen ────────────────────────────────────────
+    -- Armor regen
     if now >= self._nextArmorRegen then
         self._nextArmorRegen = now + ARMOR_REGEN_INTERVAL
         self.ArmorHP = math.min(self.ArmorHP + ARMOR_REGEN_AMOUNT, ARMOR_MAX)
@@ -386,10 +518,10 @@ function ENT:Think()
     local currentDir = self:GetForward()
     local filter     = { self, IsValid(self.NikitaOwner) and self.NikitaOwner or self }
 
-    -- ═══ 1. HOMING TARGET ════════════════════════════════════
+    -- 1. HOMING TARGET
     local aimPos = GetAimPos(self.TrackEnt, self.FallbackTarget)
 
-    -- ═══ 2. PROXIMITY DETONATION ═════════════════════════════
+    -- 2. PROXIMITY DETONATION
     if aimPos then
         local distSqr = (myPos - aimPos):LengthSqr()
 
@@ -404,7 +536,6 @@ function ENT:Think()
             end
         end
 
-        -- Fly-past: distance growing inside 4x prox gate
         local gate = (PROX_RADIUS * 4) * (PROX_RADIUS * 4)
         if distSqr > self._prevDistSqr and distSqr < gate then
             self:MissileDoExplosion(); return true
@@ -414,8 +545,13 @@ function ENT:Think()
         self._prevDistSqr = math.huge
     end
 
-    -- ═══ 3. THREE-LAYER SPATIAL AWARENESS ════════════════════
+    -- 3. 3-D OMNISCIENT PATH UPDATE
+    if now >= self._nextPathTime then
+        self._nextPathTime = now + PATHFIND_INTERVAL
+        UpdatePath(self, myPos, aimPos, filter)
+    end
 
+    -- 4. THREE-LAYER SPATIAL AWARENESS
     local noseTip = myPos + currentDir * 20
 
     local emergRepulsion, emergHit, emergMin =
@@ -440,33 +576,14 @@ function ENT:Think()
             ComputeRepulsion(self, noseTip, RAYS_STRAT, STRAT_DIST, STRAT_DIST * 0.3, filter)
     end
 
-    -- ═══ 4. NAVMESH PATH ASSIST ══════════════════════════════
-    if aimPos and now >= self._nextNavSample then
-        self._nextNavSample = now + NAVMESH_INTERVAL
+    -- 5. COMPOSE STEERING DIRECTION
 
-        local fwdToTarget = (aimPos - myPos):GetNormalized()
-        local navCheck = util.TraceLine({
-            start  = myPos,
-            endpos = myPos + fwdToTarget * NAVMESH_SCAN_DIST,
-            mask   = MASK_SOLID_BRUSHONLY,
-            filter = filter,
-        })
+    local rawHomingDir = aimPos and (aimPos - myPos):GetNormalized() or currentDir
 
-        if navCheck.Hit then
-            local wp = NavMeshWaypoint(myPos, aimPos)
-            self._navWaypoint = wp
-        else
-            self._navWaypoint = nil
-        end
-    end
-
-    -- ═══ 5. COMPOSE STEERING DIRECTION ═══════════════════════
-
-    local homingDir = aimPos and (aimPos - myPos):GetNormalized() or currentDir
-
-    if aimPos and self._navWaypoint then
-        local navDir = (self._navWaypoint - myPos):GetNormalized()
-        homingDir = LerpVector(NAVMESH_WEIGHT, homingDir, navDir)
+    -- Blend with 3-D path direction when one exists
+    local homingDir = rawHomingDir
+    if self._pathDir then
+        homingDir = LerpVector(PATH_BLEND, rawHomingDir, self._pathDir)
         homingDir:Normalize()
     end
 
@@ -502,23 +619,35 @@ function ENT:Think()
         desiredDir = homingDir
     end
 
-    -- ═══ 6. CLEARANCE PROBE ══════════════════════════════════
+    -- 6. CLEARANCE PROBE
     local fits, slideDir = ClearanceProbe(myPos, desiredDir, filter)
     if not fits and slideDir then
         desiredDir = LerpVector(0.7, desiredDir, slideDir)
         desiredDir:Normalize()
     end
 
-    -- ═══ 7. APPLY TURN + VELOCITY ════════════════════════════
-    local moveDir = LerpVector(FrameTime() * activeTurnSpeed, currentDir, desiredDir)
-    moveDir:Normalize()
+    -- 7. APPLY TURN + VELOCITY  (time-based, FPS-independent angle-clamped slerp)
+    local maxAngle = activeTurnSpeed * dt
+    local cosAngle = math.Clamp(currentDir:Dot(desiredDir), -1, 1)
+    local angle    = math.acos(cosAngle)
+
+    local moveDir
+    if angle < 0.001 then
+        moveDir = desiredDir
+    else
+        local t = math.min(maxAngle / angle, 1.0)
+        moveDir = LerpVector(t, currentDir, desiredDir)
+        moveDir:Normalize()
+    end
+
+    -- Signal client particles: boost glow when actively pathfinding around obstacles
+    self:SetNWFloat("NikitaBoost", self._pathDir and 1 or 0)
 
     self:SetAngles(moveDir:Angle())
     self:SetAbsVelocity(moveDir * CRUISE_SPEED)
 
-    -- ═══ 8. AHEAD HULL TRACE - collision resilience ═══════════
-    -- Uses MASK_SHOT so we catch both world AND entities.
-    local stepDist = CRUISE_SPEED * FrameTime() + 16
+    -- 8. AHEAD HULL TRACE - collision resilience
+    local stepDist = CRUISE_SPEED * dt + 16
     local tr = util.TraceHull({
         start  = myPos,
         endpos = myPos + moveDir * stepDist,
@@ -530,30 +659,23 @@ function ENT:Think()
 
     if tr.Hit then
         if tr.HitWorld then
-            -- ── World / brush hit ─────────────────────────────
-            -- Drain armor, apply wall-kick, survive if armor remains.
             local shouldDetonate = BumpArmor(self, now)
             if shouldDetonate then
                 self:MissileDoExplosion(); return true
             end
-            -- Bounce off the wall and keep flying
             WallKick(self, tr.HitNormal)
 
         elseif IsValid(tr.Entity) then
             local ent = tr.Entity
             if ent == self.NikitaOwner then
-                -- Ignore owner
+                -- ignore owner
             elseif ent:IsPlayer() or ent:IsNPC() then
-                -- Direct hit on a living target: always detonate
                 self:MissileDoExplosion(); return true
             else
-                -- Physics prop: try to knock it aside
                 local knocked = HandlePropContact(self, ent)
                 if not knocked then
-                    -- Heavy / non-physics entity: detonate
                     self:MissileDoExplosion(); return true
                 end
-                -- Light prop knocked: drain a small armor tick and continue
                 local shouldDetonate = BumpArmor(self, now)
                 if shouldDetonate then
                     self:MissileDoExplosion(); return true
@@ -571,19 +693,14 @@ end
 
 function ENT:Touch(ent)
     if self.Destroyed then return end
-    -- Short arm delay so we do not detonate on the muzzle / owner
     if CurTime() - self.SpawnTime < 0.3 then return end
     if ent == self.NikitaOwner then return end
 
-    -- Touch() fires for overlapping solids.
-    -- Players and NPCs always detonate.
     if IsValid(ent) and (ent:IsPlayer() or ent:IsNPC()) then
         self:MissileDoExplosion()
         return
     end
 
-    -- Physics props: handled by the hull trace above.
-    -- Anything else (func_brush, doors, etc.) → treat as world, drain armor.
     local shouldDetonate = BumpArmor(self, CurTime())
     if shouldDetonate then
         self:MissileDoExplosion()
@@ -595,13 +712,11 @@ function ENT:OnTakeDamage(dmginfo)
 
     local dmg = dmginfo:GetDamage()
 
-    -- Sensitive to significant hits (bullets, explosions, interactive debris)
     if dmg >= DEBRIS_DAMAGE_THRESHOLD then
         self:MissileDoExplosion()
         return
     end
 
-    -- Light hits (grazing, small debris) only chip HealthVal
     self.HealthVal = self.HealthVal - dmg
     if self.HealthVal <= 0 then
         self:MissileDoExplosion()
