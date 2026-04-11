@@ -59,6 +59,10 @@ local SND_WHISTLE = "nikita/bomb_whistle_loop.wav"
 local SND_FLAME   = "nikita/flame_loop.wav"
 local SND_LOCKON  = "nikita/lock on stinger.wav"
 
+local SND_LEVEL_FIRE   = 90
+local SND_LEVEL_LOOP   = 80
+local SND_LEVEL_LOCKON = 85
+
 -- Distance at which the lock-on stinger triggers (and resets when exceeded).
 local LOCKON_DIST = 600
 
@@ -446,18 +450,13 @@ function ENT:CustomOnInitialize()
 
     self._lastPhysDmg  = -999
 
-    -- Lock-on stinger state:
-    --   _lockOnArmed  = true means ready to fire (hasn't played yet this approach)
-    --   _lockOnActive = true means stinger is currently playing (target is inside range)
     self._lockOnArmed  = true
     self._lockOnActive = false
 
-    -- Fire sound: one-shot on spawn
-    sound.Play(SND_FIRE, self:GetPos(), 90, 100)
-
-    -- Flight loop: both channels started together, looping
-    self:EmitSound(SND_WHISTLE, 80, 100)
-    self:EmitSound(SND_FLAME,   75, 100)
+    -- All sounds use EmitSound(path, level, pitch, volume) matching the MG pattern
+    self:EmitSound(SND_FIRE,    SND_LEVEL_FIRE,   100, 1)
+    self:EmitSound(SND_WHISTLE, SND_LEVEL_LOOP,   100, 1)
+    self:EmitSound(SND_FLAME,   SND_LEVEL_LOOP,    95, 1)
 end
 
 function ENT:CustomOnPostInitialize()
@@ -628,7 +627,7 @@ function ENT:CustomOnThink()
         if self._lockOnArmed and distToEnemy <= LOCKON_DIST then
             self._lockOnArmed  = false
             self._lockOnActive = true
-            sound.Play(SND_LOCKON, myPos, 85, 100)
+            self:EmitSound(SND_LOCKON, SND_LEVEL_LOCKON, 100, 1)
         elseif self._lockOnActive and distToEnemy > LOCKON_DIST then
             -- Target broke away — stop the stinger and reset for next approach.
             self:StopSound(SND_LOCKON)
