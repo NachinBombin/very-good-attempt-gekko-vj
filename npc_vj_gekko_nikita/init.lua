@@ -405,6 +405,8 @@ end
 function ENT:CustomOnInitialize()
     self:SetModel("models/weapons/w_missile_launch.mdl")
     self:SetModelScale(7, 0)
+    -- Start with BBOX so VJ's internals have a valid solid state.
+    -- PostInitialize will upgrade to BBOX+FSOLID_NOT_SOLID.
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-12,-12,-12), Vector(12,12,12))
 
@@ -436,12 +438,30 @@ end
 
 function ENT:CustomOnPostInitialize()
     self:SetMoveType(MOVETYPE_NOCLIP)
-    self:SetSolid(SOLID_NONE)
-    self:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
 
-    -- Re-enable physics collision callback so bullet physics props can
-    -- register impacts even though SOLID_NONE is set for the locomotor.
-    -- We use a thin VPHYSICS shadow object just for the callback.
+    -- FIX: SOLID_BBOX + FSOLID_NOT_SOLID
+    --   SOLID_BBOX   → hitscan FireBullets traces (MASK_SHOT) register a hit,
+    --                  so standard bullet weapons actually call OnTakeDamage.
+    --   FSOLID_NOT_SOLID → the engine won't physically push or obstruct NPCs /
+    --                  the locomotor, avoiding interference with MOVETYPE_NOCLIP.
+    self:SetSolid(SOLID_BBOX)
+    self:AddSolidFlags(FSOLID_NOT_SOLID)
+    self:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
+    self:SetCollisionBounds(Vector(-12,-12,-12), Vector(12,12,12))
+
+    -- FIX: create a real vphysics shadow object.
+    --   StartMotionController() alone does nothing without a vphysics object
+    --   to shadow — the missile had none, so PhysicsCollide never fired.
+    --   PhysicsInitSphere gives it a thin sphere; motion is disabled so it
+    --   never moves under physics, but the collision callback now works.
+    self:PhysicsInitSphere(12, "metal")
+    local phys = self:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:EnableMotion(false)
+        phys:SetMass(1)
+        phys:EnableCollisions(true)
+        phys:Wake()
+    end
     self:StartMotionController()
 end
 
@@ -450,20 +470,10 @@ end
 --
 --  Many weapons (CSGO pistols, M9K rifles, etc.) fire actual
 --  physics projectiles or spawn debris entities that collide
---  with the world.  Since the missile is SOLID_NONE (required
---  to suppress the locomotor), the engine never calls the
---  standard NPC damage path for those.  Two complementary hooks
---  cover the gap:
---
---    PhysicsCollide  -- called by the vphysics shadow when any
---                       physics object hits the missile's AABB.
---                       Converts impact speed to damage.
---
---    OnTakeDamage    -- VJ routes all dmginfo here.  We also
---                       accept DMG_BULLET | DMG_BLAST already;
---                       this hook just ensures the missile
---                       actually acts on the damage rather than
---                       discarding it silently.
+--  with the world.  Since the locomotor uses MOVETYPE_NOCLIP,
+--  the standard collision path is bypassed for those.
+--  PhysicsCollide catches them via the vphysics shadow.
+--  Hitscan weapons are now caught via SOLID_BBOX (see PostInit).
 -- ---------------------------------------------------------
 local PHYS_DMG_COOLDOWN = 0.05  -- seconds between physics impacts
 
@@ -491,9 +501,14 @@ function ENT:PhysicsCollide(data, physobj)
 end
 
 function ENT:CustomOnTakeDamage_BeforeDamage(dmginfo, hitgroup)
-    -- Nothing to intercept; just ensure the missile isn't flagged
-    -- as invulnerable to any damage type.  VJ passes all damage
-    -- through here.  Returning nothing lets VJ apply it normally.
+    -- FIX: force immediate explosion when this hit is lethal.
+    -- VJ's default death path tries to play a death animation then
+    -- remove the entity; with HasDeathRagdoll=false the internal
+    -- scheduler can stall Remove() by a frame, causing the missile
+    -- to ghost. Triggering Nikita_DoExplosion here bypasses that.
+    if self:Health() - dmginfo:GetDamage() <= 0 then
+        self:Nikita_DoExplosion(dmginfo)
+    end
 end
 
 -- ---------------------------------------------------------
@@ -536,9 +551,11 @@ end
 function ENT:CustomOnThink()
     if self.Nikita_Exploded then return end
 
+    -- Keep NOCLIP every tick in case VJ's scheduler resets it.
+    -- Do NOT reset solid here — SOLID_BBOX+FSOLID_NOT_SOLID must persist
+    -- so bullets can register hits (old code reset to SOLID_NONE each tick).
     if self:GetMoveType() ~= MOVETYPE_NOCLIP then
         self:SetMoveType(MOVETYPE_NOCLIP)
-        self:SetSolid(SOLID_NONE)
         return
     end
 
