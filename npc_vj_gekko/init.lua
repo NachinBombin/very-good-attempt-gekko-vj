@@ -40,9 +40,9 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Machinegun sounds
-local MG_SND_SHOT       = "gekko/shot.wav"         -- fired every round, max volume
-local MG_SND_CHAININSERT = "gekko/chaininsert.wav" -- fired every N rounds
-local MG_CHAIN_EVERY    = 6                        -- play chaininsert once per this many rounds
+local MG_SND_SHOT        = "gekko/shot.wav"         -- fired every round, max volume
+local MG_SND_CHAININSERT = "gekko/chaininsert.wav"  -- fired every N rounds
+local MG_CHAIN_EVERY     = 6                        -- play chaininsert once per this many rounds
 
 local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
@@ -301,6 +301,10 @@ local function SafeInitVJTables( ent )
 end
 
 function ENT:Init()
+    -- Precache MG sounds so EmitSound works at runtime
+    util.PrecacheSound(MG_SND_SHOT)
+    util.PrecacheSound(MG_SND_CHAININSERT)
+
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
     self:SetSkin(1)
     self.GekkoSpineBone = self:LookupBone("b_spine4")    or -1
@@ -476,11 +480,11 @@ local function FireMGBurst( ent, enemy )
             util.Effect("MuzzleFlash", eff)
 
             -- Per-shot fire sound at max volume
-            ent:EmitSound(MG_SND_SHOT, 255, math.random(95,115))
+            ent:EmitSound(MG_SND_SHOT, 255, math.random(95,115), 1)
 
             -- Chain-feed sound every MG_CHAIN_EVERY rounds (1-indexed: round 6, 12, 18...)
             if (i + 1) % MG_CHAIN_EVERY == 0 then
-                ent:EmitSound(MG_SND_CHAININSERT, 255, 100)
+                ent:EmitSound(MG_SND_CHAININSERT, 255, 100, 1)
             end
 
             if i == mgRounds-1 then
