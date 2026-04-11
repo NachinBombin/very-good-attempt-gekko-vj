@@ -39,10 +39,8 @@ local MG_DAMAGE     = 20
 local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
--- Machinegun sounds
--- Sound level 85 = SNDLVL_NORM (audible to all nearby clients).
--- 255 = SNDLVL_NONE which is inaudible -- that was the bug.
-local MG_SND_SHOT        = "gekko/shot.wav"
+-- Machinegun sounds -- pick randomly between the two shot variants each round
+local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 85   -- SNDLVL_NORM
@@ -90,6 +88,17 @@ local GL_SMOKE_EFFECT    = "BlackSmoke"
 local GL_VAPOR_SCALE     = 0.6
 local GL_SMOKE_SCALE     = 0.4
 local GL_SMOKE_EVERY     = 2
+
+-- Orbit RPG sounds
+local KORNET_SND_SHOTS  = {
+    "kornet/shot1.wav",
+    "kornet/shot2.wav",
+    "kornet/shot3.wav",
+    "kornet/shot4.wav",
+}
+local KORNET_SND_LAUNCHES = { "kornet/launch1.wav", "kornet/launch2.wav" }
+local KORNET_SND_FLAME    = "nikita/flame_loop.wav"  -- reused from Nikita
+local KORNET_SND_LEVEL    = 85
 
 local TOPMISSILE_LAUNCH_Z   = 300
 local MISSILE_MIN_DIST      = 1200
@@ -478,8 +487,8 @@ local function FireMGBurst( ent, enemy )
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
 
-            -- MG_SND_LEVEL = 85 (SNDLVL_NORM), same as GL sounds -- audible to clients
-            ent:EmitSound(MG_SND_SHOT, MG_SND_LEVEL, math.random(95, 115), 1)
+            -- Randomize between shot.wav and shot2.wav each round
+            ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
 
             if (i + 1) % MG_CHAIN_EVERY == 0 then
                 ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
@@ -568,6 +577,12 @@ local function FireOrbitRpg( ent, enemy )
     local dir     = (aimPos - src):GetNormalized()
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir) ; eff:SetScale(0.6) ; eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
+
+    -- Fire sound on the Gekko (randomized shot1-4)
+    ent:EmitSound(KORNET_SND_SHOTS[math.random(#KORNET_SND_SHOTS)], KORNET_SND_LEVEL, math.random(95, 105), 1)
+    -- Launch sound immediately after (randomized launch1-2)
+    ent:EmitSound(KORNET_SND_LAUNCHES[math.random(#KORNET_SND_LAUNCHES)], KORNET_SND_LEVEL, 100, 1)
+
     local rpg = ents.Create("sent_orbital_rpg")
     if not IsValid(rpg) then
         print("[GekkoORBIT] ERROR: sent_orbital_rpg create failed -- falling back")
@@ -575,6 +590,10 @@ local function FireOrbitRpg( ent, enemy )
     end
     rpg:SetPos(src) ; rpg:SetAngles(dir:Angle()) ; rpg:SetOwner(ent)
     rpg:Spawn() ; rpg:Activate()
+
+    -- Flame loop travels with the missile entity
+    rpg:EmitSound(KORNET_SND_FLAME, KORNET_SND_LEVEL, 100, 1)
+
     print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f", attIdx, ent:GetPos():Distance(enemy:GetPos())))
     return true
 end
