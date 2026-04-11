@@ -168,8 +168,13 @@ local function SpawnRocket( ent, attIdx, aimPos, spread )
     end
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
-    -- Launch sound: random from wp0040 set
-    ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, math.random(95, 110), 1)
+    -- Defer one frame so the entity is fully networked before emitting sound
+    local snd = ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)]
+    local pit = math.random(95, 110)
+    timer.Simple(0, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(snd, ROCKET_SND_LEVEL, pit, 1)
+    end)
 end
 
 local function SalvoSpread()
@@ -482,7 +487,8 @@ local function FireMGBurst( ent, enemy )
     ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
     ent:SetNWBool("GekkoMGFiring", true)
     for i = 0, mgRounds-1 do
-        timer.Simple(i * MG_INTERVAL, function()
+        local round = i  -- capture per-iteration value to avoid closure bug
+        timer.Simple(round * MG_INTERVAL, function()
             if not IsValid(ent) then return end
             local curEnemy = GetActiveEnemy(ent)
             local curAim   = IsValid(curEnemy) and (curEnemy:GetPos()+Vector(0,0,40)) or aimPos
@@ -508,11 +514,11 @@ local function FireMGBurst( ent, enemy )
             -- Randomize between shot.wav and shot2.wav each round
             ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
 
-            if (i + 1) % MG_CHAIN_EVERY == 0 then
+            if (round + 1) % MG_CHAIN_EVERY == 0 then
                 ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
             end
 
-            if i == mgRounds-1 then
+            if round == mgRounds-1 then
                 ent._mgBurstActive = false
                 ent:SetNWBool("GekkoMGFiring", false)
             end
@@ -638,8 +644,13 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    -- Launch sound
-    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
+    -- Defer launch sound one frame so entity network state is ready
+    local snd = TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)]
+    local pit = math.random(95, 110)
+    timer.Simple(0, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(snd, TOPMISSILE_SND_LEVEL, pit, 1)
+    end)
     print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
@@ -667,8 +678,13 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    -- Launch sound
-    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
+    -- Defer launch sound one frame so entity network state is ready
+    local snd = TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)]
+    local pit = math.random(95, 110)
+    timer.Simple(0, function()
+        if not IsValid(ent) then return end
+        ent:EmitSound(snd, TOPMISSILE_SND_LEVEL, pit, 1)
+    end)
     print(string.format("[GekkoTRK] Launched | dist=%.0f tracking=%s", dist, tostring(enemy)))
     return true
 end
