@@ -45,6 +45,22 @@ local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 85   -- SNDLVL_NORM
 
+-- Common rocket / salvo launch sounds
+local ROCKET_SND_FIRE = {
+    "gekko/wp0040_se_gun_fire_01.wav",
+    "gekko/wp0040_se_gun_fire_02.wav",
+    "gekko/wp0040_se_gun_fire_03.wav",
+}
+local ROCKET_SND_LEVEL = 85
+
+-- Top-attack / track missile launch sounds
+local TOPMISSILE_SND_FIRE = {
+    "gekko/wp10e0_se_stinger_pass_1.wav",
+    "gekko/wp0302_se_missile_fire_1.wav",
+    "gekko/wp0302_se_missile_pass_2.wav",
+}
+local TOPMISSILE_SND_LEVEL = 85
+
 local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
@@ -152,6 +168,8 @@ local function SpawnRocket( ent, attIdx, aimPos, spread )
     end
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
+    -- Launch sound: random from wp0040 set
+    ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, math.random(95, 110), 1)
 end
 
 local function SalvoSpread()
@@ -620,6 +638,8 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
+    -- Launch sound
+    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
@@ -647,6 +667,8 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
+    -- Launch sound
+    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     print(string.format("[GekkoTRK] Launched | dist=%.0f tracking=%s", dist, tostring(enemy)))
     return true
 end
