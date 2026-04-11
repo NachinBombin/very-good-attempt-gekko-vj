@@ -24,10 +24,6 @@ ENT.StopMovingWhileAttacking = false
 ENT.VJ_NPC_UsesCustomMoveAnimation = true
 
 ENT.MovementType             = VJ_MOVETYPE_GROUND
--- UsePoseParameterMovement must stay true so VJBase drives locomotion
--- (moves the NPC toward enemies, schedules tasks, etc.).
--- GeckoCrouch_Update wins the sequence battle by calling ResetSequence
--- every tick from OnThink, which runs AFTER VJBase's Think hook.
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
@@ -52,28 +48,14 @@ ENT.ConstantlyFaceEnemy_MinDistance = 1
 
 -- ============================================================
 --  NetworkVars
---
---  DO NOT call self.BaseClass.SetupDataTables(self) here.
---  The VJ base does not expose SetupDataTables as an inheritable
---  method — the engine calls each entity's SetupDataTables
---  independently. Chaining it causes a nil-call crash.
---
---  Index rules for npc_vj_creature_base (as of current VJ release):
---    Int   slots used by base: 0, 1, 2, 3, 4  → we use 5
---    Float slots used by base: 0, 1, 2         → we use 3
---  If you get "NetworkVar index out of range" bump these up by 1.
 -- ============================================================
 function ENT:SetupDataTables()
-    self:NetworkVar("Int",   5, "GekkoJumpState")  -- 0=none 1=rising 2=falling 3=landing
-    self:NetworkVar("Float", 3, "GekkoJumpTimer")  -- land-lockout countdown
+    self:NetworkVar("Int",   5, "GekkoJumpState")
+    self:NetworkVar("Float", 3, "GekkoJumpTimer")
 end
 
 -- ============================================================
 --  FK360 shared timing constant
---
---  Both cl_init.lua (bone driver) and crush_system.lua
---  (timer.Simple for Hit 2 + dust pulse) read ENT.FK360_DURATION.
---  Change it here ONLY — never in either of those files.
 -- ============================================================
 ENT.FK360_DURATION = 0.9
 
@@ -114,3 +96,31 @@ ENT.AnimationTranslations = {}
 -- ============================================================
 ENT.Bleeds     = true
 ENT.BloodColor = BLOOD_COLOR_RED
+
+-- ============================================================
+--  Sound precache
+--  sound.Add registers custom sound paths with the engine so
+--  EmitSound can find and play them. Must run on both client
+--  and server (shared.lua), before any weapon fires.
+-- ============================================================
+local function GekkoAddSound( name, path )
+    sound.Add({
+        name        = name,
+        channel     = CHAN_WEAPON,
+        volume      = 1.0,
+        soundlevel  = 85,
+        pitchstart  = 100,
+        pitchend    = 100,
+        sound       = path,
+    })
+end
+
+-- Common rocket / salvo
+GekkoAddSound("Gekko.RocketFire1", "gekko/wp0040_se_gun_fire_01.wav")
+GekkoAddSound("Gekko.RocketFire2", "gekko/wp0040_se_gun_fire_02.wav")
+GekkoAddSound("Gekko.RocketFire3", "gekko/wp0040_se_gun_fire_03.wav")
+
+-- Top-attack / track missile
+GekkoAddSound("Gekko.MissileFire1", "gekko/wp10e0_se_stinger_pass_1.wav")
+GekkoAddSound("Gekko.MissileFire2", "gekko/wp0302_se_missile_fire_1.wav")
+GekkoAddSound("Gekko.MissileFire3", "gekko/wp0302_se_missile_pass_2.wav")
