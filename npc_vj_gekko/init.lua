@@ -40,9 +40,12 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Machinegun sounds
-local MG_SND_SHOT        = "gekko/shot.wav"        -- fired every round
-local MG_SND_CHAININSERT = "gekko/chaininsert.wav" -- fired every N rounds
+-- Sound level 85 = SNDLVL_NORM (audible to all nearby clients).
+-- 255 = SNDLVL_NONE which is inaudible -- that was the bug.
+local MG_SND_SHOT        = "gekko/shot.wav"
+local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
+local MG_SND_LEVEL       = 85   -- SNDLVL_NORM
 
 local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
@@ -475,11 +478,11 @@ local function FireMGBurst( ent, enemy )
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
 
-            -- Same pattern as GL: ent:EmitSound is networked to all clients
-            ent:EmitSound(MG_SND_SHOT, 255, math.random(95, 115), 1)
+            -- MG_SND_LEVEL = 85 (SNDLVL_NORM), same as GL sounds -- audible to clients
+            ent:EmitSound(MG_SND_SHOT, MG_SND_LEVEL, math.random(95, 115), 1)
 
             if (i + 1) % MG_CHAIN_EVERY == 0 then
-                ent:EmitSound(MG_SND_CHAININSERT, 255, 100, 1)
+                ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
             end
 
             if i == mgRounds-1 then
@@ -521,10 +524,7 @@ local function FireGrenadeLauncher( ent, enemy )
     local origin  = ent:GetPos() + Vector(0,0,GL_LAUNCH_Z)
     ent._glSparkCounter = 0
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
-    timer.Simple(GL_FIDGET_LEAD, function()
-        if not IsValid(ent) then return end
-        ent:EmitSound(GL_SOUND_FIRE, 80, 100, 1)
-    end)
+    -- GL_SOUND_INSERT plays after the last shot
     timer.Simple(GL_FIDGET_LEAD + (count-1)*GL_INTERVAL + 0.1, function()
         if not IsValid(ent) then return end
         ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
@@ -533,6 +533,8 @@ local function FireGrenadeLauncher( ent, enemy )
         local shotNumber = i+1
         timer.Simple(GL_FIDGET_LEAD + i*GL_INTERVAL, function()
             if not IsValid(ent) then return end
+            -- Fire sound plays once per grenade, inside the loop
+            ent:EmitSound(GL_SOUND_FIRE, 80, math.random(95, 105), 1)
             GLSparkAtAttachment(ent, shotNumber)
             GLVaporAtAttachment(ent, shotNumber)
             local scatter   = forward * math.Rand(300,700)
