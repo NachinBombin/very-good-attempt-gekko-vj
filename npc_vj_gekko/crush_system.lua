@@ -12,7 +12,6 @@ if SERVER then
     util.AddNetworkString("GekkoSideHookKickPulse")
     util.AddNetworkString("GekkoAxeKickPulse")
     util.AddNetworkString("GekkoRAxeKickPulse")
-    util.AddNetworkString("GekkoDoubleAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
     util.AddNetworkString("GekkoLKickPulse")
 end
@@ -149,15 +148,6 @@ local ATTACKS = {
     RAXEKICK = {
         w = 20, nwkey = "GekkoRAxeKickPulse",
         duration = 1.4, hit_t = 0.55,
-        dmg = 45, impulse = 15000,
-        sweep_dist = 155, sweep_half = 55, sweep_z = 90,
-    },
-
-    -- Two sweeps: left leg first (hit_t1), right leg follows (hit_t2).
-    -- Each hit does the same damage as a single axe kick.
-    DOUBLEAXEKICK = {
-        w = 20, nwkey = "GekkoDoubleAxeKickPulse",
-        duration = 1.8, hit_t1 = 0.50, hit_t2 = 0.80,
         dmg = 45, impulse = 15000,
         sweep_dist = 155, sweep_half = 55, sweep_z = 90,
     },
@@ -524,68 +514,6 @@ local function FireRAxeKick(self, closestTarget, dot)
     end)
 end
 
-local function FireDoubleAxeKick(self, closestTarget, dot)
-    local A    = ATTACKS.DOUBLEAXEKICK
-
-    ClaimKickLock(self, A.duration + 0.2)
-
-    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
-    self:SetNWInt(A.nwkey, next)
-
-    print(string.format("[GekkoCrush] DOUBLEAXEKICK  target=%s  dot=%.2f  pulse=%d",
-        closestTarget:GetClass(), dot, next))
-
-    local selfRef = self
-
-    -- Hit 1: left leg drops
-    timer.Simple(A.hit_t1, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef   = selfRef:GetForward()
-        local sweepDir = (fwdRef - Vector(0,0,0.3)):GetNormalized()
-        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
-        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + sweepDir * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            local impDir = (fwdRef * 0.4 - Vector(0,0,1) * 0.6):GetNormalized()
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
-            print(string.format("[GekkoCrush] DOUBLEAXEKICK HIT1  target=%s  pulse=%d",
-                tr.Entity:GetClass(), next))
-        end
-    end)
-
-    -- Hit 2: right leg drops
-    timer.Simple(A.hit_t2, function()
-        if not IsValid(selfRef) then return end
-
-        local fwdRef   = selfRef:GetForward()
-        local sweepDir = (fwdRef - Vector(0,0,0.3)):GetNormalized()
-        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
-        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
-
-        local tr = util.TraceHull({
-            start  = origin,
-            endpos = origin + sweepDir * A.sweep_dist,
-            mins   = -half, maxs = half,
-            filter = selfRef, mask = MASK_SHOT_HULL,
-        })
-
-        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
-            local impDir = (fwdRef * 0.4 - Vector(0,0,1) * 0.6):GetNormalized()
-            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
-            print(string.format("[GekkoCrush] DOUBLEAXEKICK HIT2  target=%s  pulse=%d",
-                tr.Entity:GetClass(), next))
-        end
-    end)
-end
-
 local function FireJumpKick(self, closestTarget, fwd, dot)
     local A    = ATTACKS.JUMPKICK
 
@@ -699,7 +627,6 @@ function ENT:GeckoCrush_Think()
             { name = "SIDEHOOKKICK",   w = ATTACKS.SIDEHOOKKICK.w   },
             { name = "AXEKICK",        w = ATTACKS.AXEKICK.w        },
             { name = "RAXEKICK",       w = ATTACKS.RAXEKICK.w       },
-            { name = "DOUBLEAXEKICK",  w = ATTACKS.DOUBLEAXEKICK.w  },
             { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
         }
 
@@ -737,7 +664,6 @@ function ENT:GeckoCrush_Think()
     elseif attack == "SIDEHOOKKICK"    then FireSideHookKick(self)
     elseif attack == "AXEKICK"         then FireAxeKick(self, closestTarget, dot)
     elseif attack == "RAXEKICK"        then FireRAxeKick(self, closestTarget, dot)
-    elseif attack == "DOUBLEAXEKICK"   then FireDoubleAxeKick(self, closestTarget, dot)
     elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
     else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
