@@ -75,10 +75,11 @@ local GL_TYPE_PARAMS = {
 }
 local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }
 local GL_TRAIL_MATERIAL  = "trails/smoke"
-local GL_TRAIL_LIFETIME  = 1.8
-local GL_TRAIL_STARTSIZE = 8
+local GL_TRAIL_LIFETIME  = 0.6   -- shorter tail (was 1.8)
+local GL_TRAIL_STARTSIZE = 22    -- fatter (was 8)
 local GL_TRAIL_ENDSIZE   = 1
 local GL_TRAIL_COLOR     = Color(235, 235, 235, 200)
+local GL_MUZZLE_FLASH_SCALE = 0.4
 local GL_SPARK_ATT_CYCLE = { ATT_MACHINEGUN, ATT_MISSILE_L, ATT_MISSILE_R }
 local GL_SPARK_SCALE     = 0.5
 local GL_SPARK_MAGNITUDE = 4
@@ -549,6 +550,12 @@ local function FireGrenadeLauncher( ent, enemy )
             local launchDir = scatter:GetNormalized()
             launchDir.z     = launchDir.z + typeParams.loft
             launchDir:Normalize()
+
+            -- Muzzle flash at grenade spawn point
+            local mf = EffectData()
+            mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
+            util.Effect("MuzzleFlash", mf)
+
             local gren = ents.Create(grenadeType)
             if IsValid(gren) then
                 gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
