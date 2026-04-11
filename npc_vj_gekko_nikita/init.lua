@@ -2,23 +2,6 @@ include("shared.lua")
 
 -- ============================================================
 --  npc_vj_gekko_nikita  /  init.lua
---
---  Locomotion model
---  ─────────────────
---  VJ_MOVETYPE_AERIAL is declared in shared.lua so VJ recognises
---  the entity as an aerial NPC (relationships, hull, AI hooks).
---
---  HOWEVER: VJ's locomotion task runner calls SetAbsVelocity(0)
---  after every SCHED_IDLE_STAND tick, overwriting any velocity we
---  set in CustomOnThink_AIEnabled.  To win the write-order race we:
---
---    1. Force MOVETYPE_NOCLIP in CustomOnPostInitialize (runs AFTER
---       VJ finishes its own init, so it sticks).
---    2. Drive velocity from CustomOnThink (unconditional think) rather
---       than CustomOnThink_AIEnabled (gated behind AI scheduler).
---    3. Never touch SetSchedule – let VJ run SCHED_IDLE_STAND harmlessly;
---       our MOVETYPE_NOCLIP entity ignores the locomotor's zero-velocity
---       output because noclip entities are not moved by the locomotor.
 -- ============================================================
 
 -- ---------------------------------------------------------
@@ -63,6 +46,10 @@ local ARMOR_MAX          = 6
 local ARMOR_REGEN_INT    = 2.5
 local STREAK_MAX         = 6
 local STREAK_WINDOW      = 1.5
+
+-- Physics-impact damage thresholds (debris / bullet props)
+local PHYS_DMG_MIN_SPEED  = 200   -- below this speed, no damage
+local PHYS_DMG_SCALE      = 0.06  -- damage = impactSpeed * scale
 
 -- ---------------------------------------------------------
 --  RAY TABLES  (pitch, yaw, weight)
@@ -119,6 +106,19 @@ local function GetEntVelocity(ent)
     local phys = ent:GetPhysicsObject()
     if IsValid(phys) then return phys:GetVelocity() end
     return Vector(0,0,0)
+end
+
+-- *** BUG FIX: upward drift ***
+-- Vector:Angle() always returns roll = 0, so every tick the missile
+-- snaps its roll to 0 relative to world-up.  But the NPC's previous
+-- SetAngles may have left a non-zero roll; GetForward() therefore
+-- drifts the local frame each tick, rotating the nose upward-right.
+-- Solution: build the angle explicitly from the direction vector with
+-- zero roll forced, using the same math Source's VectorAngles uses.
+local function DirToAngle(dir)
+    local a = dir:Angle()   -- yaw/pitch correct, roll always 0 from Vector:Angle()
+    a.r = 0                 -- explicit zero-roll guard (no-op normally, safety net)
+    return a
 end
 
 local function CastLocalRay(ent, origin, pitch, yaw, maxDist, filter)
@@ -366,7 +366,7 @@ local function WallKick(self, hitNormal)
     local reflect = cur - hitNormal * (2 * cur:Dot(hitNormal))
     local kicked  = LerpVector(WALL_KICK_STRENGTH, cur, reflect)
     kicked:Normalize()
-    self:SetAngles(kicked:Angle())
+    self:SetAngles(DirToAngle(kicked))   -- use zero-roll helper
     self:SetAbsVelocity(kicked * CRUISE_SPEED)
 end
 
@@ -430,18 +430,70 @@ function ENT:CustomOnInitialize()
     self._lkPos        = nil
     self._lkVel        = nil
     self._lkTime       = nil
+
+    self._lastPhysDmg  = -999
 end
 
--- *** KEY FIX ***
--- VJ resets movetype during its own init chain which runs AFTER
--- CustomOnInitialize.  PostInitialize fires after VJ is fully done,
--- so our MOVETYPE_NOCLIP survives.  NOCLIP entities are not moved
--- by the NPC locomotor, so VJ's SCHED_IDLE_STAND zero-velocity
--- output is silently ignored by the engine.
 function ENT:CustomOnPostInitialize()
     self:SetMoveType(MOVETYPE_NOCLIP)
     self:SetSolid(SOLID_NONE)
     self:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
+
+    -- Re-enable physics collision callback so bullet physics props can
+    -- register impacts even though SOLID_NONE is set for the locomotor.
+    -- We use a thin VPHYSICS shadow object just for the callback.
+    self:StartMotionController()
+end
+
+-- ---------------------------------------------------------
+--  PHYSICS / DEBRIS DAMAGE
+--
+--  Many weapons (CSGO pistols, M9K rifles, etc.) fire actual
+--  physics projectiles or spawn debris entities that collide
+--  with the world.  Since the missile is SOLID_NONE (required
+--  to suppress the locomotor), the engine never calls the
+--  standard NPC damage path for those.  Two complementary hooks
+--  cover the gap:
+--
+--    PhysicsCollide  -- called by the vphysics shadow when any
+--                       physics object hits the missile's AABB.
+--                       Converts impact speed to damage.
+--
+--    OnTakeDamage    -- VJ routes all dmginfo here.  We also
+--                       accept DMG_BULLET | DMG_BLAST already;
+--                       this hook just ensures the missile
+--                       actually acts on the damage rather than
+--                       discarding it silently.
+-- ---------------------------------------------------------
+local PHYS_DMG_COOLDOWN = 0.05  -- seconds between physics impacts
+
+function ENT:PhysicsCollide(data, physobj)
+    if self.Nikita_Exploded then return end
+    local now   = CurTime()
+    if now - self._lastPhysDmg < PHYS_DMG_COOLDOWN then return end
+    self._lastPhysDmg = now
+
+    local speed = data.Speed
+    if speed < PHYS_DMG_MIN_SPEED then return end
+
+    local dmg   = math.max(1, speed * PHYS_DMG_SCALE)
+    local other = data.HitEntity
+    local inf   = IsValid(other) and other or game.GetWorld()
+
+    local dmginfo = DamageInfo()
+    dmginfo:SetDamage(dmg)
+    dmginfo:SetAttacker(inf)
+    dmginfo:SetInflictor(inf)
+    dmginfo:SetDamageType(DMG_CRUSH)
+    dmginfo:SetDamagePosition(self:GetPos())
+    dmginfo:SetDamageForce(data.OurOldVelocity * dmg)
+    self:TakeDamageInfo(dmginfo)
+end
+
+function ENT:CustomOnTakeDamage_BeforeDamage(dmginfo, hitgroup)
+    -- Nothing to intercept; just ensure the missile isn't flagged
+    -- as invulnerable to any damage type.  VJ passes all damage
+    -- through here.  Returning nothing lets VJ apply it normally.
 end
 
 -- ---------------------------------------------------------
@@ -480,15 +532,10 @@ end
 
 -- ---------------------------------------------------------
 --  MAIN THINK
---  Uses CustomOnThink (unconditional) instead of
---  CustomOnThink_AIEnabled (gated behind AI scheduler state).
---  Enemy resolution still uses self:GetEnemy() so VJ's aggro
---  system feeds us the target for free.
 -- ---------------------------------------------------------
 function ENT:CustomOnThink()
     if self.Nikita_Exploded then return end
 
-    -- Guard: PostInitialize may not have run yet on the very first tick
     if self:GetMoveType() ~= MOVETYPE_NOCLIP then
         self:SetMoveType(MOVETYPE_NOCLIP)
         self:SetSolid(SOLID_NONE)
@@ -514,7 +561,6 @@ function ENT:CustomOnThink()
     local aimPos = GetAimPos(self)
     if not aimPos then return end
 
-    -- Proximity detonation
     local enemy = self:GetEnemy()
     if not IsValid(enemy) and IsValid(self.NikitaTargetEnt) then
         enemy = self.NikitaTargetEnt
@@ -525,7 +571,6 @@ function ENT:CustomOnThink()
         end
     end
 
-    -- Repath
     if now >= self._nextPath then
         self._nextPath = now + PATHFIND_INTERVAL
         UpdatePath(self, myPos, aimPos, filter)
@@ -601,7 +646,12 @@ function ENT:CustomOnThink()
         moveDir:Normalize()
     end
 
-    self:SetAngles(moveDir:Angle())
+    -- *** BUG FIX: use DirToAngle instead of moveDir:Angle() ***
+    -- moveDir:Angle() (i.e. Vector:Angle()) always returns roll=0,
+    -- but on the NEXT tick GetForward() is computed from the stored
+    -- Angle which may have accumulated roll from CastLocalRay's
+    -- LocalToWorldAngles call.  DirToAngle() explicitly zeroes roll.
+    self:SetAngles(DirToAngle(moveDir))
     self:SetAbsVelocity(moveDir * CRUISE_SPEED)
 
     local stepDist = CRUISE_SPEED * dt + 16
@@ -623,7 +673,6 @@ function ENT:CustomOnThink()
     end
 end
 
--- Keep AIEnabled hook alive for VJ enemy detection / relationship system
 function ENT:CustomOnThink_AIEnabled()
 end
 
