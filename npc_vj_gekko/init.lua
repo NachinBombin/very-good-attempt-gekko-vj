@@ -301,10 +301,6 @@ local function SafeInitVJTables( ent )
 end
 
 function ENT:Init()
-    -- Precache MG sounds so EmitSound works at runtime
-    util.PrecacheSound(MG_SND_SHOT)
-    util.PrecacheSound(MG_SND_CHAININSERT)
-
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
     self:SetSkin(1)
     self.GekkoSpineBone = self:LookupBone("b_spine4")    or -1
@@ -479,12 +475,12 @@ local function FireMGBurst( ent, enemy )
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
 
-            -- Per-shot fire sound at max volume
-            ent:EmitSound(MG_SND_SHOT, 255, math.random(95,115), 1)
+            -- Per-shot fire sound: sound.Play needs no precache and works from server
+            sound.Play(MG_SND_SHOT, src, 255, math.random(95,115))
 
             -- Chain-feed sound every MG_CHAIN_EVERY rounds (1-indexed: round 6, 12, 18...)
             if (i + 1) % MG_CHAIN_EVERY == 0 then
-                ent:EmitSound(MG_SND_CHAININSERT, 255, 100, 1)
+                sound.Play(MG_SND_CHAININSERT, src, 255, 100)
             end
 
             if i == mgRounds-1 then
