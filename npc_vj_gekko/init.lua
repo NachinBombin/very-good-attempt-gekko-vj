@@ -40,9 +40,9 @@ local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
 -- Machinegun sounds
-local MG_SND_SHOT        = "gekko/shot.wav"         -- fired every round, max volume
-local MG_SND_CHAININSERT = "gekko/chaininsert.wav"  -- fired every N rounds
-local MG_CHAIN_EVERY     = 6                        -- play chaininsert once per this many rounds
+local MG_SND_SHOT        = "gekko/shot.wav"        -- fired every round
+local MG_SND_CHAININSERT = "gekko/chaininsert.wav" -- fired every N rounds
+local MG_CHAIN_EVERY     = 6
 
 local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
@@ -475,12 +475,11 @@ local function FireMGBurst( ent, enemy )
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
 
-            -- Per-shot fire sound: sound.Play needs no precache and works from server
-            sound.Play(MG_SND_SHOT, src, 255, math.random(95,115))
+            -- Same pattern as GL: ent:EmitSound is networked to all clients
+            ent:EmitSound(MG_SND_SHOT, 255, math.random(95, 115), 1)
 
-            -- Chain-feed sound every MG_CHAIN_EVERY rounds (1-indexed: round 6, 12, 18...)
             if (i + 1) % MG_CHAIN_EVERY == 0 then
-                sound.Play(MG_SND_CHAININSERT, src, 255, 100)
+                ent:EmitSound(MG_SND_CHAININSERT, 255, 100, 1)
             end
 
             if i == mgRounds-1 then
