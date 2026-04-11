@@ -52,6 +52,14 @@ local PHYS_DMG_MIN_SPEED  = 200   -- below this speed, no damage
 local PHYS_DMG_SCALE      = 0.06  -- damage = impactSpeed * scale
 
 -- ---------------------------------------------------------
+--  SOUNDS
+-- ---------------------------------------------------------
+local SND_FIRE        = "nikita/distant_fire.wav"
+local SND_WHISTLE     = "nikita/bomb_whistle_loop.wav"
+local SND_FLAME       = "nikita/flame_loop.wav"
+local SND_LOCKON      = "nikita/lock on stinger.wav"
+
+-- ---------------------------------------------------------
 --  RAY TABLES  (pitch, yaw, weight)
 -- ---------------------------------------------------------
 local RAYS_EMERG = {
@@ -434,6 +442,14 @@ function ENT:CustomOnInitialize()
     self._lkTime       = nil
 
     self._lastPhysDmg  = -999
+    self._lockOnPlayed = false
+
+    -- Fire sound: one-shot on spawn
+    sound.Play(SND_FIRE, self:GetPos(), 90, 100)
+
+    -- Flight loop: both channels started together, looping
+    self:EmitSound(SND_WHISTLE, 80, 100)
+    self:EmitSound(SND_FLAME,   75, 100)
 end
 
 function ENT:CustomOnPostInitialize()
@@ -531,6 +547,10 @@ function ENT:Nikita_DoExplosion(dmginfo)
     local rad   = self.Nikita_Radius or 700
     local owner = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
+    -- Stop flight loops
+    self:StopSound(SND_WHISTLE)
+    self:StopSound(SND_FLAME)
+
     sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
     util.ScreenShake(pos, 16, 200, 1, 3000)
 
@@ -590,7 +610,15 @@ function ENT:CustomOnThink()
         enemy = self.NikitaTargetEnt
     end
     if IsValid(enemy) then
-        if myPos:Distance(enemy:GetPos()) <= (self.Nikita_ProxRadius or 220) then
+        local distToEnemy = myPos:Distance(enemy:GetPos())
+
+        -- Lock-on stinger: play once when within 600 units
+        if not self._lockOnPlayed and distToEnemy <= 600 then
+            self._lockOnPlayed = true
+            sound.Play(SND_LOCKON, myPos, 85, 100)
+        end
+
+        if distToEnemy <= (self.Nikita_ProxRadius or 220) then
             self:Nikita_DoExplosion(); return
         end
     end
