@@ -54,10 +54,13 @@ local PHYS_DMG_SCALE      = 0.06  -- damage = impactSpeed * scale
 -- ---------------------------------------------------------
 --  SOUNDS
 -- ---------------------------------------------------------
-local SND_FIRE        = "nikita/distant_fire.wav"
-local SND_WHISTLE     = "nikita/bomb_whistle_loop.wav"
-local SND_FLAME       = "nikita/flame_loop.wav"
-local SND_LOCKON      = "nikita/lock on stinger.wav"
+local SND_FIRE    = "nikita/distant_fire.wav"
+local SND_WHISTLE = "nikita/bomb_whistle_loop.wav"
+local SND_FLAME   = "nikita/flame_loop.wav"
+local SND_LOCKON  = "nikita/lock on stinger.wav"
+
+-- Distance at which the lock-on stinger triggers (and resets when exceeded).
+local LOCKON_DIST = 600
 
 -- ---------------------------------------------------------
 --  RAY TABLES  (pitch, yaw, weight)
@@ -442,7 +445,12 @@ function ENT:CustomOnInitialize()
     self._lkTime       = nil
 
     self._lastPhysDmg  = -999
-    self._lockOnPlayed = false
+
+    -- Lock-on stinger state:
+    --   _lockOnArmed  = true means ready to fire (hasn't played yet this approach)
+    --   _lockOnActive = true means stinger is currently playing (target is inside range)
+    self._lockOnArmed  = true
+    self._lockOnActive = false
 
     -- Fire sound: one-shot on spawn
     sound.Play(SND_FIRE, self:GetPos(), 90, 100)
@@ -547,9 +555,10 @@ function ENT:Nikita_DoExplosion(dmginfo)
     local rad   = self.Nikita_Radius or 700
     local owner = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
-    -- Stop flight loops
+    -- Stop all looping / in-flight sounds
     self:StopSound(SND_WHISTLE)
     self:StopSound(SND_FLAME)
+    self:StopSound(SND_LOCKON)
 
     sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
     util.ScreenShake(pos, 16, 200, 1, 3000)
@@ -612,10 +621,19 @@ function ENT:CustomOnThink()
     if IsValid(enemy) then
         local distToEnemy = myPos:Distance(enemy:GetPos())
 
-        -- Lock-on stinger: play once when within 600 units
-        if not self._lockOnPlayed and distToEnemy <= 600 then
-            self._lockOnPlayed = true
+        -- Lock-on stinger logic:
+        --   Armed  + inside range  -> play stinger, mark active.
+        --   Active + outside range -> target escaped; stop stinger, re-arm
+        --                             so it fires again on next approach.
+        if self._lockOnArmed and distToEnemy <= LOCKON_DIST then
+            self._lockOnArmed  = false
+            self._lockOnActive = true
             sound.Play(SND_LOCKON, myPos, 85, 100)
+        elseif self._lockOnActive and distToEnemy > LOCKON_DIST then
+            -- Target broke away — stop the stinger and reset for next approach.
+            self:StopSound(SND_LOCKON)
+            self._lockOnActive = false
+            self._lockOnArmed  = true
         end
 
         if distToEnemy <= (self.Nikita_ProxRadius or 220) then
