@@ -89,7 +89,7 @@ local GL_VAPOR_SCALE     = 0.6
 local GL_SMOKE_SCALE     = 0.4
 local GL_SMOKE_EVERY     = 2
 
--- Orbit RPG sounds
+-- Orbit RPG sounds (fire + launch on the Gekko; flame loop lives in sent_orbital_rpg/init.lua)
 local KORNET_SND_SHOTS  = {
     "kornet/shot1.wav",
     "kornet/shot2.wav",
@@ -97,7 +97,6 @@ local KORNET_SND_SHOTS  = {
     "kornet/shot4.wav",
 }
 local KORNET_SND_LAUNCHES = { "kornet/launch1.wav", "kornet/launch2.wav" }
-local KORNET_SND_FLAME    = "nikita/flame_loop.wav"  -- reused from Nikita
 local KORNET_SND_LEVEL    = 85
 
 local TOPMISSILE_LAUNCH_Z   = 300
@@ -533,7 +532,6 @@ local function FireGrenadeLauncher( ent, enemy )
     local origin  = ent:GetPos() + Vector(0,0,GL_LAUNCH_Z)
     ent._glSparkCounter = 0
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
-    -- GL_SOUND_INSERT plays after the last shot
     timer.Simple(GL_FIDGET_LEAD + (count-1)*GL_INTERVAL + 0.1, function()
         if not IsValid(ent) then return end
         ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
@@ -542,7 +540,6 @@ local function FireGrenadeLauncher( ent, enemy )
         local shotNumber = i+1
         timer.Simple(GL_FIDGET_LEAD + i*GL_INTERVAL, function()
             if not IsValid(ent) then return end
-            -- Fire sound plays once per grenade, inside the loop
             ent:EmitSound(GL_SOUND_FIRE, 80, math.random(95, 105), 1)
             GLSparkAtAttachment(ent, shotNumber)
             GLVaporAtAttachment(ent, shotNumber)
@@ -590,9 +587,7 @@ local function FireOrbitRpg( ent, enemy )
     end
     rpg:SetPos(src) ; rpg:SetAngles(dir:Angle()) ; rpg:SetOwner(ent)
     rpg:Spawn() ; rpg:Activate()
-
-    -- Flame loop travels with the missile entity
-    rpg:EmitSound(KORNET_SND_FLAME, KORNET_SND_LEVEL, 100, 1)
+    -- Note: flame loop is started inside sent_orbital_rpg/init.lua Initialize()
 
     print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f", attIdx, ent:GetPos():Distance(enemy:GetPos())))
     return true
