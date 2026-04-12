@@ -39,13 +39,13 @@ local MG_DAMAGE     = 20
 local MG_SPREAD_MIN = 0.2
 local MG_SPREAD_MAX = 2.0
 
--- Machinegun sounds -- pick randomly between the two shot variants each round
+-- Machinegun sounds
 local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
-local MG_SND_LEVEL       = 85   -- SNDLVL_NORM
+local MG_SND_LEVEL       = 85
 
--- Common rocket / salvo launch sounds
+-- Common rocket / salvo launch sounds (confirmed working)
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
     "gekko/wp0040_se_gun_fire_02.wav",
@@ -54,10 +54,13 @@ local ROCKET_SND_FIRE = {
 local ROCKET_SND_LEVEL = 85
 
 -- Top-attack / track missile launch sounds
+-- wp10e0 and wp0302 files have bad sample rate; reuse confirmed-working wp0040 set
+-- TODO: resample wp10e0_se_stinger_pass_1, wp0302_se_missile_fire_1, wp0302_se_missile_pass_2
+--       then restore them here
 local TOPMISSILE_SND_FIRE = {
-    "gekko/wp10e0_se_stinger_pass_1.wav",
-    "gekko/wp0302_se_missile_fire_1.wav",
-    "gekko/wp0302_se_missile_pass_2.wav",
+    "gekko/wp0040_se_gun_fire_01.wav",
+    "gekko/wp0040_se_gun_fire_02.wav",
+    "gekko/wp0040_se_gun_fire_03.wav",
 }
 local TOPMISSILE_SND_LEVEL = 85
 
@@ -91,8 +94,8 @@ local GL_TYPE_PARAMS = {
 }
 local GL_TYPE_DEFAULT = { speed = 2650, loft = 0.35 }
 local GL_TRAIL_MATERIAL  = "trails/smoke"
-local GL_TRAIL_LIFETIME  = 0.6   -- shorter tail (was 1.8)
-local GL_TRAIL_STARTSIZE = 22    -- fatter (was 8)
+local GL_TRAIL_LIFETIME  = 0.6
+local GL_TRAIL_STARTSIZE = 22
 local GL_TRAIL_ENDSIZE   = 1
 local GL_TRAIL_COLOR     = Color(235, 235, 235, 200)
 local GL_MUZZLE_FLASH_SCALE = 0.4
@@ -106,7 +109,6 @@ local GL_VAPOR_SCALE     = 0.6
 local GL_SMOKE_SCALE     = 0.4
 local GL_SMOKE_EVERY     = 2
 
--- Orbit RPG sounds (fire + launch on the Gekko; flame loop lives in sent_orbital_rpg/init.lua)
 local KORNET_SND_SHOTS  = {
     "kornet/shot1.wav",
     "kornet/shot2.wav",
@@ -168,7 +170,6 @@ local function SpawnRocket( ent, attIdx, aimPos, spread )
     end
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
-    -- Inline EmitSound matching MG pattern (no timer.Simple wrapper)
     ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, math.random(95, 110), 1)
 end
 
@@ -505,13 +506,10 @@ local function FireMGBurst( ent, enemy )
                 Spread=Vector(mgSpread,mgSpread,mgSpread) })
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
-
             ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
-
             if (round + 1) % MG_CHAIN_EVERY == 0 then
                 ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
             end
-
             if round == mgRounds-1 then
                 ent._mgBurstActive = false
                 ent:SetNWBool("GekkoMGFiring", false)
@@ -568,11 +566,9 @@ local function FireGrenadeLauncher( ent, enemy )
             local launchDir = scatter:GetNormalized()
             launchDir.z     = launchDir.z + typeParams.loft
             launchDir:Normalize()
-
             local mf = EffectData()
             mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
             util.Effect("MuzzleFlash", mf)
-
             local gren = ents.Create(grenadeType)
             if IsValid(gren) then
                 gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
@@ -598,10 +594,8 @@ local function FireOrbitRpg( ent, enemy )
     local dir     = (aimPos - src):GetNormalized()
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir) ; eff:SetScale(0.6) ; eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
-
     ent:EmitSound(KORNET_SND_SHOTS[math.random(#KORNET_SND_SHOTS)], KORNET_SND_LEVEL, math.random(95, 105), 1)
     ent:EmitSound(KORNET_SND_LAUNCHES[math.random(#KORNET_SND_LAUNCHES)], KORNET_SND_LEVEL, 100, 1)
-
     local rpg = ents.Create("sent_orbital_rpg")
     if not IsValid(rpg) then
         print("[GekkoORBIT] ERROR: sent_orbital_rpg create failed -- falling back")
@@ -609,7 +603,6 @@ local function FireOrbitRpg( ent, enemy )
     end
     rpg:SetPos(src) ; rpg:SetAngles(dir:Angle()) ; rpg:SetOwner(ent)
     rpg:Spawn() ; rpg:Activate()
-
     print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f", attIdx, ent:GetPos():Distance(enemy:GetPos())))
     return true
 end
@@ -626,6 +619,8 @@ local function FireTopMissile( ent, enemy )
         else                          return FireGrenadeLauncher(ent, enemy) end
     end
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
+    -- Fire launch sound before spawning the entity
+    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     local toTarget2D = (enemy:GetPos()-ent:GetPos()) ; toTarget2D.z=0 ; toTarget2D:Normalize()
     local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
     local faceAng    = (enemy:GetPos()-launchPos):GetNormalized():Angle() ; faceAng.p=0
@@ -634,8 +629,6 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    -- Inline EmitSound matching MG pattern (no timer.Simple wrapper)
-    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
@@ -654,6 +647,8 @@ local function FireTrackMissile( ent, enemy )
     end
     SendSonarLock(enemy)
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
+    -- Fire launch sound before spawning the entity
+    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     local toTarget2D = (enemy:GetPos()-ent:GetPos()) ; toTarget2D.z=0 ; toTarget2D:Normalize()
     local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
     local faceAng    = (enemy:GetPos()-launchPos):GetNormalized():Angle() ; faceAng.p=0
@@ -663,8 +658,6 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    -- Inline EmitSound matching MG pattern (no timer.Simple wrapper)
-    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     print(string.format("[GekkoTRK] Launched | dist=%.0f tracking=%s", dist, tostring(enemy)))
     return true
 end
@@ -678,33 +671,26 @@ local function FireNikita( ent, enemy )
         print(string.format("[GekkoNikita] Too close (%.0f) -- re-rolling", dist))
         return FireMGBurst(ent, enemy)
     end
-
     local toTarget2D = (enemy:GetPos() - ent:GetPos())
     toTarget2D.z = 0
     if toTarget2D:Length() > 0 then toTarget2D:Normalize() end
-
     local spawnPos = ent:GetPos()
                    + toTarget2D * NIKITA_SPAWN_FORWARD
                    + Vector(0, 0, NIKITA_SPAWN_Z)
-
     local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
     local launchDir = (aimPos - spawnPos):GetNormalized()
-
     local nikita = ents.Create("npc_vj_gekko_nikita")
     if not IsValid(nikita) then
         print("[GekkoNikita] ERROR: npc_vj_gekko_nikita create failed")
         return FireMissile(ent, enemy)
     end
-
     nikita:SetPos(spawnPos)
     nikita:SetAngles(launchDir:Angle())
     nikita:SetOwner(ent)
     nikita.NikitaOwner     = ent
     nikita.NikitaTargetEnt = enemy
-
     nikita:Spawn()
     nikita:Activate()
-
     if IsValid(enemy) then
         if nikita.VJ_DoSetEnemy then
             nikita:VJ_DoSetEnemy(enemy, true, true)
@@ -712,7 +698,6 @@ local function FireNikita( ent, enemy )
             nikita:SetEnemy(enemy)
         end
     end
-
     print(string.format("[GekkoNikita] Launched NPC | dist=%.0f target=%s", dist, tostring(enemy)))
     return true
 end
