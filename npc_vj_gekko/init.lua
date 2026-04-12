@@ -168,13 +168,8 @@ local function SpawnRocket( ent, attIdx, aimPos, spread )
     end
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
-    -- Defer one frame so the entity is fully networked before emitting sound
-    local snd = ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)]
-    local pit = math.random(95, 110)
-    timer.Simple(0, function()
-        if not IsValid(ent) then return end
-        ent:EmitSound(snd, ROCKET_SND_LEVEL, pit, 1)
-    end)
+    -- Inline EmitSound matching MG pattern (no timer.Simple wrapper)
+    ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, math.random(95, 110), 1)
 end
 
 local function SalvoSpread()
@@ -487,7 +482,7 @@ local function FireMGBurst( ent, enemy )
     ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
     ent:SetNWBool("GekkoMGFiring", true)
     for i = 0, mgRounds-1 do
-        local round = i  -- capture per-iteration value to avoid closure bug
+        local round = i
         timer.Simple(round * MG_INTERVAL, function()
             if not IsValid(ent) then return end
             local curEnemy = GetActiveEnemy(ent)
@@ -511,7 +506,6 @@ local function FireMGBurst( ent, enemy )
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
 
-            -- Randomize between shot.wav and shot2.wav each round
             ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
 
             if (round + 1) % MG_CHAIN_EVERY == 0 then
@@ -575,7 +569,6 @@ local function FireGrenadeLauncher( ent, enemy )
             launchDir.z     = launchDir.z + typeParams.loft
             launchDir:Normalize()
 
-            -- Muzzle flash at grenade spawn point
             local mf = EffectData()
             mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
             util.Effect("MuzzleFlash", mf)
@@ -606,9 +599,7 @@ local function FireOrbitRpg( ent, enemy )
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir) ; eff:SetScale(0.6) ; eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
 
-    -- Fire sound on the Gekko (randomized shot1-4)
     ent:EmitSound(KORNET_SND_SHOTS[math.random(#KORNET_SND_SHOTS)], KORNET_SND_LEVEL, math.random(95, 105), 1)
-    -- Launch sound immediately after (randomized launch1-2)
     ent:EmitSound(KORNET_SND_LAUNCHES[math.random(#KORNET_SND_LAUNCHES)], KORNET_SND_LEVEL, 100, 1)
 
     local rpg = ents.Create("sent_orbital_rpg")
@@ -618,7 +609,6 @@ local function FireOrbitRpg( ent, enemy )
     end
     rpg:SetPos(src) ; rpg:SetAngles(dir:Angle()) ; rpg:SetOwner(ent)
     rpg:Spawn() ; rpg:Activate()
-    -- Note: flame loop is started inside sent_orbital_rpg/init.lua Initialize()
 
     print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f", attIdx, ent:GetPos():Distance(enemy:GetPos())))
     return true
@@ -644,13 +634,8 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    -- Defer launch sound one frame so entity network state is ready
-    local snd = TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)]
-    local pit = math.random(95, 110)
-    timer.Simple(0, function()
-        if not IsValid(ent) then return end
-        ent:EmitSound(snd, TOPMISSILE_SND_LEVEL, pit, 1)
-    end)
+    -- Inline EmitSound matching MG pattern (no timer.Simple wrapper)
+    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
@@ -678,13 +663,8 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    -- Defer launch sound one frame so entity network state is ready
-    local snd = TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)]
-    local pit = math.random(95, 110)
-    timer.Simple(0, function()
-        if not IsValid(ent) then return end
-        ent:EmitSound(snd, TOPMISSILE_SND_LEVEL, pit, 1)
-    end)
+    -- Inline EmitSound matching MG pattern (no timer.Simple wrapper)
+    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     print(string.format("[GekkoTRK] Launched | dist=%.0f tracking=%s", dist, tostring(enemy)))
     return true
 end
