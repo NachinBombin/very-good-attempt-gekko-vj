@@ -541,9 +541,11 @@ local function FireGrenadeLauncher( ent, enemy )
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
     local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
     local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
-    local forward = ent:GetForward()
-    local right   = ent:GetRight()
-    local origin  = ent:GetPos() + Vector(0,0,GL_LAUNCH_Z)
+
+    -- NOTE: forward, right, and origin are intentionally NOT cached here.
+    -- They are re-sampled inside each timer callback so grenades always
+    -- launch from the Gekko's *current* position and facing at fire time.
+
     ent._glSparkCounter = 0
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
     timer.Simple(GL_FIDGET_LEAD + (count-1)*GL_INTERVAL + 0.1, function()
@@ -554,6 +556,12 @@ local function FireGrenadeLauncher( ent, enemy )
         local shotNumber = i+1
         timer.Simple(GL_FIDGET_LEAD + i*GL_INTERVAL, function()
             if not IsValid(ent) then return end
+
+            -- Re-sample position/facing every shot
+            local forward = ent:GetForward()
+            local right   = ent:GetRight()
+            local origin  = ent:GetPos() + Vector(0,0,GL_LAUNCH_Z)
+
             ent:EmitSound(GL_SOUND_FIRE, 80, math.random(95, 105), 1)
             GLSparkAtAttachment(ent, shotNumber)
             GLVaporAtAttachment(ent, shotNumber)
