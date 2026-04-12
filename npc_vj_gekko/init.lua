@@ -45,7 +45,7 @@ local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 85
 
--- Common rocket / salvo launch sounds (confirmed working)
+-- Common rocket / salvo launch sounds
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
     "gekko/wp0040_se_gun_fire_02.wav",
@@ -54,13 +54,10 @@ local ROCKET_SND_FIRE = {
 local ROCKET_SND_LEVEL = 85
 
 -- Top-attack / track missile launch sounds
--- wp10e0 and wp0302 files have bad sample rate; reuse confirmed-working wp0040 set
--- TODO: resample wp10e0_se_stinger_pass_1, wp0302_se_missile_fire_1, wp0302_se_missile_pass_2
---       then restore them here
 local TOPMISSILE_SND_FIRE = {
-    "gekko/wp0040_se_gun_fire_01.wav",
-    "gekko/wp0040_se_gun_fire_02.wav",
-    "gekko/wp0040_se_gun_fire_03.wav",
+    "gekko/wp10e0_se_stinger_pass_1.wav",
+    "gekko/wp0302_se_missile_fire_1.wav",
+    "gekko/wp0302_se_missile_pass_2.wav",
 }
 local TOPMISSILE_SND_LEVEL = 85
 
@@ -619,7 +616,6 @@ local function FireTopMissile( ent, enemy )
         else                          return FireGrenadeLauncher(ent, enemy) end
     end
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
-    -- Fire launch sound before spawning the entity
     ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     local toTarget2D = (enemy:GetPos()-ent:GetPos()) ; toTarget2D.z=0 ; toTarget2D:Normalize()
     local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
@@ -647,7 +643,6 @@ local function FireTrackMissile( ent, enemy )
     end
     SendSonarLock(enemy)
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
-    -- Fire launch sound before spawning the entity
     ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
     local toTarget2D = (enemy:GetPos()-ent:GetPos()) ; toTarget2D.z=0 ; toTarget2D:Normalize()
     local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
