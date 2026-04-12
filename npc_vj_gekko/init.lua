@@ -123,6 +123,16 @@ local MISSILE_SPAWN_FORWARD = 600
 local NIKITA_SPAWN_FORWARD  = 100
 local NIKITA_SPAWN_Z        = 400
 
+-- --------------------------------------------------------
+--  Nikita muzzle-blast smoke cloud tuning
+-- --------------------------------------------------------
+-- How many SmokeEffect blasts to emit at the launcher nozzle.
+local NIKITA_MUZZLE_SMOKE_COUNT = 6
+-- Scale passed to util.Effect("SmokeEffect") -- higher = bigger puff.
+local NIKITA_MUZZLE_SMOKE_SCALE = 2.2
+-- Slight stagger between blasts (seconds) so they don't all stack on frame 0.
+local NIKITA_MUZZLE_SMOKE_STAGGER = 0.06
+
 local JUMP_STATE_NAMES       = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 local HEAD_Z_FRACTION        = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 900
@@ -668,12 +678,50 @@ end
 -- ============================================================
 --  Weapon: Nikita homing cruise missile (full VJ SNPC)
 -- ============================================================
+
+-- Emits a burst of SmokeEffect blasts at the missile launcher nozzle
+-- to simulate a rocket back-blast cloud that quickly dissipates.
+-- util.Effect("SmokeEffect") uses the engine's built-in smoke particle
+-- system -- the same one fired by common Source rockets -- so it looks
+-- natural and fades on its own without any extra cleanup.
+local function NikitaMuzzleSmoke( ent )
+    -- Pick whichever launcher attachment the counter currently points at.
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local attData = ent:GetAttachment(attIdx)
+    local nozzle  = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    -- Direction the nozzle faces (forward out of the launcher tube).
+    local nozzDir = attData and attData.Ang:Forward() or ent:GetForward()
+
+    -- Fire several staggered blasts so the cloud builds up over a few frames
+    -- rather than popping in as one instant puff.
+    for i = 0, NIKITA_MUZZLE_SMOKE_COUNT - 1 do
+        local delay  = i * NIKITA_MUZZLE_SMOKE_STAGGER
+        -- Capture current values; nozzle is static for one launch event.
+        local pos    = nozzle
+        local normal = nozzDir
+        timer.Simple(delay, function()
+            if not IsValid(ent) then return end
+            local ed = EffectData()
+            ed:SetOrigin(pos + normal * (i * 4))  -- spread blasts slightly along barrel
+            ed:SetNormal(normal)
+            ed:SetScale(NIKITA_MUZZLE_SMOKE_SCALE)
+            ed:SetMagnitude(1)
+            util.Effect("SmokeEffect", ed)
+        end)
+    end
+end
+
 local function FireNikita( ent, enemy )
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist < NIKITA_MIN_DIST then
         print(string.format("[GekkoNikita] Too close (%.0f) -- re-rolling", dist))
         return FireMGBurst(ent, enemy)
     end
+
+    -- Launcher back-blast smoke cloud (fires immediately at the nozzle)
+    NikitaMuzzleSmoke(ent)
+
     local toTarget2D = (enemy:GetPos() - ent:GetPos())
     toTarget2D.z = 0
     if toTarget2D:Length() > 0 then toTarget2D:Normalize() end
