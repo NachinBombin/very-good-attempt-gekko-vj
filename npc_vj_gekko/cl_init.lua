@@ -63,6 +63,25 @@ local function ReleaseHips(ent, key)
 end
 
 -- ============================================================
+--  JITTER HELPERS
+--  JitterAng  : adds ±JITTER_DEG to each axis of a base Angle
+--  JitterDur  : shortens a duration by a random amount (never lengthens)
+-- ============================================================
+JITTER_DEG      = 5.0   -- ± degrees applied per axis
+JITTER_DUR_MAX  = 0.6   -- maximum seconds shaved off a duration
+
+local function JitterAng(base)
+    local function j() return (math.random() - 0.5) * 2 * JITTER_DEG end
+    return Angle(base.p + j(), base.y + j(), base.r + j())
+end
+
+-- Call once per attack trigger to get a shortened duration.
+-- Returns a value in [ base - JITTER_DUR_MAX , base ].
+local function JitterDur(base)
+    return base - math.random() * JITTER_DUR_MAX
+end
+
+-- ============================================================
 --  KICK ANIMATION  (b_r_upperleg)
 -- ============================================================
 KICK_WINDOW     = 1.0
@@ -864,6 +883,7 @@ end
 
 -- ============================================================
 --  KICK BONE DRIVER (right leg)
+--  Jitter: randomised kick angle and window duration on each trigger.
 -- ============================================================
 local function GekkoDoKickBone(ent)
     if ent._kickBoneIdx == nil then
@@ -871,12 +891,15 @@ local function GekkoDoKickBone(ent)
         ent._kickEndTime   = 0
         ent._kickPulseLast = ent:GetNWInt("GekkoKickPulse", 0)
         ent._kickWasActive = false
+        ent._kickJitAng    = KICK_BONE_ANGLE
     end
 
     local pulse = ent:GetNWInt("GekkoKickPulse", 0)
     if pulse ~= ent._kickPulseLast then
         ent._kickPulseLast = pulse
-        ent._kickEndTime   = math.max(ent._kickEndTime, CurTime() + KICK_WINDOW)
+        local dur = JitterDur(KICK_WINDOW)
+        ent._kickEndTime  = math.max(ent._kickEndTime, CurTime() + dur)
+        ent._kickJitAng   = JitterAng(KICK_BONE_ANGLE)
     end
 
     local boneIdx = ent._kickBoneIdx
@@ -885,7 +908,7 @@ local function GekkoDoKickBone(ent)
     local active = CurTime() < ent._kickEndTime
     if active then
         ent._kickWasActive = true
-        ent:ManipulateBoneAngles(boneIdx, KICK_BONE_ANGLE, false)
+        ent:ManipulateBoneAngles(boneIdx, ent._kickJitAng, false)
     elseif ent._kickWasActive then
         ent._kickWasActive = false
         ent:ManipulateBoneAngles(boneIdx, KICK_BONE_RESET, false)
@@ -894,6 +917,7 @@ end
 
 -- ============================================================
 --  KICK BONE DRIVER (left leg mirror)
+--  Jitter: same pattern as right leg driver.
 -- ============================================================
 local function GekkoDoKickLBone(ent)
     if ent._kickLBoneIdx == nil then
@@ -901,12 +925,15 @@ local function GekkoDoKickLBone(ent)
         ent._kickLEndTime   = 0
         ent._kickLPulseLast = ent:GetNWInt("GekkoLKickPulse", 0)
         ent._kickLWasActive = false
+        ent._kickLJitAng    = KICK_L_BONE_ANGLE
     end
 
     local pulse = ent:GetNWInt("GekkoLKickPulse", 0)
     if pulse ~= ent._kickLPulseLast then
         ent._kickLPulseLast = pulse
-        ent._kickLEndTime   = math.max(ent._kickLEndTime, CurTime() + KICK_WINDOW)
+        local dur = JitterDur(KICK_WINDOW)
+        ent._kickLEndTime  = math.max(ent._kickLEndTime, CurTime() + dur)
+        ent._kickLJitAng   = JitterAng(KICK_L_BONE_ANGLE)
     end
 
     local boneIdx = ent._kickLBoneIdx
@@ -915,7 +942,7 @@ local function GekkoDoKickLBone(ent)
     local active = CurTime() < ent._kickLEndTime
     if active then
         ent._kickLWasActive = true
-        ent:ManipulateBoneAngles(boneIdx, KICK_L_BONE_ANGLE, false)
+        ent:ManipulateBoneAngles(boneIdx, ent._kickLJitAng, false)
     elseif ent._kickLWasActive then
         ent._kickLWasActive = false
         ent:ManipulateBoneAngles(boneIdx, KICK_L_BONE_RESET, false)
@@ -924,6 +951,7 @@ end
 
 -- ============================================================
 --  HEADBUTT BONE DRIVER
+--  Jitter: randomised duration and jittered peak angles.
 -- ============================================================
 local function GekkoDoHeadbuttBone(ent)
     if ent._hbInited == nil then
@@ -931,20 +959,30 @@ local function GekkoDoHeadbuttBone(ent)
         ent._hbSpineIdx    = ent:LookupBone(HB_SPINE3_BONE)   or -1
         ent._hbPedestalIdx = ent:LookupBone(HB_PEDESTAL_BONE) or -1
         ent._hbStartTime   = -9999
+        ent._hbDuration    = HB_DURATION
         ent._hbPulseLast   = ent:GetNWInt("GekkoHeadbuttPulse", 0)
         ent._hbWasActive   = false
+        ent._hbJitSpineX   = HB_SPINE3_ANG_X
+        ent._hbJitPedX     = HB_PEDESTAL_POS_X
+        ent._hbJitPedZ     = HB_PEDESTAL_POS_Z
     end
 
     local pulse = ent:GetNWInt("GekkoHeadbuttPulse", 0)
     if pulse ~= ent._hbPulseLast then
         ent._hbPulseLast = pulse
         ent._hbStartTime = CurTime()
+        ent._hbDuration  = JitterDur(HB_DURATION)
+        -- jitter the scalar peak values by ±JITTER_DEG
+        local function jf() return (math.random() - 0.5) * 2 * JITTER_DEG end
+        ent._hbJitSpineX = HB_SPINE3_ANG_X   + jf()
+        ent._hbJitPedX   = HB_PEDESTAL_POS_X + jf()
+        ent._hbJitPedZ   = HB_PEDESTAL_POS_Z + jf()
 
-        print(string.format("[GekkoHeadbutt] pulse=%d", pulse))
+        print(string.format("[GekkoHeadbutt] pulse=%d  dur=%.2f", pulse, ent._hbDuration))
     end
 
     local elapsed = CurTime() - ent._hbStartTime
-    local active  = elapsed >= 0 and elapsed < HB_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._hbDuration
     if not active then
         if ent._hbWasActive then
             ent._hbWasActive = false
@@ -960,27 +998,31 @@ local function GekkoDoHeadbuttBone(ent)
 
     ent._hbWasActive = true
 
-    local t = elapsed / HB_DURATION
+    local t   = elapsed / ent._hbDuration
+    local peak = ent._hbDuration > 0 and (HB_PEAK / HB_DURATION) or HB_PEAK
     local env
-    if t < HB_PEAK then
-        env = Smoothstep(t / HB_PEAK)
+    if t < peak then
+        env = Smoothstep(t / peak)
     else
-        env = Smoothstep(1 - (t - HB_PEAK) / (1 - HB_PEAK))
+        env = Smoothstep(1 - (t - peak) / (1 - peak))
     end
 
     if ent._hbSpineIdx >= 0 then
         ent:ManipulateBoneAngles(ent._hbSpineIdx,
-            Angle(HB_SPINE3_ANG_X * env, 0, 0), false)
+            Angle(ent._hbJitSpineX * env, 0, 0), false)
     end
 
     if ent._hbPedestalIdx >= 0 then
         ent:ManipulateBonePosition(ent._hbPedestalIdx,
-            Vector(HB_PEDESTAL_POS_X * env, 0, HB_PEDESTAL_POS_Z * env), false)
+            Vector(ent._hbJitPedX * env, 0, ent._hbJitPedZ * env), false)
     end
 end
 
 -- ============================================================
 --  FK360 BONE DRIVER
+--  Jitter: randomised duration (stored per-trigger on ent).
+--  Angle jitter is not applied here because the animation is a
+--  continuous yaw accumulation — the speed envelope handles it.
 -- ============================================================
 local function GekkoDoFK360Bone(ent)
     local fk360Duration = ent.FK360_DURATION or 0.9
@@ -989,6 +1031,7 @@ local function GekkoDoFK360Bone(ent)
         ent._fk360Inited    = true
         ent._fk360BoneIdx   = ent:LookupBone(FK360_BONE) or -1
         ent._fk360StartTime = -9999
+        ent._fk360Duration  = fk360Duration
         ent._fk360PulseLast = ent:GetNWInt("GekkoFrontKick360Pulse", 0)
         ent._fk360Yaw       = 0
         ent._fk360WasActive = false
@@ -999,16 +1042,17 @@ local function GekkoDoFK360Bone(ent)
         ent._fk360PulseLast = pulse
         ent._fk360StartTime = CurTime()
         ent._fk360Yaw       = 0
+        ent._fk360Duration  = JitterDur(fk360Duration)
 
         print(string.format("[GekkoFK360] pulse=%d  duration=%.2f",
-            pulse, fk360Duration))
+            pulse, ent._fk360Duration))
     end
 
     local boneIdx = ent._fk360BoneIdx
     if not boneIdx or boneIdx < 0 then return end
 
     local elapsed = CurTime() - ent._fk360StartTime
-    local active  = elapsed >= 0 and elapsed < fk360Duration
+    local active  = elapsed >= 0 and elapsed < ent._fk360Duration
     if not active then
         if ent._fk360WasActive then
             ent._fk360WasActive = false
@@ -1020,8 +1064,8 @@ local function GekkoDoFK360Bone(ent)
 
     ent._fk360WasActive = true
 
-    local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * fk360Duration)
-    local t = elapsed / fk360Duration
+    local peakSpeed = 360.0 / ((1.0 - FK360_RAMP) * ent._fk360Duration)
+    local t = elapsed / ent._fk360Duration
 
     local env
     if t < FK360_RAMP then
@@ -1041,6 +1085,7 @@ end
 
 -- ============================================================
 --  SPINKICK BONE DRIVER
+--  Jitter: randomised duration; jitter applied to hip/leg peak angles.
 -- ============================================================
 local function GekkoDoSpinKickBone(ent)
     if ent._skInited == nil then
@@ -1050,9 +1095,13 @@ local function GekkoDoSpinKickBone(ent)
         ent._skHipIdx    = ent:LookupBone(SK_HIP_BONE)  or -1
         ent._skUlegIdx   = ent:LookupBone(SK_ULEG_BONE) or -1
         ent._skStartTime = -9999
+        ent._skDuration  = SK_DURATION
         ent._skPulseLast = ent:GetNWInt("GekkoSpinKickPulse", 0)
         ent._skYaw       = 0
         ent._skWasActive = false
+        ent._skJitPelDrop = SK_PEL_DROP
+        ent._skJitHipZ    = SK_HIP_Z
+        ent._skJitUlegX   = SK_ULEG_X
     end
 
     local pulse = ent:GetNWInt("GekkoSpinKickPulse", 0)
@@ -1060,12 +1109,17 @@ local function GekkoDoSpinKickBone(ent)
         ent._skPulseLast = pulse
         ent._skStartTime = CurTime()
         ent._skYaw       = 0
+        ent._skDuration  = JitterDur(SK_DURATION)
+        local function jf() return (math.random() - 0.5) * 2 * JITTER_DEG end
+        ent._skJitPelDrop = SK_PEL_DROP + jf()
+        ent._skJitHipZ    = SK_HIP_Z    + jf()
+        ent._skJitUlegX   = SK_ULEG_X   + jf()
 
-        print(string.format("[GekkoSpinKick] pulse=%d", pulse))
+        print(string.format("[GekkoSpinKick] pulse=%d  dur=%.2f", pulse, ent._skDuration))
     end
 
     local elapsed = CurTime() - ent._skStartTime
-    local active  = elapsed >= 0 and elapsed < SK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._skDuration
     if not active then
         if ent._skWasActive then
             ent._skWasActive = false
@@ -1092,11 +1146,11 @@ local function GekkoDoSpinKickBone(ent)
     if not ClaimHips(ent, "SPINKICK") then return end
     ent._skWasActive = true
 
-    local t  = elapsed / SK_DURATION
+    local t  = elapsed / ent._skDuration
     local dt = math.Clamp(CurTime() - (ent._skLastT or CurTime()), 0, 0.05)
     ent._skLastT = CurTime()
 
-    local peakSpeed = SK_YAW_TOTAL / ((1.0 - SK_RAMP) * SK_DURATION)
+    local peakSpeed = SK_YAW_TOTAL / ((1.0 - SK_RAMP) * ent._skDuration)
 
     local yawEnv
     if t < SK_RAMP then
@@ -1147,20 +1201,21 @@ local function GekkoDoSpinKickBone(ent)
 
     if ent._skPelIdx  >= 0 then
         ent:ManipulateBonePosition(ent._skPelIdx,
-            Vector(0, 0, SK_PEL_DROP * crouchEnv), false)
+            Vector(0, 0, ent._skJitPelDrop * crouchEnv), false)
     end
     if ent._skHipIdx  >= 0 then
         ent:ManipulateBoneAngles(ent._skHipIdx,
-            Angle(0, 0, SK_HIP_Z * crouchEnv), false)
+            Angle(0, 0, ent._skJitHipZ * crouchEnv), false)
     end
     if ent._skUlegIdx >= 0 then
         ent:ManipulateBoneAngles(ent._skUlegIdx,
-            Angle(SK_ULEG_X * legEnv, 0, 0), false)
+            Angle(ent._skJitUlegX * legEnv, 0, 0), false)
     end
 end
 
 -- ============================================================
 --  FOOTBALL KICK BONE DRIVER  (left leg)
+--  Jitter: randomised duration; jitter baked into prep/ext angles.
 -- ============================================================
 local function GekkoDoFootballKickBone(ent)
     if ent._fkInited == nil then
@@ -1168,20 +1223,31 @@ local function GekkoDoFootballKickBone(ent)
         ent._fkLHipIdx   = ent:LookupBone(FK_LHIP_BONE) or -1
         ent._fkRHipIdx   = ent:LookupBone(FK_RHIP_BONE) or -1
         ent._fkStartTime = -9999
+        ent._fkDuration  = FK_DURATION
         ent._fkPulseLast = ent:GetNWInt("GekkoFootballKickPulse", 0)
         ent._fkWasActive = false
+        ent._fkJitLhipYPrep = FK_LHIP_Y_PREP
+        ent._fkJitLhipXPrep = FK_LHIP_X_PREP
+        ent._fkJitRhipXPrep = FK_RHIP_X_PREP
+        ent._fkJitLhipYExt  = FK_LHIP_Y_EXT
     end
 
     local pulse = ent:GetNWInt("GekkoFootballKickPulse", 0)
     if pulse ~= ent._fkPulseLast then
         ent._fkPulseLast = pulse
         ent._fkStartTime = CurTime()
+        ent._fkDuration  = JitterDur(FK_DURATION)
+        local function jf() return (math.random() - 0.5) * 2 * JITTER_DEG end
+        ent._fkJitLhipYPrep = FK_LHIP_Y_PREP + jf()
+        ent._fkJitLhipXPrep = FK_LHIP_X_PREP + jf()
+        ent._fkJitRhipXPrep = FK_RHIP_X_PREP + jf()
+        ent._fkJitLhipYExt  = FK_LHIP_Y_EXT  + jf()
 
-        print(string.format("[GekkoFootballKick] pulse=%d", pulse))
+        print(string.format("[GekkoFootballKick] pulse=%d  dur=%.2f", pulse, ent._fkDuration))
     end
 
     local elapsed = CurTime() - ent._fkStartTime
-    local active  = elapsed >= 0 and elapsed < FK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._fkDuration
     if not active then
         if ent._fkWasActive then
             ent._fkWasActive = false
@@ -1201,26 +1267,26 @@ local function GekkoDoFootballKickBone(ent)
     if not ClaimHips(ent, "FOOTBALLKICK") then return end
     ent._fkWasActive = true
 
-    local t = elapsed / FK_DURATION
+    local t = elapsed / ent._fkDuration
 
     local lhipY, lhipX, rhipX
     if t < FK_PHASE_HOLD then
         local env = Smoothstep(t / FK_PHASE_HOLD)
-        lhipY =  FK_LHIP_Y_PREP * env
-        lhipX =  FK_LHIP_X_PREP * env
-        rhipX =  FK_RHIP_X_PREP * env
+        lhipY =  ent._fkJitLhipYPrep * env
+        lhipX =  ent._fkJitLhipXPrep * env
+        rhipX =  ent._fkJitRhipXPrep * env
     elseif t < FK_PHASE_EXTEND then
-        lhipY =  FK_LHIP_Y_PREP
-        lhipX =  FK_LHIP_X_PREP
-        rhipX =  FK_RHIP_X_PREP
+        lhipY =  ent._fkJitLhipYPrep
+        lhipX =  ent._fkJitLhipXPrep
+        rhipX =  ent._fkJitRhipXPrep
     elseif t < FK_PHASE_RECOVER then
         local env = Smoothstep((t - FK_PHASE_EXTEND) / (FK_PHASE_RECOVER - FK_PHASE_EXTEND))
-        lhipY = FK_LHIP_Y_PREP + (FK_LHIP_Y_EXT - FK_LHIP_Y_PREP) * env
-        lhipX = FK_LHIP_X_PREP * (1 - env)
-        rhipX = FK_RHIP_X_PREP * (1 - env)
+        lhipY = ent._fkJitLhipYPrep + (ent._fkJitLhipYExt - ent._fkJitLhipYPrep) * env
+        lhipX = ent._fkJitLhipXPrep * (1 - env)
+        rhipX = ent._fkJitRhipXPrep * (1 - env)
     else
         local env = Smoothstep((t - FK_PHASE_RECOVER) / (1.0 - FK_PHASE_RECOVER))
-        lhipY = FK_LHIP_Y_EXT * (1 - env)
+        lhipY = ent._fkJitLhipYExt * (1 - env)
         lhipX = 0
         rhipX = 0
     end
@@ -1235,6 +1301,7 @@ end
 
 -- ============================================================
 --  FOOTBALL KICK MIRRORED BONE DRIVER  (right leg)
+--  Jitter: same strategy as left-leg driver.
 -- ============================================================
 local function GekkoDoFootballKickRBone(ent)
     if ent._fkrInited == nil then
@@ -1242,20 +1309,31 @@ local function GekkoDoFootballKickRBone(ent)
         ent._fkrRHipIdx   = ent:LookupBone(FKR_RHIP_BONE) or -1
         ent._fkrLHipIdx   = ent:LookupBone(FKR_LHIP_BONE) or -1
         ent._fkrStartTime = -9999
+        ent._fkrDuration  = FKR_DURATION
         ent._fkrPulseLast = ent:GetNWInt("GekkoRFootballKickPulse", 0)
         ent._fkrWasActive = false
+        ent._fkrJitRhipYPrep = FKR_RHIP_Y_PREP
+        ent._fkrJitRhipXPrep = FKR_RHIP_X_PREP
+        ent._fkrJitLhipXPrep = FKR_LHIP_X_PREP
+        ent._fkrJitRhipYExt  = FKR_RHIP_Y_EXT
     end
 
     local pulse = ent:GetNWInt("GekkoRFootballKickPulse", 0)
     if pulse ~= ent._fkrPulseLast then
         ent._fkrPulseLast = pulse
         ent._fkrStartTime = CurTime()
+        ent._fkrDuration  = JitterDur(FKR_DURATION)
+        local function jf() return (math.random() - 0.5) * 2 * JITTER_DEG end
+        ent._fkrJitRhipYPrep = FKR_RHIP_Y_PREP + jf()
+        ent._fkrJitRhipXPrep = FKR_RHIP_X_PREP + jf()
+        ent._fkrJitLhipXPrep = FKR_LHIP_X_PREP + jf()
+        ent._fkrJitRhipYExt  = FKR_RHIP_Y_EXT  + jf()
 
-        print(string.format("[GekkoFootballKickR] pulse=%d", pulse))
+        print(string.format("[GekkoFootballKickR] pulse=%d  dur=%.2f", pulse, ent._fkrDuration))
     end
 
     local elapsed = CurTime() - ent._fkrStartTime
-    local active  = elapsed >= 0 and elapsed < FKR_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._fkrDuration
     if not active then
         if ent._fkrWasActive then
             ent._fkrWasActive = false
@@ -1275,26 +1353,26 @@ local function GekkoDoFootballKickRBone(ent)
     if not ClaimHips(ent, "FOOTBALLKICKR") then return end
     ent._fkrWasActive = true
 
-    local t = elapsed / FKR_DURATION
+    local t = elapsed / ent._fkrDuration
 
     local rhipY, rhipX, lhipX
     if t < FKR_PHASE_HOLD then
         local env = Smoothstep(t / FKR_PHASE_HOLD)
-        rhipY =  FKR_RHIP_Y_PREP * env
-        rhipX =  FKR_RHIP_X_PREP * env
-        lhipX =  FKR_LHIP_X_PREP * env
+        rhipY =  ent._fkrJitRhipYPrep * env
+        rhipX =  ent._fkrJitRhipXPrep * env
+        lhipX =  ent._fkrJitLhipXPrep * env
     elseif t < FKR_PHASE_EXTEND then
-        rhipY =  FKR_RHIP_Y_PREP
-        rhipX =  FKR_RHIP_X_PREP
-        lhipX =  FKR_LHIP_X_PREP
+        rhipY =  ent._fkrJitRhipYPrep
+        rhipX =  ent._fkrJitRhipXPrep
+        lhipX =  ent._fkrJitLhipXPrep
     elseif t < FKR_PHASE_RECOVER then
         local env = Smoothstep((t - FKR_PHASE_EXTEND) / (FKR_PHASE_RECOVER - FKR_PHASE_EXTEND))
-        rhipY = FKR_RHIP_Y_PREP + (FKR_RHIP_Y_EXT - FKR_RHIP_Y_PREP) * env
-        rhipX = FKR_RHIP_X_PREP * (1 - env)
-        lhipX = FKR_LHIP_X_PREP * (1 - env)
+        rhipY = ent._fkrJitRhipYPrep + (ent._fkrJitRhipYExt - ent._fkrJitRhipYPrep) * env
+        rhipX = ent._fkrJitRhipXPrep * (1 - env)
+        lhipX = ent._fkrJitLhipXPrep * (1 - env)
     else
         local env = Smoothstep((t - FKR_PHASE_RECOVER) / (1.0 - FKR_PHASE_RECOVER))
-        rhipY = FKR_RHIP_Y_EXT * (1 - env)
+        rhipY = ent._fkrJitRhipYExt * (1 - env)
         rhipX = 0
         lhipX = 0
     end
@@ -1309,6 +1387,7 @@ end
 
 -- ============================================================
 --  DIAGONAL KICK BONE DRIVER
+--  Jitter: randomised duration; jitter baked into all 4 keyframe angles.
 -- ============================================================
 local function GekkoDoDiagonalKickBone(ent)
     if ent._dgkInited == nil then
@@ -1316,20 +1395,34 @@ local function GekkoDoDiagonalKickBone(ent)
         ent._dgkLHipIdx   = ent:LookupBone(DGK_LHIP_BONE) or -1
         ent._dgkRHipIdx   = ent:LookupBone(DGK_RHIP_BONE) or -1
         ent._dgkStartTime = -9999
+        ent._dgkDuration  = DGK_DURATION
         ent._dgkPulseLast = ent:GetNWInt("GekkoDiagonalKickPulse", 0)
         ent._dgkWasActive = false
+        ent._dgkJitP1L = DGK_P1_LHIP
+        ent._dgkJitP1R = DGK_P1_RHIP
+        ent._dgkJitP3L = DGK_P3_LHIP
+        ent._dgkJitP3R = DGK_P3_RHIP
+        ent._dgkJitP4L = DGK_P4_LHIP
+        ent._dgkJitP4R = DGK_P4_RHIP
     end
 
     local pulse = ent:GetNWInt("GekkoDiagonalKickPulse", 0)
     if pulse ~= ent._dgkPulseLast then
         ent._dgkPulseLast = pulse
         ent._dgkStartTime = CurTime()
+        ent._dgkDuration  = JitterDur(DGK_DURATION)
+        ent._dgkJitP1L = JitterAng(DGK_P1_LHIP)
+        ent._dgkJitP1R = JitterAng(DGK_P1_RHIP)
+        ent._dgkJitP3L = JitterAng(DGK_P3_LHIP)
+        ent._dgkJitP3R = JitterAng(DGK_P3_RHIP)
+        ent._dgkJitP4L = JitterAng(DGK_P4_LHIP)
+        ent._dgkJitP4R = JitterAng(DGK_P4_RHIP)
 
-        print(string.format("[GekkoDiagonalKick] pulse=%d", pulse))
+        print(string.format("[GekkoDiagonalKick] pulse=%d  dur=%.2f", pulse, ent._dgkDuration))
     end
 
     local elapsed = CurTime() - ent._dgkStartTime
-    local active  = elapsed >= 0 and elapsed < DGK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._dgkDuration
     if not active then
         if ent._dgkWasActive then
             ent._dgkWasActive = false
@@ -1349,29 +1442,29 @@ local function GekkoDoDiagonalKickBone(ent)
     if not ClaimHips(ent, "DIAGONALKICK") then return end
     ent._dgkWasActive = true
 
-    local t     = elapsed / DGK_DURATION
+    local t     = elapsed / ent._dgkDuration
     local lhip, rhip
     local REST  = Angle(0, 0, 0)
 
     if t < DGK_P1_END then
         local env = Smoothstep(t / DGK_P1_END)
-        lhip = LerpAngle(REST,       DGK_P1_LHIP, env)
-        rhip = LerpAngle(REST,       DGK_P1_RHIP, env)
+        lhip = LerpAngle(REST,             ent._dgkJitP1L, env)
+        rhip = LerpAngle(REST,             ent._dgkJitP1R, env)
     elseif t < DGK_P2_END then
-        lhip = DGK_P1_LHIP
-        rhip = DGK_P1_RHIP
+        lhip = ent._dgkJitP1L
+        rhip = ent._dgkJitP1R
     elseif t < DGK_P3_END then
         local env = Smoothstep((t - DGK_P2_END) / (DGK_P3_END - DGK_P2_END))
-        lhip = LerpAngle(DGK_P1_LHIP, DGK_P3_LHIP, env)
-        rhip = LerpAngle(DGK_P1_RHIP, DGK_P3_RHIP, env)
+        lhip = LerpAngle(ent._dgkJitP1L, ent._dgkJitP3L, env)
+        rhip = LerpAngle(ent._dgkJitP1R, ent._dgkJitP3R, env)
     elseif t < DGK_P4_END then
         local env = Smoothstep((t - DGK_P3_END) / (DGK_P4_END - DGK_P3_END))
-        lhip = LerpAngle(DGK_P3_LHIP, DGK_P4_LHIP, env)
-        rhip = LerpAngle(DGK_P3_RHIP, DGK_P4_RHIP, env)
+        lhip = LerpAngle(ent._dgkJitP3L, ent._dgkJitP4L, env)
+        rhip = LerpAngle(ent._dgkJitP3R, ent._dgkJitP4R, env)
     else
         local env = Smoothstep((t - DGK_P4_END) / (1.0 - DGK_P4_END))
-        lhip = LerpAngle(DGK_P4_LHIP, REST, env)
-        rhip = LerpAngle(DGK_P4_RHIP, REST, env)
+        lhip = LerpAngle(ent._dgkJitP4L, REST, env)
+        rhip = LerpAngle(ent._dgkJitP4R, REST, env)
     end
 
     if ent._dgkLHipIdx >= 0 then
@@ -1384,6 +1477,7 @@ end
 
 -- ============================================================
 --  HEEL HOOK BONE DRIVER
+--  Jitter: randomised duration; jitter on all scalar peak values.
 -- ============================================================
 local function GekkoDoHeelHookBone(ent)
     if ent._hhInited == nil then
@@ -1392,20 +1486,35 @@ local function GekkoDoHeelHookBone(ent)
         ent._hhPelIdx    = ent:LookupBone(HH_PELVIS_BONE) or -1
         ent._hhSpineIdx  = ent:LookupBone(HH_SPINE_BONE)  or -1
         ent._hhStartTime = -9999
+        ent._hhDuration  = HH_DURATION_CL
         ent._hhPulseLast = ent:GetNWInt("GekkoHeelHookPulse", 0)
         ent._hhWasActive = false
+        ent._hhJitChamberPitch = HH_HIP_CHAMBER_PITCH
+        ent._hhJitExtendRoll   = HH_HIP_EXTEND_ROLL
+        ent._hhJitHookYaw      = HH_HIP_HOOK_YAW
+        ent._hhJitPelYaw       = HH_PELVIS_YAW
+        ent._hhJitPelPitch     = HH_PELVIS_PITCH
+        ent._hhJitSpineLean    = HH_SPINE_LEAN
     end
 
     local pulse = ent:GetNWInt("GekkoHeelHookPulse", 0)
     if pulse ~= ent._hhPulseLast then
         ent._hhPulseLast = pulse
         ent._hhStartTime = CurTime()
+        ent._hhDuration  = JitterDur(HH_DURATION_CL)
+        local function jf() return (math.random() - 0.5) * 2 * JITTER_DEG end
+        ent._hhJitChamberPitch = HH_HIP_CHAMBER_PITCH + jf()
+        ent._hhJitExtendRoll   = HH_HIP_EXTEND_ROLL   + jf()
+        ent._hhJitHookYaw      = HH_HIP_HOOK_YAW      + jf()
+        ent._hhJitPelYaw       = HH_PELVIS_YAW        + jf()
+        ent._hhJitPelPitch     = HH_PELVIS_PITCH       + jf()
+        ent._hhJitSpineLean    = HH_SPINE_LEAN         + jf()
 
-        print(string.format("[GekkoHeelHook] pulse=%d", pulse))
+        print(string.format("[GekkoHeelHook] pulse=%d  dur=%.2f", pulse, ent._hhDuration))
     end
 
     local elapsed = CurTime() - ent._hhStartTime
-    local active  = elapsed >= 0 and elapsed < HH_DURATION_CL
+    local active  = elapsed >= 0 and elapsed < ent._hhDuration
     if not active then
         if ent._hhWasActive then
             ent._hhWasActive = false
@@ -1428,7 +1537,7 @@ local function GekkoDoHeelHookBone(ent)
     if not ClaimHips(ent, "HEELHOOK") then return end
     ent._hhWasActive = true
 
-    local t    = elapsed / HH_DURATION_CL
+    local t    = elapsed / ent._hhDuration
     local P1   = 0.200
     local P2   = 0.440
     local P3   = 0.650
@@ -1440,27 +1549,27 @@ local function GekkoDoHeelHookBone(ent)
 
     local hipPitch, hipRoll, hipYaw
     if t < P1 then
-        hipPitch = HH_HIP_CHAMBER_PITCH * PhaseEnv(0, P1)
+        hipPitch = ent._hhJitChamberPitch * PhaseEnv(0, P1)
         hipRoll  = 0
         hipYaw   = 0
     elseif t < P2 then
-        hipPitch = HH_HIP_CHAMBER_PITCH
+        hipPitch = ent._hhJitChamberPitch
         hipRoll  = 0
         hipYaw   = 0
     elseif t < P3 then
-        hipPitch = HH_HIP_CHAMBER_PITCH
-        hipRoll  = HH_HIP_EXTEND_ROLL * PhaseEnv(P2, P3)
+        hipPitch = ent._hhJitChamberPitch
+        hipRoll  = ent._hhJitExtendRoll * PhaseEnv(P2, P3)
         hipYaw   = 0
     elseif t < P4 then
         local env = PhaseEnv(P3, P4)
-        hipPitch = HH_HIP_CHAMBER_PITCH * (1 - env * 0.3)
-        hipRoll  = HH_HIP_EXTEND_ROLL   * (1 - env)
-        hipYaw   = HH_HIP_HOOK_YAW      * env
+        hipPitch = ent._hhJitChamberPitch * (1 - env * 0.3)
+        hipRoll  = ent._hhJitExtendRoll   * (1 - env)
+        hipYaw   = ent._hhJitHookYaw      * env
     else
         local env = PhaseEnv(P4, 1.0)
-        hipPitch = HH_HIP_CHAMBER_PITCH * (0.7 - env * 0.7)
+        hipPitch = ent._hhJitChamberPitch * (0.7 - env * 0.7)
         hipRoll  = 0
-        hipYaw   = HH_HIP_HOOK_YAW * (1 - env)
+        hipYaw   = ent._hhJitHookYaw * (1 - env)
     end
 
     if ent._hhHipIdx >= 0 then
@@ -1470,20 +1579,20 @@ local function GekkoDoHeelHookBone(ent)
 
     local pelYaw, pelPitch
     if t < P1 then
-        pelYaw   = HH_PELVIS_YAW * PhaseEnv(0, P1) * 0.5
+        pelYaw   = ent._hhJitPelYaw * PhaseEnv(0, P1) * 0.5
         pelPitch = 0
     elseif t < P2 then
-        pelYaw   = HH_PELVIS_YAW * (0.5 + 0.5 * PhaseEnv(P1, P2))
+        pelYaw   = ent._hhJitPelYaw * (0.5 + 0.5 * PhaseEnv(P1, P2))
         pelPitch = 0
     elseif t < P3 then
-        pelYaw   = HH_PELVIS_YAW
-        pelPitch = HH_PELVIS_PITCH * PhaseEnv(P2, P3)
+        pelYaw   = ent._hhJitPelYaw
+        pelPitch = ent._hhJitPelPitch * PhaseEnv(P2, P3)
     elseif t < P4 then
         local env = PhaseEnv(P3, P4)
-        pelYaw   = HH_PELVIS_YAW   * (1 - env * 0.6)
-        pelPitch = HH_PELVIS_PITCH * (1 - env)
+        pelYaw   = ent._hhJitPelYaw   * (1 - env * 0.6)
+        pelPitch = ent._hhJitPelPitch * (1 - env)
     else
-        pelYaw   = HH_PELVIS_YAW * 0.4 * (1 - PhaseEnv(P4, 1.0))
+        pelYaw   = ent._hhJitPelYaw * 0.4 * (1 - PhaseEnv(P4, 1.0))
         pelPitch = 0
     end
 
@@ -1496,11 +1605,11 @@ local function GekkoDoHeelHookBone(ent)
     if t < P1 then
         spineLean = 0
     elseif t < P3 then
-        spineLean = HH_SPINE_LEAN * PhaseEnv(P1, P3)
+        spineLean = ent._hhJitSpineLean * PhaseEnv(P1, P3)
     elseif t < P4 then
-        spineLean = HH_SPINE_LEAN
+        spineLean = ent._hhJitSpineLean
     else
-        spineLean = HH_SPINE_LEAN * (1 - PhaseEnv(P4, 1.0))
+        spineLean = ent._hhJitSpineLean * (1 - PhaseEnv(P4, 1.0))
     end
 
     if ent._hhSpineIdx >= 0 then
@@ -1511,6 +1620,7 @@ end
 
 -- ============================================================
 --  SIDE HOOK KICK BONE DRIVER
+--  Jitter: randomised duration; jitter baked into all keyframe Angles.
 -- ============================================================
 local function GekkoDoSideHookKickBone(ent)
     if ent._shkInited == nil then
@@ -1518,20 +1628,36 @@ local function GekkoDoSideHookKickBone(ent)
         ent._shkLHipIdx   = ent:LookupBone(SHK_LHIP_BONE) or -1
         ent._shkRHipIdx   = ent:LookupBone(SHK_RHIP_BONE) or -1
         ent._shkStartTime = -9999
+        ent._shkDuration  = SHK_DURATION
         ent._shkPulseLast = ent:GetNWInt("GekkoSideHookKickPulse", 0)
         ent._shkWasActive = false
+        ent._shkJitP1L = SHK_P1_LHIP
+        ent._shkJitP1R = SHK_P1_RHIP
+        ent._shkJitP2L = SHK_P2_LHIP
+        ent._shkJitP2R = SHK_P2_RHIP
+        ent._shkJitP3R = SHK_P3_RHIP
+        ent._shkJitP4L = SHK_P4_LHIP
+        ent._shkJitP4R = SHK_P4_RHIP
     end
 
     local pulse = ent:GetNWInt("GekkoSideHookKickPulse", 0)
     if pulse ~= ent._shkPulseLast then
         ent._shkPulseLast = pulse
         ent._shkStartTime = CurTime()
+        ent._shkDuration  = JitterDur(SHK_DURATION)
+        ent._shkJitP1L = JitterAng(SHK_P1_LHIP)
+        ent._shkJitP1R = JitterAng(SHK_P1_RHIP)
+        ent._shkJitP2L = JitterAng(SHK_P2_LHIP)
+        ent._shkJitP2R = JitterAng(SHK_P2_RHIP)
+        ent._shkJitP3R = JitterAng(SHK_P3_RHIP)
+        ent._shkJitP4L = JitterAng(SHK_P4_LHIP)
+        ent._shkJitP4R = JitterAng(SHK_P4_RHIP)
 
-        print(string.format("[GekkoSideHookKick] pulse=%d", pulse))
+        print(string.format("[GekkoSideHookKick] pulse=%d  dur=%.2f", pulse, ent._shkDuration))
     end
 
     local elapsed = CurTime() - ent._shkStartTime
-    local active  = elapsed >= 0 and elapsed < SHK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._shkDuration
     if not active then
         if ent._shkWasActive then
             ent._shkWasActive = false
@@ -1551,30 +1677,30 @@ local function GekkoDoSideHookKickBone(ent)
     if not ClaimHips(ent, "SIDEHOOKKICK") then return end
     ent._shkWasActive = true
 
-    local t    = elapsed / SHK_DURATION
+    local t    = elapsed / ent._shkDuration
     local REST = SHK_REST
 
     local lhip, rhip
     if t < SHK_P1_END then
         local env = Smoothstep(t / SHK_P1_END)
-        lhip = LerpAngle(REST, SHK_P1_LHIP, env)
-        rhip = LerpAngle(REST, SHK_P1_RHIP, env)
+        lhip = LerpAngle(REST, ent._shkJitP1L, env)
+        rhip = LerpAngle(REST, ent._shkJitP1R, env)
     elseif t < SHK_P2_END then
         local env = Smoothstep((t - SHK_P1_END) / (SHK_P2_END - SHK_P1_END))
-        lhip = LerpAngle(SHK_P1_LHIP, SHK_P2_LHIP, env)
-        rhip = LerpAngle(SHK_P1_RHIP, SHK_P2_RHIP, env)
+        lhip = LerpAngle(ent._shkJitP1L, ent._shkJitP2L, env)
+        rhip = LerpAngle(ent._shkJitP1R, ent._shkJitP2R, env)
     elseif t < SHK_P3_END then
         local env = Smoothstep((t - SHK_P2_END) / (SHK_P3_END - SHK_P2_END))
-        lhip = SHK_P2_LHIP
-        rhip = LerpAngle(SHK_P2_RHIP, SHK_P3_RHIP, env)
+        lhip = ent._shkJitP2L
+        rhip = LerpAngle(ent._shkJitP2R, ent._shkJitP3R, env)
     elseif t < SHK_P4_END then
         local env = Smoothstep((t - SHK_P3_END) / (SHK_P4_END - SHK_P3_END))
-        lhip = LerpAngle(SHK_P2_LHIP, SHK_P4_LHIP, env)
-        rhip = LerpAngle(SHK_P3_RHIP, SHK_P4_RHIP, env)
+        lhip = LerpAngle(ent._shkJitP2L, ent._shkJitP4L, env)
+        rhip = LerpAngle(ent._shkJitP3R, ent._shkJitP4R, env)
     else
         local env = Smoothstep((t - SHK_P4_END) / (1.0 - SHK_P4_END))
-        lhip = LerpAngle(SHK_P4_LHIP, REST, env)
-        rhip = LerpAngle(SHK_P4_RHIP, REST, env)
+        lhip = LerpAngle(ent._shkJitP4L, REST, env)
+        rhip = LerpAngle(ent._shkJitP4R, REST, env)
     end
 
     if ent._shkLHipIdx >= 0 then
@@ -1587,6 +1713,7 @@ end
 
 -- ============================================================
 --  AXE KICK BONE DRIVER (left leg original)
+--  Jitter: randomised duration; jitter baked into keyframe Angles.
 -- ============================================================
 local function GekkoDoAxeKickBone(ent)
     if ent._akInited == nil then
@@ -1595,20 +1722,32 @@ local function GekkoDoAxeKickBone(ent)
         ent._akRHipIdx   = ent:LookupBone(AK_RHIP_BONE)  or -1
         ent._akSpineIdx  = ent:LookupBone(AK_SPINE_BONE) or -1
         ent._akStartTime = -9999
+        ent._akDuration  = AK_DURATION
         ent._akPulseLast = ent:GetNWInt("GekkoAxeKickPulse", 0)
         ent._akWasActive = false
+        ent._akJitP1L  = AK_P1_LHIP
+        ent._akJitP1S  = AK_P1_SPINE
+        ent._akJitP3L  = AK_P3_LHIP
+        ent._akJitP3R  = AK_P3_RHIP
+        ent._akJitP3S  = AK_P3_SPINE
     end
 
     local pulse = ent:GetNWInt("GekkoAxeKickPulse", 0)
     if pulse ~= ent._akPulseLast then
         ent._akPulseLast = pulse
         ent._akStartTime = CurTime()
+        ent._akDuration  = JitterDur(AK_DURATION)
+        ent._akJitP1L  = JitterAng(AK_P1_LHIP)
+        ent._akJitP1S  = JitterAng(AK_P1_SPINE)
+        ent._akJitP3L  = JitterAng(AK_P3_LHIP)
+        ent._akJitP3R  = JitterAng(AK_P3_RHIP)
+        ent._akJitP3S  = JitterAng(AK_P3_SPINE)
 
-        print(string.format("[GekkoAxeKick] pulse=%d", pulse))
+        print(string.format("[GekkoAxeKick] pulse=%d  dur=%.2f", pulse, ent._akDuration))
     end
 
     local elapsed = CurTime() - ent._akStartTime
-    local active  = elapsed >= 0 and elapsed < AK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._akDuration
     if not active then
         if ent._akWasActive then
             ent._akWasActive = false
@@ -1631,29 +1770,29 @@ local function GekkoDoAxeKickBone(ent)
     if not ClaimHips(ent, "AXEKICK") then return end
     ent._akWasActive = true
 
-    local t    = elapsed / AK_DURATION
+    local t    = elapsed / ent._akDuration
     local REST = AK_REST
 
     local lhip, rhip, spine
     if t < AK_P1_END then
         local env = Smoothstep(t / AK_P1_END)
-        lhip  = LerpAngle(REST, AK_P1_LHIP,  env)
+        lhip  = LerpAngle(REST, ent._akJitP1L, env)
         rhip  = REST
-        spine = LerpAngle(REST, AK_P1_SPINE, env)
+        spine = LerpAngle(REST, ent._akJitP1S, env)
     elseif t < AK_P2_END then
-        lhip  = AK_P1_LHIP
+        lhip  = ent._akJitP1L
         rhip  = REST
-        spine = AK_P1_SPINE
+        spine = ent._akJitP1S
     elseif t < AK_P3_END then
         local env = Smoothstep(Smoothstep((t - AK_P2_END) / (AK_P3_END - AK_P2_END)))
-        lhip  = LerpAngle(AK_P1_LHIP,  AK_P3_LHIP,  env)
-        rhip  = LerpAngle(REST,        AK_P3_RHIP,  env)
-        spine = LerpAngle(AK_P1_SPINE, AK_P3_SPINE, env)
+        lhip  = LerpAngle(ent._akJitP1L, ent._akJitP3L, env)
+        rhip  = LerpAngle(REST,          ent._akJitP3R, env)
+        spine = LerpAngle(ent._akJitP1S, ent._akJitP3S, env)
     else
         local env = Smoothstep((t - AK_P3_END) / (1.0 - AK_P3_END))
-        lhip  = LerpAngle(AK_P3_LHIP,  REST, env)
-        rhip  = LerpAngle(AK_P3_RHIP,  REST, env)
-        spine = LerpAngle(AK_P3_SPINE, REST, env)
+        lhip  = LerpAngle(ent._akJitP3L, REST, env)
+        rhip  = LerpAngle(ent._akJitP3R, REST, env)
+        spine = LerpAngle(ent._akJitP3S, REST, env)
     end
 
     if ent._akLHipIdx  >= 0 then
@@ -1669,6 +1808,7 @@ end
 
 -- ============================================================
 --  AXE KICK BONE DRIVER (right leg mirror)
+--  Jitter: same strategy as left-leg axe kick.
 -- ============================================================
 local function GekkoDoAxeKickRBone(ent)
     if ent._akrInited == nil then
@@ -1677,20 +1817,32 @@ local function GekkoDoAxeKickRBone(ent)
         ent._akrRHipIdx   = ent:LookupBone("b_l_hippiston1")  or -1
         ent._akrSpineIdx  = ent:LookupBone(AK_SPINE_BONE) or -1
         ent._akrStartTime = -9999
+        ent._akrDuration  = AK_DURATION
         ent._akrPulseLast = ent:GetNWInt("GekkoRAxeKickPulse", 0)
         ent._akrWasActive = false
+        ent._akrJitP1L  = AK_P1_LHIP
+        ent._akrJitP1S  = AK_P1_SPINE
+        ent._akrJitP3L  = AK_P3_LHIP
+        ent._akrJitP3R  = AK_P3_RHIP
+        ent._akrJitP3S  = AK_P3_SPINE
     end
 
     local pulse = ent:GetNWInt("GekkoRAxeKickPulse", 0)
     if pulse ~= ent._akrPulseLast then
         ent._akrPulseLast = pulse
         ent._akrStartTime = CurTime()
+        ent._akrDuration  = JitterDur(AK_DURATION)
+        ent._akrJitP1L  = JitterAng(AK_P1_LHIP)
+        ent._akrJitP1S  = JitterAng(AK_P1_SPINE)
+        ent._akrJitP3L  = JitterAng(AK_P3_LHIP)
+        ent._akrJitP3R  = JitterAng(AK_P3_RHIP)
+        ent._akrJitP3S  = JitterAng(AK_P3_SPINE)
 
-        print(string.format("[GekkoRAxeKick] pulse=%d", pulse))
+        print(string.format("[GekkoRAxeKick] pulse=%d  dur=%.2f", pulse, ent._akrDuration))
     end
 
     local elapsed = CurTime() - ent._akrStartTime
-    local active  = elapsed >= 0 and elapsed < AK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._akrDuration
     if not active then
         if ent._akrWasActive then
             ent._akrWasActive = false
@@ -1713,29 +1865,29 @@ local function GekkoDoAxeKickRBone(ent)
     if not ClaimHips(ent, "RAXEKICK") then return end
     ent._akrWasActive = true
 
-    local t    = elapsed / AK_DURATION
+    local t    = elapsed / ent._akrDuration
     local REST = AK_REST
 
     local lhip, rhip, spine
     if t < AK_P1_END then
         local env = Smoothstep(t / AK_P1_END)
-        lhip  = LerpAngle(REST, AK_P1_LHIP,  env)
+        lhip  = LerpAngle(REST, ent._akrJitP1L, env)
         rhip  = REST
-        spine = LerpAngle(REST, AK_P1_SPINE, env)
+        spine = LerpAngle(REST, ent._akrJitP1S, env)
     elseif t < AK_P2_END then
-        lhip  = AK_P1_LHIP
+        lhip  = ent._akrJitP1L
         rhip  = REST
-        spine = AK_P1_SPINE
+        spine = ent._akrJitP1S
     elseif t < AK_P3_END then
         local env = Smoothstep(Smoothstep((t - AK_P2_END) / (AK_P3_END - AK_P2_END)))
-        lhip  = LerpAngle(AK_P1_LHIP,  AK_P3_LHIP,  env)
-        rhip  = LerpAngle(REST,        AK_P3_RHIP,  env)
-        spine = LerpAngle(AK_P1_SPINE, AK_P3_SPINE, env)
+        lhip  = LerpAngle(ent._akrJitP1L, ent._akrJitP3L, env)
+        rhip  = LerpAngle(REST,           ent._akrJitP3R, env)
+        spine = LerpAngle(ent._akrJitP1S, ent._akrJitP3S, env)
     else
         local env = Smoothstep((t - AK_P3_END) / (1.0 - AK_P3_END))
-        lhip  = LerpAngle(AK_P3_LHIP,  REST, env)
-        rhip  = LerpAngle(AK_P3_RHIP,  REST, env)
-        spine = LerpAngle(AK_P3_SPINE, REST, env)
+        lhip  = LerpAngle(ent._akrJitP3L, REST, env)
+        rhip  = LerpAngle(ent._akrJitP3R, REST, env)
+        spine = LerpAngle(ent._akrJitP3S, REST, env)
     end
 
     if ent._akrLHipIdx  >= 0 then
@@ -1751,6 +1903,7 @@ end
 
 -- ============================================================
 --  JUMP KICK BONE DRIVER
+--  Jitter: randomised duration; jitter baked into keyframe Angles.
 -- ============================================================
 local function GekkoDoJumpKickBone(ent)
     if ent._jkInited == nil then
@@ -1759,20 +1912,34 @@ local function GekkoDoJumpKickBone(ent)
         ent._jkRHipIdx   = ent:LookupBone(JK_RHIP_BONE) or -1
         ent._jkPedIdx    = ent:LookupBone(JK_PED_BONE)  or -1
         ent._jkStartTime = -9999
+        ent._jkDuration  = JK_DURATION
         ent._jkPulseLast = ent:GetNWInt("GekkoJumpKickPulse", 0)
         ent._jkWasActive = false
+        ent._jkJitP1L   = JK_P1_LHIP
+        ent._jkJitP1R   = JK_P1_RHIP
+        ent._jkJitP2L   = JK_P2_LHIP
+        ent._jkJitP2R   = JK_P2_RHIP
+        ent._jkJitP3L   = JK_P3_LHIP
+        ent._jkJitP3PA  = JK_P3_PED_ANG
     end
 
     local pulse = ent:GetNWInt("GekkoJumpKickPulse", 0)
     if pulse ~= ent._jkPulseLast then
         ent._jkPulseLast = pulse
         ent._jkStartTime = CurTime()
+        ent._jkDuration  = JitterDur(JK_DURATION)
+        ent._jkJitP1L   = JitterAng(JK_P1_LHIP)
+        ent._jkJitP1R   = JitterAng(JK_P1_RHIP)
+        ent._jkJitP2L   = JitterAng(JK_P2_LHIP)
+        ent._jkJitP2R   = JitterAng(JK_P2_RHIP)
+        ent._jkJitP3L   = JitterAng(JK_P3_LHIP)
+        ent._jkJitP3PA  = JitterAng(JK_P3_PED_ANG)
 
-        print(string.format("[GekkoJumpKick] pulse=%d", pulse))
+        print(string.format("[GekkoJumpKick] pulse=%d  dur=%.2f", pulse, ent._jkDuration))
     end
 
     local elapsed = CurTime() - ent._jkStartTime
-    local active  = elapsed >= 0 and elapsed < JK_DURATION
+    local active  = elapsed >= 0 and elapsed < ent._jkDuration
     if not active then
         if ent._jkWasActive then
             ent._jkWasActive = false
@@ -1796,20 +1963,20 @@ local function GekkoDoJumpKickBone(ent)
     if not ClaimHips(ent, "JUMPKICK") then return end
     ent._jkWasActive = true
 
-    local t = elapsed / JK_DURATION
+    local t = elapsed / ent._jkDuration
 
     local lhip, rhip, pedAng, pedPos
 
     if t < JK_P1_END then
         local env = Smoothstep(t / JK_P1_END)
-        lhip   = LerpAngle(JK_REST,      JK_P1_LHIP,    env)
-        rhip   = LerpAngle(JK_REST,      JK_P1_RHIP,    env)
+        lhip   = LerpAngle(JK_REST,         ent._jkJitP1L,   env)
+        rhip   = LerpAngle(JK_REST,         ent._jkJitP1R,   env)
         pedAng = JK_REST
         pedPos = JK_REST_POS
     elseif t < JK_P2_END then
         local env = Smoothstep((t - JK_P1_END) / (JK_P2_END - JK_P1_END))
-        lhip   = LerpAngle(JK_P1_LHIP, JK_P2_LHIP,    env)
-        rhip   = JK_P2_RHIP
+        lhip   = LerpAngle(ent._jkJitP1L, ent._jkJitP2L,    env)
+        rhip   = ent._jkJitP2R
 
         pedAng = JK_REST
         pedPos = Vector(
@@ -1819,9 +1986,9 @@ local function GekkoDoJumpKickBone(ent)
         )
     elseif t < JK_P3_END then
         local env = Smoothstep((t - JK_P2_END) / (JK_P3_END - JK_P2_END))
-        lhip   = LerpAngle(JK_P2_LHIP, JK_P3_LHIP,    env)
-        rhip   = LerpAngle(JK_P2_RHIP, JK_REST,        env)
-        pedAng = LerpAngle(JK_REST,     JK_P3_PED_ANG,  env)
+        lhip   = LerpAngle(ent._jkJitP2L, ent._jkJitP3L,    env)
+        rhip   = LerpAngle(ent._jkJitP2R, JK_REST,          env)
+        pedAng = LerpAngle(JK_REST,        ent._jkJitP3PA,   env)
         pedPos = Vector(
             Lerp(env, JK_P2_PED_POS.x, 0),
             0,
@@ -1829,9 +1996,9 @@ local function GekkoDoJumpKickBone(ent)
         )
     else
         local env = Smoothstep((t - JK_P3_END) / (1.0 - JK_P3_END))
-        lhip   = LerpAngle(JK_P3_LHIP,    JK_REST,     env)
+        lhip   = LerpAngle(ent._jkJitP3L,  JK_REST,  env)
         rhip   = JK_REST
-        pedAng = LerpAngle(JK_P3_PED_ANG, JK_REST,     env)
+        pedAng = LerpAngle(ent._jkJitP3PA, JK_REST,  env)
         pedPos = JK_REST_POS
     end
 
@@ -1858,7 +2025,7 @@ end
 --  ENT:Think  (client)
 -- ============================================================
 function ENT:Think()
-       if self:GetNWBool("GekkoLegsDisabled", false) then
+    if self:GetNWBool("GekkoLegsDisabled", false) then
         GekkoApplyGroundedPose(self)
         GekkoDoBloodSplat(self)
         GekkoDoMGFX(self)
@@ -1887,5 +2054,4 @@ function ENT:Think()
     GekkoDoJumpDust(self)
     GekkoDoLandDust(self)
     GekkoDoFK360LandDust(self)
-    
 end
