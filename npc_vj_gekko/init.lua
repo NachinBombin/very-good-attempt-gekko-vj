@@ -43,7 +43,7 @@ local MG_SPREAD_MAX = 2.0
 local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
-local MG_SND_LEVEL       = 85
+local MG_SND_LEVEL       = 95
 
 -- Common rocket / salvo launch sounds
 local ROCKET_SND_FIRE = {
@@ -51,7 +51,7 @@ local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_02.wav",
     "gekko/wp0040_se_gun_fire_03.wav",
 }
-local ROCKET_SND_LEVEL = 85
+local ROCKET_SND_LEVEL = 95
 
 -- Top-attack / track missile launch sounds
 local TOPMISSILE_SND_FIRE = {
@@ -59,7 +59,7 @@ local TOPMISSILE_SND_FIRE = {
     "gekko/wp0302_se_missile_fire_1.wav",
     "gekko/wp0302_se_missile_pass_2.wav",
 }
-local TOPMISSILE_SND_LEVEL = 85
+local TOPMISSILE_SND_LEVEL = 95
 
 local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
@@ -113,15 +113,15 @@ local KORNET_SND_SHOTS  = {
     "kornet/shot4.wav",
 }
 local KORNET_SND_LAUNCHES = { "kornet/launch1.wav", "kornet/launch2.wav" }
-local KORNET_SND_LEVEL    = 85
+local KORNET_SND_LEVEL    = 95
 
 local TOPMISSILE_LAUNCH_Z   = 300
 local MISSILE_MIN_DIST      = 1200
 local NIKITA_MIN_DIST       = 800
 local MISSILE_SOUND_WARN    = "buttons/button17.wav"
 local MISSILE_SPAWN_FORWARD = 600
-local NIKITA_SPAWN_FORWARD  = 800
-local NIKITA_SPAWN_Z        = 200
+local NIKITA_SPAWN_FORWARD  = 100
+local NIKITA_SPAWN_Z        = 400
 
 local JUMP_STATE_NAMES       = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 local HEAD_Z_FRACTION        = 0.65
