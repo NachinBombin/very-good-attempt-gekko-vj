@@ -19,6 +19,7 @@ if SERVER then
     util.AddNetworkString("GekkoRAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
     util.AddNetworkString("GekkoLKickPulse")
+    util.AddNetworkString("GekkoFL360BPulse")
 end
 
 -- ============================================================
@@ -86,6 +87,22 @@ local ATTACKS = {
         dmg = 30, impulse = 10000,
 
         land_radius = 160, land_dmg_max = 45, land_dmg_min = 5, land_impulse = 13000,
+    },
+
+    -- FL360B: 5-phase FK360 with preparation and landing.
+    -- Phase 1 Prep   : 0.00 → 0.35s   (pedestal + pistonR pose)
+    -- Phase 2 Elong  : 0.35 → 0.65s   (pelvis rise to +43 Z)
+    -- Phase 3 Spin   : 0.65 → 1.55s   (identical FK360 spin, 0.9s, damage here)
+    -- Phase 4 Land   : 1.55 → 1.95s   (pelvis settle to +22 Z)
+    -- Phase 5 Restore: 1.95 → 2.45s   (smooth return to rest)
+    FL360B = {
+        w = 20, nwkey = "GekkoFL360BPulse",
+        dmg = 30, impulse = 10000,
+
+        land_radius = 160, land_dmg_max = 45, land_dmg_min = 5, land_impulse = 13000,
+
+        -- absolute time offset at which the spin begins (prep + elong duration)
+        spin_offset = 0.65,
     },
 
     HEADBUTT = {
@@ -215,6 +232,67 @@ local function FireFK360(self, closestTarget, fwd, dot)
 
         local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
         selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
+    end)
+end
+
+-- ============================================================
+--  FL360B  -  5-phase FK360 variant
+--
+--  Damage schedule (identical relative timing to original FK360):
+--    Hit 1  : immediately when spin begins  (spin_offset = 0.65s absolute)
+--    Hit 2  : fk360Dur (0.9s) after spin begins = 1.55s absolute
+--             (land blast + dust, same as original FK360 land timer)
+-- ============================================================
+local function FireFL360B(self, closestTarget, fwd, dot)
+    local A        = ATTACKS.FL360B
+    local fk360Dur = self.FK360_DURATION or 0.9
+    local spinOff  = A.spin_offset   -- 0.65s : when spin starts
+
+    -- Total lock = prep(0.35) + elong(0.30) + spin(0.9) + land(0.40) + restore(0.50) + margin
+    local totalDur = spinOff + fk360Dur + 0.40 + 0.50
+    ClaimKickLock(self, totalDur + 0.2)
+
+    -- Signal the client bone driver to start
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+
+    print(string.format("[GekkoCrush] FL360B START  target=%s  dot=%.2f  pulse=%d",
+        closestTarget:GetClass(), dot, next))
+
+    local selfRef = self
+
+    -- Hit 1: fires exactly when the spin begins
+    timer.Simple(spinOff, function()
+        if not IsValid(selfRef) then return end
+
+        local fwdRef  = selfRef:GetForward()
+        local impulse = (fwdRef + Vector(0, 0, 0.4)):GetNormalized() * A.impulse
+        CrushDamageEnt(selfRef, closestTarget, A.dmg, impulse)
+
+        print(string.format("[GekkoCrush] FL360B HIT1  target=%s  pulse=%d",
+            closestTarget:GetClass(), next))
+    end)
+
+    -- Hit 2 (land blast): fires at end of spin, same as original FK360 land timer
+    timer.Simple(spinOff + fk360Dur, function()
+        if not IsValid(selfRef) then return end
+
+        local origin = selfRef:GetPos() + Vector(0, 0, 40)
+        for _, ent in ipairs(ents.FindInSphere(origin, A.land_radius)) do
+            if ent == selfRef then continue end
+            if not ent:IsNPC() and not ent:IsPlayer() then continue end
+
+            local entDist = ent:GetPos():Distance(origin)
+            local dmg     = BlastDamage(A.land_dmg_max, A.land_dmg_min, entDist, A.land_radius)
+            local dir     = (ent:GetPos() - origin):GetNormalized()
+
+            CrushDamageEnt(selfRef, ent, dmg, (dir + Vector(0,0,0.35)):GetNormalized() * A.land_impulse)
+        end
+
+        local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
+        selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
+
+        print(string.format("[GekkoCrush] FL360B HIT2/LAND  pulse=%d", next))
     end)
 end
 
@@ -638,6 +716,7 @@ function ENT:GeckoCrush_Think()
     else
         local pool = {
             { name = "FK360",          w = ATTACKS.FK360.w          },
+            { name = "FL360B",         w = ATTACKS.FL360B.w         },
             { name = "HEADBUTT",       w = ATTACKS.HEADBUTT.w       },
             { name = "SPINKICK",       w = ATTACKS.SPINKICK.w       },
             { name = "FOOTBALLKICK",   w = ATTACKS.FOOTBALLKICK.w   },
@@ -675,6 +754,7 @@ function ENT:GeckoCrush_Think()
 
     -- dispatch
     if     attack == "FK360"           then FireFK360(self, closestTarget, fwd, dot)
+    elseif attack == "FL360B"          then FireFL360B(self, closestTarget, fwd, dot)
     elseif attack == "HEADBUTT"        then FireHeadbutt(self, closestTarget, fwd)
     elseif attack == "KICK"            then FireKick(self, kickTarget, fwd)
     elseif attack == "LKICK"           then FireLKick(self, kickTarget, fwd)
