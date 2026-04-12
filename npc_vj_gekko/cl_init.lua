@@ -249,6 +249,45 @@ JK_RHIP_BONE  = "b_r_hippiston1"
 JK_PED_BONE   = "b_pedestal"
 
 -- ============================================================
+--  FL360B ANIMATION  (5-phase FK360 variant)
+--
+--  Phase 1 PREP    : 0.00 → 0.35s
+--    b_pedestal    Angle(X, Y, 12)   — slight forward lean / wind-up
+--    b_r_hippiston1 Angle(15, -8, Z) — right hip cocks back
+--
+--  Phase 2 ELONGATION : 0.35 → 0.65s
+--    b_pelvis pos  Vector(0, 0, 43)  — body rises up
+--
+--  Phase 3 SPIN    : 0.65 → 1.55s  (identical to FK360, 0.9s)
+--    b_pelvis yaw spin (full FK360 driver replayed on b_pelvis)
+--
+--  Phase 4 LAND    : 1.55 → 1.95s
+--    b_pelvis pos  Vector(0, 0, 22)  — body settles lower
+--
+--  Phase 5 RESTORE : 1.95 → 2.45s
+--    everything smooth-returns to Angle/Vector zero
+-- ============================================================
+FL360B_PREP_END    = 0.35   -- absolute seconds
+FL360B_ELONG_END   = 0.65
+FL360B_SPIN_DUR    = 0.9    -- duration of spin sub-phase (matches FK360_DURATION)
+FL360B_SPIN_END    = FL360B_ELONG_END + FL360B_SPIN_DUR   -- 1.55
+FL360B_LAND_END    = FL360B_SPIN_END  + 0.40              -- 1.95
+FL360B_TOTAL       = FL360B_LAND_END  + 0.50              -- 2.45
+
+FL360B_PREP_PED_ROLL   = 12    -- b_pedestal angle Z component during prep
+FL360B_PREP_RHIP_P     = 15    -- b_r_hippiston1 pitch during prep
+FL360B_PREP_RHIP_Y     = -8    -- b_r_hippiston1 yaw during prep
+FL360B_ELONG_PELVIS_Z  = 43    -- b_pelvis position Z during elongation
+FL360B_LAND_PELVIS_Z   = 22    -- b_pelvis position Z during land
+
+FL360B_SPIN_RAMP       = 0.15  -- same ramp fraction as FK360
+FL360B_YAW_TOTAL       = 360.0 -- one full revolution during spin phase
+
+FL360B_PED_BONE  = "b_pedestal"
+FL360B_PEL_BONE  = "b_pelvis"
+FL360B_RHIP_BONE = "b_r_hippiston1"
+
+-- ============================================================
 --  SMOOTHSTEP
 -- ============================================================
 local function Smoothstep(t)
@@ -1848,6 +1887,191 @@ local function GekkoDoJumpKickBone(ent)
 end
 
 -- ============================================================
+--  FL360B BONE DRIVER  (5-phase FK360 variant)
+--
+--  Absolute timeline (seconds):
+--    0.00 → 0.35  Phase 1 PREP      : pedestal roll 12, r_hippiston1 pitch/yaw
+--    0.35 → 0.65  Phase 2 ELONGATION: pelvis rises to Z +43
+--    0.65 → 1.55  Phase 3 SPIN      : FK360 yaw on b_pelvis (0.9s, unchanged)
+--    1.55 → 1.95  Phase 4 LAND      : pelvis settles to Z +22
+--    1.95 → 2.45  Phase 5 RESTORE   : smooth return to rest
+-- ============================================================
+local function GekkoDoFL360BBone(ent)
+    if ent._fl360bInited == nil then
+        ent._fl360bInited    = true
+        ent._fl360bPedIdx    = ent:LookupBone(FL360B_PED_BONE)  or -1
+        ent._fl360bPelIdx    = ent:LookupBone(FL360B_PEL_BONE)  or -1
+        ent._fl360bRHipIdx   = ent:LookupBone(FL360B_RHIP_BONE) or -1
+        ent._fl360bStartTime = -9999
+        ent._fl360bPulseLast = ent:GetNWInt("GekkoFL360BPulse", 0)
+        ent._fl360bSpinYaw   = 0
+        ent._fl360bWasActive = false
+        ent._fl360bLastT     = CurTime()
+    end
+
+    local pulse = ent:GetNWInt("GekkoFL360BPulse", 0)
+    if pulse ~= ent._fl360bPulseLast then
+        ent._fl360bPulseLast = pulse
+        ent._fl360bStartTime = CurTime()
+        ent._fl360bSpinYaw   = 0
+        ent._fl360bLastT     = CurTime()
+
+        print(string.format("[GekkoFL360B] pulse=%d", pulse))
+    end
+
+    local pedIdx  = ent._fl360bPedIdx
+    local pelIdx  = ent._fl360bPelIdx
+    local rhipIdx = ent._fl360bRHipIdx
+
+    local elapsed = CurTime() - ent._fl360bStartTime
+    local active  = elapsed >= 0 and elapsed < FL360B_TOTAL
+
+    if not active then
+        if ent._fl360bWasActive then
+            ent._fl360bWasActive = false
+            ent._fl360bSpinYaw   = 0
+
+            ReleaseHips(ent, "FL360B")
+
+            if pedIdx  >= 0 then
+                ent:ManipulateBoneAngles(pedIdx,   Angle(0, 0, 0),    false)
+            end
+            if pelIdx  >= 0 then
+                ent:ManipulateBoneAngles(pelIdx,   Angle(0, 0, 0),    false)
+                ent:ManipulateBonePosition(pelIdx, Vector(0, 0, 0),   false)
+            end
+            if rhipIdx >= 0 then
+                ent:ManipulateBoneAngles(rhipIdx,  Angle(0, 0, 0),    false)
+            end
+        end
+        return
+    end
+
+    if not ClaimHips(ent, "FL360B") then return end
+    ent._fl360bWasActive = true
+
+    local dt = math.Clamp(CurTime() - ent._fl360bLastT, 0, 0.05)
+    ent._fl360bLastT = CurTime()
+
+    local REST = Angle(0, 0, 0)
+
+    -- -------------------------------------------------------
+    --  Phase 1 : PREP  (0 → FL360B_PREP_END)
+    -- -------------------------------------------------------
+    if elapsed < FL360B_PREP_END then
+        local env = Smoothstep(elapsed / FL360B_PREP_END)
+
+        if pedIdx >= 0 then
+            ent:ManipulateBoneAngles(pedIdx,
+                Angle(0, 0, FL360B_PREP_PED_ROLL * env), false)
+        end
+        if rhipIdx >= 0 then
+            ent:ManipulateBoneAngles(rhipIdx,
+                Angle(FL360B_PREP_RHIP_P * env, FL360B_PREP_RHIP_Y * env, 0), false)
+        end
+        if pelIdx >= 0 then
+            ent:ManipulateBoneAngles(pelIdx,   REST,           false)
+            ent:ManipulateBonePosition(pelIdx, Vector(0,0,0),  false)
+        end
+
+    -- -------------------------------------------------------
+    --  Phase 2 : ELONGATION  (FL360B_PREP_END → FL360B_ELONG_END)
+    -- -------------------------------------------------------
+    elseif elapsed < FL360B_ELONG_END then
+        local localT = (elapsed - FL360B_PREP_END) / (FL360B_ELONG_END - FL360B_PREP_END)
+        local env    = Smoothstep(localT)
+
+        -- hold prep pose on pedestal/rhip while rising
+        if pedIdx >= 0 then
+            ent:ManipulateBoneAngles(pedIdx,
+                Angle(0, 0, FL360B_PREP_PED_ROLL), false)
+        end
+        if rhipIdx >= 0 then
+            ent:ManipulateBoneAngles(rhipIdx,
+                Angle(FL360B_PREP_RHIP_P, FL360B_PREP_RHIP_Y, 0), false)
+        end
+        if pelIdx >= 0 then
+            ent:ManipulateBoneAngles(pelIdx, REST, false)
+            ent:ManipulateBonePosition(pelIdx,
+                Vector(0, 0, FL360B_ELONG_PELVIS_Z * env), false)
+        end
+
+    -- -------------------------------------------------------
+    --  Phase 3 : SPIN  (FL360B_ELONG_END → FL360B_SPIN_END)
+    --  Identical FK360 yaw logic applied to b_pelvis.
+    --  Pedestal/rhip return to rest during this phase.
+    -- -------------------------------------------------------
+    elseif elapsed < FL360B_SPIN_END then
+        local spinElapsed = elapsed - FL360B_ELONG_END   -- 0 → FL360B_SPIN_DUR
+        local spinT       = spinElapsed / FL360B_SPIN_DUR
+
+        -- ramp envelope (same shape as FK360)
+        local peakSpeed = FL360B_YAW_TOTAL / ((1.0 - FL360B_SPIN_RAMP) * FL360B_SPIN_DUR)
+        local env
+        if spinT < FL360B_SPIN_RAMP then
+            env = Smoothstep(spinT / FL360B_SPIN_RAMP)
+        elseif spinT > (1.0 - FL360B_SPIN_RAMP) then
+            env = Smoothstep((1.0 - spinT) / FL360B_SPIN_RAMP)
+        else
+            env = 1.0
+        end
+
+        ent._fl360bSpinYaw = ent._fl360bSpinYaw + peakSpeed * env * dt
+
+        if pelIdx >= 0 then
+            -- keep pelvis elevated at ELONG height during spin
+            ent:ManipulateBoneAngles(pelIdx,
+                Angle(0, ent._fl360bSpinYaw, 0), false)
+            ent:ManipulateBonePosition(pelIdx,
+                Vector(0, 0, FL360B_ELONG_PELVIS_Z), false)
+        end
+
+        -- smoothly return pedestal and rhip to rest during spin phase
+        local restoreEnv = Smoothstep(math.min(spinT / 0.3, 1.0))
+        if pedIdx >= 0 then
+            ent:ManipulateBoneAngles(pedIdx,
+                Angle(0, 0, FL360B_PREP_PED_ROLL * (1 - restoreEnv)), false)
+        end
+        if rhipIdx >= 0 then
+            ent:ManipulateBoneAngles(rhipIdx,
+                Angle(FL360B_PREP_RHIP_P * (1 - restoreEnv),
+                      FL360B_PREP_RHIP_Y * (1 - restoreEnv), 0), false)
+        end
+
+    -- -------------------------------------------------------
+    --  Phase 4 : LAND  (FL360B_SPIN_END → FL360B_LAND_END)
+    -- -------------------------------------------------------
+    elseif elapsed < FL360B_LAND_END then
+        local localT = (elapsed - FL360B_SPIN_END) / (FL360B_LAND_END - FL360B_SPIN_END)
+        local env    = Smoothstep(localT)
+
+        if pelIdx >= 0 then
+            -- pelvis descends from ELONG_Z (+43) to LAND_Z (+22)
+            local pelZ = Lerp(env, FL360B_ELONG_PELVIS_Z, FL360B_LAND_PELVIS_Z)
+            ent:ManipulateBoneAngles(pelIdx,   REST,               false)
+            ent:ManipulateBonePosition(pelIdx, Vector(0, 0, pelZ), false)
+        end
+        if pedIdx  >= 0 then ent:ManipulateBoneAngles(pedIdx,  REST, false) end
+        if rhipIdx >= 0 then ent:ManipulateBoneAngles(rhipIdx, REST, false) end
+
+    -- -------------------------------------------------------
+    --  Phase 5 : RESTORE  (FL360B_LAND_END → FL360B_TOTAL)
+    -- -------------------------------------------------------
+    else
+        local localT = (elapsed - FL360B_LAND_END) / (FL360B_TOTAL - FL360B_LAND_END)
+        local env    = Smoothstep(localT)
+
+        if pelIdx >= 0 then
+            local pelZ = Lerp(env, FL360B_LAND_PELVIS_Z, 0)
+            ent:ManipulateBoneAngles(pelIdx,   REST,               false)
+            ent:ManipulateBonePosition(pelIdx, Vector(0, 0, pelZ), false)
+        end
+        if pedIdx  >= 0 then ent:ManipulateBoneAngles(pedIdx,  REST, false) end
+        if rhipIdx >= 0 then ent:ManipulateBoneAngles(rhipIdx, REST, false) end
+    end
+end
+
+-- ============================================================
 --  ENT:Initialize
 -- ============================================================
 function ENT:Initialize()
@@ -1858,7 +2082,7 @@ end
 --  ENT:Think  (client)
 -- ============================================================
 function ENT:Think()
-       if self:GetNWBool("GekkoLegsDisabled", false) then
+    if self:GetNWBool("GekkoLegsDisabled", false) then
         GekkoApplyGroundedPose(self)
         GekkoDoBloodSplat(self)
         GekkoDoMGFX(self)
@@ -1880,6 +2104,7 @@ function ENT:Think()
     GekkoDoAxeKickBone(self)
     GekkoDoAxeKickRBone(self)
     GekkoDoJumpKickBone(self)
+    GekkoDoFL360BBone(self)
 
     GekkoUpdateHead(self, dt)
     GekkoSyncFootsteps(self)
@@ -1887,5 +2112,4 @@ function ENT:Think()
     GekkoDoJumpDust(self)
     GekkoDoLandDust(self)
     GekkoDoFK360LandDust(self)
-    
 end
