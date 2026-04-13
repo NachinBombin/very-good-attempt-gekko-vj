@@ -14,6 +14,7 @@ if SERVER then
     util.AddNetworkString("GekkoRAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
     util.AddNetworkString("GekkoLKickPulse")
+    util.AddNetworkString("GekkoFrontKick360BPulse")
 end
 
 local function CrushDamageEnt(attacker, target, dmg, impulseVec)
@@ -77,6 +78,11 @@ local ATTACKS = {
         w = 20, nwkey = "GekkoFrontKick360BPulse",
         dmg = 30, impulse = 10000,
         land_radius = 160, land_dmg_max = 45, land_dmg_min = 5, land_impulse = 13000,
+        -- Phase durations matching cl_init constants
+        prep_dur    = 0.30,
+        elong_dur   = 0.20,
+        land_dur    = 0.25,
+        restore_dur = 0.35,
     },
 
     HEADBUTT = {
@@ -194,23 +200,68 @@ local function FireFK360(self, closestTarget, fwd, dot)
     end)
 end
 
+-- ============================================================
+--  FK360B  -  5-phase extended spinning kick
+--
+--  Timeline (all durations match cl_init FK360B constants):
+--    [0.00]              trigger / pulse increment
+--    [0.00 - 0.30]       PREP    (pedestal tilt + hip prep, no damage)
+--    [0.30 - 0.50]       ELONGATION (pelvis rises to Z=43, no damage)
+--    [0.50 - 0.50+spin]  SPIN    ** damage here **
+--      pulse 1 fires at spinStart (t=0.50)
+--      pulse 2 fires at spinStart + spinDur*0.50
+--    [spinEnd]           LAND    (pelvis drops to Z=22, land blast)
+--    [spinEnd+0.25]      RESTORE (smooth return, no damage)
+--
+--  Total lock = prep + elong + spin + land + restore + 0.2 buffer
+-- ============================================================
 local function FireFK360B(self, closestTarget, fwd, dot)
-    local A         = ATTACKS.FK360B
-    local fk360Dur  = self.FK360_DURATION or 0.9
+    local A        = ATTACKS.FK360B
+    local spinDur  = self.FK360_DURATION or 0.9
+    local spinStart = A.prep_dur + A.elong_dur          -- 0.50 s
+    local spinEnd   = spinStart + spinDur
+    local totalDur  = spinEnd + A.land_dur + A.restore_dur
 
-    ClaimKickLock(self, fk360Dur + 0.3)
+    -- Lock the NPC for the full animation + small buffer
+    ClaimKickLock(self, totalDur + 0.2)
 
-    local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * A.impulse
-    CrushDamageEnt(self, closestTarget, A.dmg, impulse)
-
+    -- Increment pulse so cl_init driver triggers the visual
     local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
     self:SetNWInt(A.nwkey, next)
 
-    print(string.format("[GekkoCrush] FK360B HIT1  target=%s  dot=%.2f  pulse=%d",
-        closestTarget:GetClass(), dot, next))
+    print(string.format(
+        "[GekkoCrush] FK360B START  target=%s  dot=%.2f  pulse=%d  spinStart=%.2f  total=%.2f",
+        closestTarget:GetClass(), dot, next, spinStart, totalDur))
 
-    local selfRef = self
-    timer.Simple(fk360Dur, function()
+    local selfRef  = self
+    local targetRef = closestTarget
+
+    -- ---- Damage pulse 1: start of spin ----
+    timer.Simple(spinStart, function()
+        if not IsValid(selfRef) then return end
+        if not IsValid(targetRef) then return end
+
+        local curFwd = selfRef:GetForward()
+        local impulse = (curFwd + Vector(0, 0, 0.4)):GetNormalized() * A.impulse
+        CrushDamageEnt(selfRef, targetRef, A.dmg, impulse)
+
+        print(string.format("[GekkoCrush] FK360B HIT1  t=%.2f", spinStart))
+    end)
+
+    -- ---- Damage pulse 2: midpoint of spin ----
+    timer.Simple(spinStart + spinDur * 0.5, function()
+        if not IsValid(selfRef) then return end
+        if not IsValid(targetRef) then return end
+
+        local curFwd = selfRef:GetForward()
+        local impulse = (curFwd + Vector(0, 0, 0.4)):GetNormalized() * A.impulse
+        CrushDamageEnt(selfRef, targetRef, A.dmg, impulse)
+
+        print(string.format("[GekkoCrush] FK360B HIT2  t=%.2f", spinStart + spinDur * 0.5))
+    end)
+
+    -- ---- Land blast: end of spin (same as FK360 land) ----
+    timer.Simple(spinEnd, function()
         if not IsValid(selfRef) then return end
 
         local origin = selfRef:GetPos() + Vector(0, 0, 40)
@@ -222,11 +273,14 @@ local function FireFK360B(self, closestTarget, fwd, dot)
             local dmg     = BlastDamage(A.land_dmg_max, A.land_dmg_min, entDist, A.land_radius)
             local dir     = (ent:GetPos() - origin):GetNormalized()
 
-            CrushDamageEnt(selfRef, ent, dmg, (dir + Vector(0,0,0.35)):GetNormalized() * A.land_impulse)
+            CrushDamageEnt(selfRef, ent, dmg, (dir + Vector(0, 0, 0.35)):GetNormalized() * A.land_impulse)
         end
 
+        -- Trigger land dust effect
         local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
         selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
+
+        print(string.format("[GekkoCrush] FK360B LAND BLAST  t=%.2f", spinEnd))
     end)
 end
 
