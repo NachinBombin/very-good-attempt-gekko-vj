@@ -88,6 +88,16 @@ local ATTACKS = {
         land_radius = 160, land_dmg_max = 45, land_dmg_min = 5, land_impulse = 13000,
     },
 
+    -- FK360B: extended 5-step visual variant of FK360.
+    -- Damage logic and timings are identical to FK360; only
+    -- the client-side animation (cl_init.lua) differs.
+    FK360B = {
+        w = 20, nwkey = "GekkoFrontKick360BPulse",
+        dmg = 30, impulse = 10000,
+
+        land_radius = 160, land_dmg_max = 45, land_dmg_min = 5, land_impulse = 13000,
+    },
+
     HEADBUTT = {
         w = 20, nwkey = "GekkoHeadbuttPulse",
         lock = 0.55, dmg = 20, impulse = 7000,
@@ -195,6 +205,45 @@ local function FireFK360(self, closestTarget, fwd, dot)
     self:SetNWInt(A.nwkey, next)
 
     print(string.format("[GekkoCrush] FK360 HIT1  target=%s  dot=%.2f  pulse=%d",
+        closestTarget:GetClass(), dot, next))
+
+    local selfRef = self
+    timer.Simple(fk360Dur, function()
+        if not IsValid(selfRef) then return end
+
+        local origin = selfRef:GetPos() + Vector(0, 0, 40)
+        for _, ent in ipairs(ents.FindInSphere(origin, A.land_radius)) do
+            if ent == selfRef then continue end
+            if not ent:IsNPC() and not ent:IsPlayer() then continue end
+
+            local entDist = ent:GetPos():Distance(origin)
+            local dmg     = BlastDamage(A.land_dmg_max, A.land_dmg_min, entDist, A.land_radius)
+            local dir     = (ent:GetPos() - origin):GetNormalized()
+
+            CrushDamageEnt(selfRef, ent, dmg, (dir + Vector(0,0,0.35)):GetNormalized() * A.land_impulse)
+        end
+
+        local dustPulse = (selfRef:GetNWInt("GekkoFK360LandDust", 0) % 254) + 1
+        selfRef:SetNWInt("GekkoFK360LandDust", dustPulse)
+    end)
+end
+
+-- FK360B: same damage & timings as FK360, but uses its own
+-- NWInt pulse so the client can run the extended 5-step
+-- animation (FL360B) without affecting the original FK360.
+local function FireFK360B(self, closestTarget, fwd, dot)
+    local A         = ATTACKS.FK360B
+    local fk360Dur  = self.FK360_DURATION or 0.9
+
+    ClaimKickLock(self, fk360Dur + 0.3)
+
+    local impulse = (fwd + Vector(0, 0, 0.4)):GetNormalized() * A.impulse
+    CrushDamageEnt(self, closestTarget, A.dmg, impulse)
+
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+
+    print(string.format("[GekkoCrush] FK360B HIT1  target=%s  dot=%.2f  pulse=%d",
         closestTarget:GetClass(), dot, next))
 
     local selfRef = self
@@ -638,6 +687,7 @@ function ENT:GeckoCrush_Think()
     else
         local pool = {
             { name = "FK360",          w = ATTACKS.FK360.w          },
+            { name = "FK360B",         w = ATTACKS.FK360B.w         },
             { name = "HEADBUTT",       w = ATTACKS.HEADBUTT.w       },
             { name = "SPINKICK",       w = ATTACKS.SPINKICK.w       },
             { name = "FOOTBALLKICK",   w = ATTACKS.FOOTBALLKICK.w   },
@@ -675,6 +725,7 @@ function ENT:GeckoCrush_Think()
 
     -- dispatch
     if     attack == "FK360"           then FireFK360(self, closestTarget, fwd, dot)
+    elseif attack == "FK360B"          then FireFK360B(self, closestTarget, fwd, dot)
     elseif attack == "HEADBUTT"        then FireHeadbutt(self, closestTarget, fwd)
     elseif attack == "KICK"            then FireKick(self, kickTarget, fwd)
     elseif attack == "LKICK"           then FireLKick(self, kickTarget, fwd)
