@@ -112,24 +112,6 @@ FK360_RAMP     = 0.15
 FK360_BONE     = "b_pelvis"
 
 -- ============================================================
---  FK360B EXTENDED ANIMATION
--- ============================================================
-FK360B_PREP_DURATION    = 0.30
-FK360B_ELONG_DURATION   = 0.20
-FK360B_LAND_DURATION    = 0.25
-FK360B_RESTORE_DURATION = 0.35
-
-FK360B_PELVIS_EXTEND_Z  = 43
-FK360B_PELVIS_LAND_Z    = 22
-
-FK360B_PED_BONE   = "b_pedestal"
-FK360B_RHIP_BONE  = "b_r_hippiston1"
-FK360B_PEL_BONE   = FK360_BONE
-
-FK360B_PED_PREP_ANG  = Angle(0,  0,  12)
-FK360B_RHIP_PREP_ANG = Angle(15, -8,  0)
-
--- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
 SK_DURATION = 0.9
@@ -1037,7 +1019,7 @@ local function GekkoDoHeadbuttBone(ent)
 end
 
 -- ============================================================
---  FK360 BONE DRIVER (original)
+--  FK360 BONE DRIVER
 --  Jitter: randomised duration (stored per-trigger on ent).
 --  Angle jitter is not applied here because the animation is a
 --  continuous yaw accumulation — the speed envelope handles it.
@@ -1099,148 +1081,6 @@ local function GekkoDoFK360Bone(ent)
 
     ent._fk360Yaw = ent._fk360Yaw + peakSpeed * env * dt
     ent:ManipulateBoneAngles(boneIdx, Angle(0, ent._fk360Yaw, 0), false)
-end
-
--- ============================================================
---  FK360B BONE DRIVER (extended 5-step variant)
--- ============================================================
-local function GekkoDoFK360BBone(ent)
-    if ent._fk360BInited == nil then
-        ent._fk360BInited     = true
-        ent._fk360BPelIdx     = ent:LookupBone(FK360B_PEL_BONE)   or -1
-        ent._fk360BPedIdx     = ent:LookupBone(FK360B_PED_BONE)   or -1
-        ent._fk360BRHipIdx    = ent:LookupBone(FK360B_RHIP_BONE)  or -1
-        ent._fk360BStartTime  = -9999
-        ent._fk360BSpinDur    = (ent.FK360_DURATION or 0.9)
-        ent._fk360BTotalDur   = FK360B_PREP_DURATION + FK360B_ELONG_DURATION +
-                                ent._fk360BSpinDur + FK360B_LAND_DURATION + FK360B_RESTORE_DURATION
-        ent._fk360BPulseLast  = ent:GetNWInt("GekkoFrontKick360BPulse", 0)
-        ent._fk360BWasActive  = false
-        ent._fk360BYaw        = 0
-        ent._fk360BLastT      = CurTime()
-    end
-
-    local pulse = ent:GetNWInt("GekkoFrontKick360BPulse", 0)
-    if pulse ~= ent._fk360BPulseLast then
-        ent._fk360BPulseLast = pulse
-        ent._fk360BStartTime = CurTime()
-
-        local baseSpin       = ent.FK360_DURATION or 0.9
-        ent._fk360BSpinDur   = JitterDur(baseSpin)
-        ent._fk360BYaw       = 0
-        ent._fk360BLastT     = CurTime()
-        ent._fk360BTotalDur  = FK360B_PREP_DURATION + FK360B_ELONG_DURATION +
-                               ent._fk360BSpinDur + FK360B_LAND_DURATION + FK360B_RESTORE_DURATION
-
-        print(string.format("[GekkoFK360B] pulse=%d  spin=%.2f  total=%.2f",
-            pulse, ent._fk360BSpinDur, ent._fk360BTotalDur))
-    end
-
-    local pelIdx = ent._fk360BPelIdx
-    if not pelIdx or pelIdx < 0 then return end
-
-    local now     = CurTime()
-    local elapsed = now - ent._fk360BStartTime
-    local active  = elapsed >= 0 and elapsed < ent._fk360BTotalDur
-    if not active then
-        if ent._fk360BWasActive then
-            ent._fk360BWasActive = false
-            ent._fk360BYaw = 0
-
-            ent:ManipulateBoneAngles(pelIdx, Angle(0, 0, 0), false)
-            ent:ManipulateBonePosition(pelIdx, Vector(0, 0, 0), false)
-
-            if ent._fk360BPedIdx and ent._fk360BPedIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._fk360BPedIdx, Angle(0, 0, 0), false)
-            end
-            if ent._fk360BRHipIdx and ent._fk360BRHipIdx >= 0 then
-                ent:ManipulateBoneAngles(ent._fk360BRHipIdx, Angle(0, 0, 0), false)
-            end
-        end
-        return
-    end
-
-    ent._fk360BWasActive = true
-
-    local prepEnd  = FK360B_PREP_DURATION
-    local elongEnd = prepEnd + FK360B_ELONG_DURATION
-    local spinEnd  = elongEnd + ent._fk360BSpinDur
-    local landEnd  = spinEnd + FK360B_LAND_DURATION
-
-    local pedAng      = Angle(0, 0, 0)
-    local rhipAng     = Angle(0, 0, 0)
-    local pelPosZ     = 0
-    local displayYaw  = 0
-
-    if elapsed < prepEnd then
-        local env = Smoothstep(elapsed / prepEnd)
-        pedAng  = Angle(
-            FK360B_PED_PREP_ANG.p * env,
-            FK360B_PED_PREP_ANG.y * env,
-            FK360B_PED_PREP_ANG.r * env
-        )
-        rhipAng = Angle(
-            FK360B_RHIP_PREP_ANG.p * env,
-            FK360B_RHIP_PREP_ANG.y * env,
-            FK360B_RHIP_PREP_ANG.r * env
-        )
-        pelPosZ    = 0
-        displayYaw = 0
-
-    elseif elapsed < elongEnd then
-        local env = Smoothstep((elapsed - prepEnd) / FK360B_ELONG_DURATION)
-        pedAng    = FK360B_PED_PREP_ANG
-        rhipAng   = FK360B_RHIP_PREP_ANG
-        pelPosZ   = FK360B_PELVIS_EXTEND_Z * env
-        displayYaw = 0
-
-    elseif elapsed < spinEnd then
-        local spinElapsed = elapsed - elongEnd
-        local t           = spinElapsed / ent._fk360BSpinDur
-        local peakSpeed   = 360.0 / ((1.0 - FK360_RAMP) * ent._fk360BSpinDur)
-
-        local env
-        if t < FK360_RAMP then
-            env = Smoothstep(t / FK360_RAMP)
-        elseif t > (1.0 - FK360_RAMP) then
-            env = Smoothstep((1.0 - t) / FK360_RAMP)
-        else
-            env = 1.0
-        end
-
-        local dt       = math.Clamp(now - (ent._fk360BLastT or now), 0, 0.05)
-        ent._fk360BLastT = now
-        ent._fk360BYaw  = ent._fk360BYaw + peakSpeed * env * dt
-
-        pedAng      = FK360B_PED_PREP_ANG
-        rhipAng     = FK360B_RHIP_PREP_ANG
-        pelPosZ     = FK360B_PELVIS_EXTEND_Z
-        displayYaw  = ent._fk360BYaw
-
-    elseif elapsed < landEnd then
-        local env   = Smoothstep((elapsed - spinEnd) / FK360B_LAND_DURATION)
-        pedAng      = FK360B_PED_PREP_ANG
-        rhipAng     = FK360B_RHIP_PREP_ANG
-        pelPosZ     = Lerp(env, FK360B_PELVIS_EXTEND_Z, FK360B_PELVIS_LAND_Z)
-        displayYaw  = ent._fk360BYaw
-
-    else
-        local env   = Smoothstep((elapsed - landEnd) / FK360B_RESTORE_DURATION)
-        pedAng      = LerpAngle(FK360B_PED_PREP_ANG, Angle(0, 0, 0), env)
-        rhipAng     = LerpAngle(FK360B_RHIP_PREP_ANG, Angle(0, 0, 0), env)
-        pelPosZ     = Lerp(env, FK360B_PELVIS_LAND_Z, 0)
-        displayYaw  = Lerp(env, ent._fk360BYaw, 0)
-    end
-
-    if ent._fk360BPedIdx and ent._fk360BPedIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._fk360BPedIdx, pedAng, false)
-    end
-    if ent._fk360BRHipIdx and ent._fk360BRHipIdx >= 0 then
-        ent:ManipulateBoneAngles(ent._fk360BRHipIdx, rhipAng, false)
-    end
-
-    ent:ManipulateBonePosition(pelIdx, Vector(0, 0, pelPosZ), false)
-    ent:ManipulateBoneAngles(pelIdx, Angle(0, displayYaw, 0), false)
 end
 
 -- ============================================================
@@ -2198,7 +2038,6 @@ function ENT:Think()
     GekkoDoKickLBone(self)
     GekkoDoHeadbuttBone(self)
     GekkoDoFK360Bone(self)
-    GekkoDoFK360BBone(self)
     GekkoDoSpinKickBone(self)
     GekkoDoFootballKickBone(self)
     GekkoDoFootballKickRBone(self)
