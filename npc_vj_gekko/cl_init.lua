@@ -67,7 +67,7 @@ end
 --  JitterAng  : adds ±JITTER_DEG to each axis of a base Angle
 --  JitterDur  : shortens a duration by a random amount (never lengthens)
 -- ============================================================
-JITTER_DEG      = 8.0   -- ± degrees applied per axis
+JITTER_DEG      = 9.9   -- ± degrees applied per axis
 JITTER_DUR_MAX  = 0.4   -- maximum seconds shaved off a duration
 
 local function JitterAng(base)
@@ -101,7 +101,7 @@ HB_DURATION       = 0.7
 HB_PEAK           = 0.45
 HB_SPINE3_ANG_X   = -60
 HB_PEDESTAL_POS_X =  70
-HB_PEDESTAL_POS_Z = -59
+HB_PEDESTAL_POS_Z = -70
 HB_SPINE3_BONE    = "b_spine3"
 HB_PEDESTAL_BONE  = "b_pedestal"
 
@@ -125,9 +125,9 @@ FK360B_PED_BONE      = "b_pedestal"
 FK360B_PISTON_BONE   = "b_r_hippiston1"
 FK360B_PEL_BONE      = "b_pelvis"
 
-FK360B_PREP_DUR      = 0.20
-FK360B_ELONGATE_DUR  = 0.15
-FK360B_LAND_DUR      = 0.20
+FK360B_PREP_DUR      = 0.30
+FK360B_ELONGATE_DUR  = 0.20
+FK360B_LAND_DUR      = 0.30
 FK360B_RESTORE_DUR   = 0.25
 
 FK360B_PEL_Z_ELONGATE = 43
@@ -140,14 +140,14 @@ FK360B_PISTON_YAW     = -8
 -- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
-SK_DURATION = 1.5
+SK_DURATION = 1.3
 SK_P1_END   = 0.250
-SK_P2_END   = 0.570
-SK_P3_END   = 0.710
-SK_P4_END   = 1.200
+SK_P2_END   = 0.490
+SK_P3_END   = 0.580
+SK_P4_END   = 0.700
 
 SK_RAMP       = 0.15
-SK_YAW_TOTAL  = 490
+SK_YAW_TOTAL  = 590
 SK_PED_BONE   = "b_Pedestal"
 SK_PEL_BONE   = "b_pelvis"
 SK_HIP_BONE   = "b_r_hippiston1"
@@ -292,7 +292,7 @@ BITE_RHIP_BONE   = "b_r_hippiston1"
 BITE_PELVIS_BONE = "b_pelvis"
 BITE_SPINE4_BONE = "b_spine3"   -- b_spine3: established lean bone, NOT the head-tracker
 BITE_PED_BONE    = "b_pedestal"
-BITE_PED_Z       = -70          -- crouch depth in local units
+BITE_PED_Z       = -65          -- crouch depth in local units
 BITE_PED_RAMP    = 0.20         -- fraction of duration used to ramp in / out
 
 -- ============================================================
@@ -332,6 +332,80 @@ TK_P4_RHIP  = Angle(-105,  70, -46)
 
 TK_LHIP_BONE = "b_l_hippiston1"
 TK_RHIP_BONE = "b_r_hippiston1"
+
+-- ============================================================
+--  SPINNING CAPOEIRA ANIMATION  (360-damage spin-kick variant)
+--  1.8 s sequence, 7 keyframes + smooth return to REST.
+--
+--  Pelvis drives BOTH angles AND position Z from steps 4–7.
+--  Unspecified X/Z axes in step 1 and pelvis Z angle in steps
+--  1–6 are held at 0.
+--
+--  Phase timeline (raw seconds / SPC_DURATION):
+--    P1  0.18  legs get together
+--    P2  0.36  legs continue
+--    P3  0.56  end of preparatory spin
+--    P4  0.76  leg extension
+--    P5  0.96  FULL ATTACK
+--    P6  1.15  attack ends
+--    P7  1.40  recoil and decelerate
+--    ret 1.40→1.80  smooth return to REST
+-- ============================================================
+SPC_DURATION = 1.5
+
+SPC_P1_END   = 0.10 / SPC_DURATION
+SPC_P2_END   = 0.26 / SPC_DURATION
+SPC_P3_END   = 0.36 / SPC_DURATION
+SPC_P4_END   = 0.56 / SPC_DURATION
+SPC_P5_END   = 0.69 / SPC_DURATION   -- FULL ATTACK
+SPC_P6_END   = 1.40 / SPC_DURATION
+SPC_P7_END   = 5.10 / SPC_DURATION
+
+-- step 1 — legs get together
+SPC_P1_LHIP   = Angle(  0,  -6,   0)
+SPC_P1_RHIP   = Angle( -1, -29, -22)
+SPC_P1_PELVIS = Angle(  8,  19,   0)
+SPC_P1_PELZ   =  0
+
+-- step 2 — legs continue
+SPC_P2_LHIP   = Angle( 49, -39, -35)
+SPC_P2_RHIP   = Angle( -8, -22, -29)
+SPC_P2_PELVIS = Angle( 20,   5,   0)
+SPC_P2_PELZ   =  0
+
+-- step 3 — end of preparatory spin
+SPC_P3_LHIP   = Angle( 43, -29,  -1)
+SPC_P3_RHIP   = Angle(-43, -22, -22)
+SPC_P3_PELVIS = Angle( 30,   5,   0)
+SPC_P3_PELZ   =  0
+
+-- step 4 — leg extension
+SPC_P4_LHIP   = Angle( 77, -57, -36)
+SPC_P4_RHIP   = Angle(-81, -22, -22)
+SPC_P4_PELVIS = Angle( 34,   5,   0)
+SPC_P4_PELZ   = -45
+
+-- step 5 — FULL ATTACK
+SPC_P5_LHIP   = Angle( 77, -57, -53)
+SPC_P5_RHIP   = Angle(-81, -19, -22)
+SPC_P5_PELVIS = Angle(199,   5,   0)
+SPC_P5_PELZ   = -70
+
+-- step 6 — attack ends
+SPC_P6_LHIP   = Angle( 29, -12, -12)
+SPC_P6_RHIP   = Angle(-88,  -5, -22)
+SPC_P6_PELVIS = Angle(380,   5,   0)
+SPC_P6_PELZ   = -34
+
+-- step 7 — recoil and decelerate
+SPC_P7_LHIP   = Angle( 30, -12, -19)
+SPC_P7_RHIP   = Angle( -1, -12, -12)
+SPC_P7_PELVIS = Angle(430, -15,  22)
+SPC_P7_PELZ   = -28
+
+SPC_LHIP_BONE   = "b_l_hippiston1"
+SPC_RHIP_BONE   = "b_r_hippiston1"
+SPC_PELVIS_BONE = "b_pelvis"
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
@@ -2177,6 +2251,178 @@ local function GekkoDoTorqueKickBone(ent)
 end
 
 -- ============================================================
+--  SPINNING CAPOEIRA BONE DRIVER
+--  Drives both hip pistons AND pelvis (angles + position Z)
+--  across 8 phases (7 keyframes + return).
+--  Pelvis position Z starts accumulating at step 4 and is
+--  zeroed cleanly in the inactive reset.
+--  ClaimHips("SPINNINGCAPOEIRA") makes it mutually exclusive
+--  with every other hip/pelvis driver.
+--  Jitter: JitterAng on all angle keyframes; scalar jitter on
+--  all pelvis Z values.
+-- ============================================================
+local function GekkoDoSpinningCapoeiraBone(ent)
+    if ent._spcInited == nil then
+        ent._spcInited    = true
+        ent._spcLHipIdx   = ent:LookupBone(SPC_LHIP_BONE)   or -1
+        ent._spcRHipIdx   = ent:LookupBone(SPC_RHIP_BONE)   or -1
+        ent._spcPelIdx    = ent:LookupBone(SPC_PELVIS_BONE)  or -1
+        ent._spcStartTime = -9999
+        ent._spcDuration  = SPC_DURATION
+        ent._spcPulseLast = ent:GetNWInt("GekkoSpinningCapoeiraPulse", 0)
+        ent._spcWasActive = false
+        -- jitter cache (initialised to base values)
+        ent._spcJitP1L  = SPC_P1_LHIP  ;  ent._spcJitP1R  = SPC_P1_RHIP
+        ent._spcJitP1Pv = SPC_P1_PELVIS;  ent._spcJitP1Pz = SPC_P1_PELZ
+        ent._spcJitP2L  = SPC_P2_LHIP  ;  ent._spcJitP2R  = SPC_P2_RHIP
+        ent._spcJitP2Pv = SPC_P2_PELVIS;  ent._spcJitP2Pz = SPC_P2_PELZ
+        ent._spcJitP3L  = SPC_P3_LHIP  ;  ent._spcJitP3R  = SPC_P3_RHIP
+        ent._spcJitP3Pv = SPC_P3_PELVIS;  ent._spcJitP3Pz = SPC_P3_PELZ
+        ent._spcJitP4L  = SPC_P4_LHIP  ;  ent._spcJitP4R  = SPC_P4_RHIP
+        ent._spcJitP4Pv = SPC_P4_PELVIS;  ent._spcJitP4Pz = SPC_P4_PELZ
+        ent._spcJitP5L  = SPC_P5_LHIP  ;  ent._spcJitP5R  = SPC_P5_RHIP
+        ent._spcJitP5Pv = SPC_P5_PELVIS;  ent._spcJitP5Pz = SPC_P5_PELZ
+        ent._spcJitP6L  = SPC_P6_LHIP  ;  ent._spcJitP6R  = SPC_P6_RHIP
+        ent._spcJitP6Pv = SPC_P6_PELVIS;  ent._spcJitP6Pz = SPC_P6_PELZ
+        ent._spcJitP7L  = SPC_P7_LHIP  ;  ent._spcJitP7R  = SPC_P7_RHIP
+        ent._spcJitP7Pv = SPC_P7_PELVIS;  ent._spcJitP7Pz = SPC_P7_PELZ
+    end
+
+    local pulse = ent:GetNWInt("GekkoSpinningCapoeiraPulse", 0)
+    if pulse ~= ent._spcPulseLast then
+        ent._spcPulseLast = pulse
+        ent._spcStartTime = CurTime()
+        ent._spcDuration  = JitterDur(SPC_DURATION)
+
+        local function jf() return (math.random() - 0.5) * 2 * JITTER_DEG end
+
+        ent._spcJitP1L  = JitterAng(SPC_P1_LHIP)  ;  ent._spcJitP1R  = JitterAng(SPC_P1_RHIP)
+        ent._spcJitP1Pv = JitterAng(SPC_P1_PELVIS) ;  ent._spcJitP1Pz = SPC_P1_PELZ + jf()
+        ent._spcJitP2L  = JitterAng(SPC_P2_LHIP)  ;  ent._spcJitP2R  = JitterAng(SPC_P2_RHIP)
+        ent._spcJitP2Pv = JitterAng(SPC_P2_PELVIS) ;  ent._spcJitP2Pz = SPC_P2_PELZ + jf()
+        ent._spcJitP3L  = JitterAng(SPC_P3_LHIP)  ;  ent._spcJitP3R  = JitterAng(SPC_P3_RHIP)
+        ent._spcJitP3Pv = JitterAng(SPC_P3_PELVIS) ;  ent._spcJitP3Pz = SPC_P3_PELZ + jf()
+        ent._spcJitP4L  = JitterAng(SPC_P4_LHIP)  ;  ent._spcJitP4R  = JitterAng(SPC_P4_RHIP)
+        ent._spcJitP4Pv = JitterAng(SPC_P4_PELVIS) ;  ent._spcJitP4Pz = SPC_P4_PELZ + jf()
+        ent._spcJitP5L  = JitterAng(SPC_P5_LHIP)  ;  ent._spcJitP5R  = JitterAng(SPC_P5_RHIP)
+        ent._spcJitP5Pv = JitterAng(SPC_P5_PELVIS) ;  ent._spcJitP5Pz = SPC_P5_PELZ + jf()
+        ent._spcJitP6L  = JitterAng(SPC_P6_LHIP)  ;  ent._spcJitP6R  = JitterAng(SPC_P6_RHIP)
+        ent._spcJitP6Pv = JitterAng(SPC_P6_PELVIS) ;  ent._spcJitP6Pz = SPC_P6_PELZ + jf()
+        ent._spcJitP7L  = JitterAng(SPC_P7_LHIP)  ;  ent._spcJitP7R  = JitterAng(SPC_P7_RHIP)
+        ent._spcJitP7Pv = JitterAng(SPC_P7_PELVIS) ;  ent._spcJitP7Pz = SPC_P7_PELZ + jf()
+
+        print(string.format("[GekkoSpinningCapoeira] pulse=%d  dur=%.2f", pulse, ent._spcDuration))
+    end
+
+    local elapsed = CurTime() - ent._spcStartTime
+    local active  = elapsed >= 0 and elapsed < ent._spcDuration
+    if not active then
+        if ent._spcWasActive then
+            ent._spcWasActive = false
+            ReleaseHips(ent, "SPINNINGCAPOEIRA")
+            if ent._spcLHipIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._spcLHipIdx, Angle(0,0,0), false)
+            end
+            if ent._spcRHipIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._spcRHipIdx, Angle(0,0,0), false)
+            end
+            if ent._spcPelIdx  >= 0 then
+                ent:ManipulateBoneAngles(ent._spcPelIdx,   Angle(0,0,0),  false)
+                ent:ManipulateBonePosition(ent._spcPelIdx, Vector(0,0,0), false)
+            end
+        end
+        return
+    end
+
+    if not ClaimHips(ent, "SPINNINGCAPOEIRA") then return end
+    ent._spcWasActive = true
+
+    -- Rescale phase boundaries to the jitter-shortened duration.
+    local d   = ent._spcDuration
+    local t   = elapsed / d
+    local REST = Angle(0, 0, 0)
+
+    local p1 = SPC_P1_END
+    local p2 = SPC_P2_END
+    local p3 = SPC_P3_END
+    local p4 = SPC_P4_END
+    local p5 = SPC_P5_END
+    local p6 = SPC_P6_END
+    local p7 = SPC_P7_END
+
+    local lhip, rhip, pelAng, pelZ
+
+    if t < p1 then
+        local env = Smoothstep(t / p1)
+        lhip   = LerpAngle(REST,              ent._spcJitP1L,  env)
+        rhip   = LerpAngle(REST,              ent._spcJitP1R,  env)
+        pelAng = LerpAngle(REST,              ent._spcJitP1Pv, env)
+        pelZ   = Lerp(env, 0, ent._spcJitP1Pz)
+
+    elseif t < p2 then
+        local env = Smoothstep((t - p1) / (p2 - p1))
+        lhip   = LerpAngle(ent._spcJitP1L,  ent._spcJitP2L,  env)
+        rhip   = LerpAngle(ent._spcJitP1R,  ent._spcJitP2R,  env)
+        pelAng = LerpAngle(ent._spcJitP1Pv, ent._spcJitP2Pv, env)
+        pelZ   = Lerp(env, ent._spcJitP1Pz, ent._spcJitP2Pz)
+
+    elseif t < p3 then
+        local env = Smoothstep((t - p2) / (p3 - p2))
+        lhip   = LerpAngle(ent._spcJitP2L,  ent._spcJitP3L,  env)
+        rhip   = LerpAngle(ent._spcJitP2R,  ent._spcJitP3R,  env)
+        pelAng = LerpAngle(ent._spcJitP2Pv, ent._spcJitP3Pv, env)
+        pelZ   = Lerp(env, ent._spcJitP2Pz, ent._spcJitP3Pz)
+
+    elseif t < p4 then
+        local env = Smoothstep((t - p3) / (p4 - p3))
+        lhip   = LerpAngle(ent._spcJitP3L,  ent._spcJitP4L,  env)
+        rhip   = LerpAngle(ent._spcJitP3R,  ent._spcJitP4R,  env)
+        pelAng = LerpAngle(ent._spcJitP3Pv, ent._spcJitP4Pv, env)
+        pelZ   = Lerp(env, ent._spcJitP3Pz, ent._spcJitP4Pz)
+
+    elseif t < p5 then
+        local env = Smoothstep((t - p4) / (p5 - p4))
+        lhip   = LerpAngle(ent._spcJitP4L,  ent._spcJitP5L,  env)
+        rhip   = LerpAngle(ent._spcJitP4R,  ent._spcJitP5R,  env)
+        pelAng = LerpAngle(ent._spcJitP4Pv, ent._spcJitP5Pv, env)
+        pelZ   = Lerp(env, ent._spcJitP4Pz, ent._spcJitP5Pz)
+
+    elseif t < p6 then
+        local env = Smoothstep((t - p5) / (p6 - p5))
+        lhip   = LerpAngle(ent._spcJitP5L,  ent._spcJitP6L,  env)
+        rhip   = LerpAngle(ent._spcJitP5R,  ent._spcJitP6R,  env)
+        pelAng = LerpAngle(ent._spcJitP5Pv, ent._spcJitP6Pv, env)
+        pelZ   = Lerp(env, ent._spcJitP5Pz, ent._spcJitP6Pz)
+
+    elseif t < p7 then
+        local env = Smoothstep((t - p6) / (p7 - p6))
+        lhip   = LerpAngle(ent._spcJitP6L,  ent._spcJitP7L,  env)
+        rhip   = LerpAngle(ent._spcJitP6R,  ent._spcJitP7R,  env)
+        pelAng = LerpAngle(ent._spcJitP6Pv, ent._spcJitP7Pv, env)
+        pelZ   = Lerp(env, ent._spcJitP6Pz, ent._spcJitP7Pz)
+
+    else
+        -- smooth return P7 → REST
+        local env = Smoothstep((t - p7) / (1.0 - p7))
+        lhip   = LerpAngle(ent._spcJitP7L,  REST, env)
+        rhip   = LerpAngle(ent._spcJitP7R,  REST, env)
+        pelAng = LerpAngle(ent._spcJitP7Pv, REST, env)
+        pelZ   = Lerp(env, ent._spcJitP7Pz, 0)
+    end
+
+    if ent._spcLHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._spcLHipIdx, lhip,   false)
+    end
+    if ent._spcRHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._spcRHipIdx, rhip,   false)
+    end
+    if ent._spcPelIdx  >= 0 then
+        ent:ManipulateBoneAngles(ent._spcPelIdx,   pelAng,          false)
+        ent:ManipulateBonePosition(ent._spcPelIdx, Vector(0,0,pelZ), false)
+    end
+end
+
+-- ============================================================
 --  HEEL HOOK BONE DRIVER
 --  Jitter: randomised duration; jitter on all scalar peak values.
 -- ============================================================
@@ -2747,6 +2993,7 @@ function ENT:Think()
     GekkoDoDiagonalKickRBone(self)
     GekkoDoBiteBone(self)
     GekkoDoTorqueKickBone(self)
+    GekkoDoSpinningCapoeiraBone(self)
     GekkoDoHeelHookBone(self)
     GekkoDoSideHookKickBone(self)
     GekkoDoAxeKickBone(self)
