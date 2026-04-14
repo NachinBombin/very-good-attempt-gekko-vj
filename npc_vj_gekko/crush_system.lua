@@ -21,6 +21,7 @@ if SERVER then
     util.AddNetworkString("GekkoJumpKickPulse")
     util.AddNetworkString("GekkoLKickPulse")
     util.AddNetworkString("GekkoBitePulse")
+    util.AddNetworkString("GekkoTorqueKickPulse")
 end
 
 -- ============================================================
@@ -211,6 +212,18 @@ local ATTACKS = {
 
         dmg = 40, impulse = 13500,
         sweep_dist = 145, sweep_half = 55, sweep_z = 110,
+    },
+
+    -- Spin-kick variation. Hit window lands at the kick-peak phase
+    -- (P3_END = 0.63 * 1.2 = 0.756s). Sweep is straight forward —
+    -- the rotational setup comes from the bone animation, not the
+    -- trace direction. Elevated z (75) covers mid-torso on the target.
+    TORQUEKICK = {
+        w = 20, nwkey = "GekkoTorqueKickPulse",
+        duration = 1.4, hit_t = 0.76,
+
+        dmg = 38, impulse = 13000,
+        sweep_dist = 150, sweep_half = 55, sweep_z = 75,
     },
 }
 
@@ -518,6 +531,41 @@ local function FireBite(self)
     end)
 end
 
+local function FireTorqueKick(self)
+    local A = ATTACKS.TORQUEKICK
+
+    ClaimKickLock(self, A.duration + 0.2)
+
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+
+    print(string.format("[GekkoCrush] TORQUEKICK  pulse=%d", next))
+
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+
+        local fwdRef = selfRef:GetForward()
+        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+
+        local tr = util.TraceHull({
+            start  = origin,
+            endpos = origin + fwdRef * A.sweep_dist,
+            mins   = -half, maxs = half,
+            filter = selfRef, mask = MASK_SHOT_HULL,
+        })
+
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            local impDir = (fwdRef + Vector(0, 0, 0.2)):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
+
+            print(string.format("[GekkoCrush] TORQUEKICK HIT  target=%s  pulse=%d",
+                tr.Entity:GetClass(), next))
+        end
+    end)
+end
+
 local function FireHeelHook(self)
     local A    = ATTACKS.HEELHOOK
 
@@ -804,6 +852,7 @@ function ENT:GeckoCrush_Think()
             { name = "RAXEKICK",       w = ATTACKS.RAXEKICK.w       },
             { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
             { name = "BITE",           w = ATTACKS.BITE.w           },
+            { name = "TORQUEKICK",     w = ATTACKS.TORQUEKICK.w     },
         }
 
         if kickTarget then
@@ -845,6 +894,7 @@ function ENT:GeckoCrush_Think()
     elseif attack == "RAXEKICK"        then FireRAxeKick(self, closestTarget, dot)
     elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
     elseif attack == "BITE"            then FireBite(self)
+    elseif attack == "TORQUEKICK"      then FireTorqueKick(self)
     else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end

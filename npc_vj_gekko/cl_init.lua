@@ -97,11 +97,11 @@ KICK_L_BONE_RESET = KICK_BONE_RESET
 -- ============================================================
 --  HEADBUTT ANIMATION
 -- ============================================================
-HB_DURATION       = 1.3
-HB_PEAK           = 0.5
+HB_DURATION       = 0.7
+HB_PEAK           = 0.45
 HB_SPINE3_ANG_X   = -60
 HB_PEDESTAL_POS_X =  70
-HB_PEDESTAL_POS_Z = -69
+HB_PEDESTAL_POS_Z = -59
 HB_SPINE3_BONE    = "b_spine3"
 HB_PEDESTAL_BONE  = "b_pedestal"
 
@@ -147,7 +147,7 @@ SK_P3_END   = 0.710
 SK_P4_END   = 1.200
 
 SK_RAMP       = 0.15
-SK_YAW_TOTAL  = 690
+SK_YAW_TOTAL  = 490
 SK_PED_BONE   = "b_Pedestal"
 SK_PEL_BONE   = "b_pelvis"
 SK_HIP_BONE   = "b_r_hippiston1"
@@ -294,6 +294,44 @@ BITE_SPINE4_BONE = "b_spine3"   -- b_spine3: established lean bone, NOT the head
 BITE_PED_BONE    = "b_pedestal"
 BITE_PED_Z       = -70          -- crouch depth in local units
 BITE_PED_RAMP    = 0.20         -- fraction of duration used to ramp in / out
+
+-- ============================================================
+--  TORQUE KICK ANIMATION  (spin-kick variation, forward attack)
+--  5 phases:
+--    P0 → P1  ramp in REST → preparation
+--    P1 → P2  preparation → posture
+--    P2 → P3  posture → kick (strike peak)
+--    P3 → P4  kick → recoil
+--    P4 → end smooth return to REST
+--
+--  Rhip Y is unspecified in phases 1-3 (held at 0), explicitly
+--  driven to 70 only during the recoil phase.
+-- ============================================================
+TK_DURATION = 1.5
+TK_P1_END   = 0.200 / TK_DURATION   -- ramp in     → preparation
+TK_P2_END   = 0.420 / TK_DURATION   -- preparation → posture
+TK_P3_END   = 0.630 / TK_DURATION   -- posture     → kick peak
+TK_P4_END   = 0.820 / TK_DURATION   -- kick        → recoil
+-- P4_END → 1.0 : smooth return to REST
+
+-- preparation
+TK_P1_LHIP  = Angle(  57,  43,  70)
+TK_P1_RHIP  = Angle(  88,   0, -36)
+
+-- posture
+TK_P2_LHIP  = Angle(  22,  53,   1)
+TK_P2_RHIP  = Angle( -57,   0, -67)
+
+-- kick peak
+TK_P3_LHIP  = Angle( -70,  15,   1)
+TK_P3_RHIP  = Angle( -88,   0, -67)
+
+-- recoil  (Rhip Y finally keyed to 70)
+TK_P4_LHIP  = Angle( -95, -12, -12)
+TK_P4_RHIP  = Angle(-105,  70, -46)
+
+TK_LHIP_BONE = "b_l_hippiston1"
+TK_RHIP_BONE = "b_r_hippiston1"
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
@@ -2035,6 +2073,110 @@ local function GekkoDoBiteBone(ent)
 end
 
 -- ============================================================
+--  TORQUE KICK BONE DRIVER
+--  Jitter: randomised duration; jitter baked into all 4 keyframe
+--  Angle pairs at pulse-fire time.  Follows the exact same
+--  ClaimHips + WasActive pattern as every other hip driver.
+-- ============================================================
+local function GekkoDoTorqueKickBone(ent)
+    if ent._tkInited == nil then
+        ent._tkInited    = true
+        ent._tkLHipIdx   = ent:LookupBone(TK_LHIP_BONE) or -1
+        ent._tkRHipIdx   = ent:LookupBone(TK_RHIP_BONE) or -1
+        ent._tkStartTime = -9999
+        ent._tkDuration  = TK_DURATION
+        ent._tkPulseLast = ent:GetNWInt("GekkoTorqueKickPulse", 0)
+        ent._tkWasActive = false
+        ent._tkJitP1L    = TK_P1_LHIP
+        ent._tkJitP1R    = TK_P1_RHIP
+        ent._tkJitP2L    = TK_P2_LHIP
+        ent._tkJitP2R    = TK_P2_RHIP
+        ent._tkJitP3L    = TK_P3_LHIP
+        ent._tkJitP3R    = TK_P3_RHIP
+        ent._tkJitP4L    = TK_P4_LHIP
+        ent._tkJitP4R    = TK_P4_RHIP
+    end
+
+    local pulse = ent:GetNWInt("GekkoTorqueKickPulse", 0)
+    if pulse ~= ent._tkPulseLast then
+        ent._tkPulseLast = pulse
+        ent._tkStartTime = CurTime()
+        ent._tkDuration  = JitterDur(TK_DURATION)
+        ent._tkJitP1L    = JitterAng(TK_P1_LHIP)
+        ent._tkJitP1R    = JitterAng(TK_P1_RHIP)
+        ent._tkJitP2L    = JitterAng(TK_P2_LHIP)
+        ent._tkJitP2R    = JitterAng(TK_P2_RHIP)
+        ent._tkJitP3L    = JitterAng(TK_P3_LHIP)
+        ent._tkJitP3R    = JitterAng(TK_P3_RHIP)
+        ent._tkJitP4L    = JitterAng(TK_P4_LHIP)
+        ent._tkJitP4R    = JitterAng(TK_P4_RHIP)
+
+        print(string.format("[GekkoTorqueKick] pulse=%d  dur=%.2f", pulse, ent._tkDuration))
+    end
+
+    local elapsed = CurTime() - ent._tkStartTime
+    local active  = elapsed >= 0 and elapsed < ent._tkDuration
+    if not active then
+        if ent._tkWasActive then
+            ent._tkWasActive = false
+            ReleaseHips(ent, "TORQUEKICK")
+            if ent._tkLHipIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._tkLHipIdx, Angle(0,0,0), false)
+            end
+            if ent._tkRHipIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._tkRHipIdx, Angle(0,0,0), false)
+            end
+        end
+        return
+    end
+
+    if not ClaimHips(ent, "TORQUEKICK") then return end
+    ent._tkWasActive = true
+
+    local t    = elapsed / ent._tkDuration
+    local REST = Angle(0, 0, 0)
+    local lhip, rhip
+
+    if t < TK_P1_END then
+        -- ramp REST → preparation
+        local env = Smoothstep(t / TK_P1_END)
+        lhip = LerpAngle(REST,           ent._tkJitP1L, env)
+        rhip = LerpAngle(REST,           ent._tkJitP1R, env)
+
+    elseif t < TK_P2_END then
+        -- ramp preparation → posture
+        local env = Smoothstep((t - TK_P1_END) / (TK_P2_END - TK_P1_END))
+        lhip = LerpAngle(ent._tkJitP1L, ent._tkJitP2L, env)
+        rhip = LerpAngle(ent._tkJitP1R, ent._tkJitP2R, env)
+
+    elseif t < TK_P3_END then
+        -- ramp posture → kick peak
+        local env = Smoothstep((t - TK_P2_END) / (TK_P3_END - TK_P2_END))
+        lhip = LerpAngle(ent._tkJitP2L, ent._tkJitP3L, env)
+        rhip = LerpAngle(ent._tkJitP2R, ent._tkJitP3R, env)
+
+    elseif t < TK_P4_END then
+        -- ramp kick peak → recoil
+        local env = Smoothstep((t - TK_P3_END) / (TK_P4_END - TK_P3_END))
+        lhip = LerpAngle(ent._tkJitP3L, ent._tkJitP4L, env)
+        rhip = LerpAngle(ent._tkJitP3R, ent._tkJitP4R, env)
+
+    else
+        -- smooth return recoil → REST
+        local env = Smoothstep((t - TK_P4_END) / (1.0 - TK_P4_END))
+        lhip = LerpAngle(ent._tkJitP4L, REST, env)
+        rhip = LerpAngle(ent._tkJitP4R, REST, env)
+    end
+
+    if ent._tkLHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._tkLHipIdx, lhip, false)
+    end
+    if ent._tkRHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._tkRHipIdx, rhip, false)
+    end
+end
+
+-- ============================================================
 --  HEEL HOOK BONE DRIVER
 --  Jitter: randomised duration; jitter on all scalar peak values.
 -- ============================================================
@@ -2604,6 +2746,7 @@ function ENT:Think()
     GekkoDoDiagonalKickBone(self)
     GekkoDoDiagonalKickRBone(self)
     GekkoDoBiteBone(self)
+    GekkoDoTorqueKickBone(self)
     GekkoDoHeelHookBone(self)
     GekkoDoSideHookKickBone(self)
     GekkoDoAxeKickBone(self)
