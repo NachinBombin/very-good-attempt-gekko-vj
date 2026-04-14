@@ -22,6 +22,7 @@ if SERVER then
     util.AddNetworkString("GekkoLKickPulse")
     util.AddNetworkString("GekkoBitePulse")
     util.AddNetworkString("GekkoTorqueKickPulse")
+    util.AddNetworkString("GekkoSpinningCapoeiraPulse")
 end
 
 -- ============================================================
@@ -224,6 +225,20 @@ local ATTACKS = {
 
         dmg = 38, impulse = 13000,
         sweep_dist = 150, sweep_half = 55, sweep_z = 75,
+    },
+
+    -- 360-degree spin kick.  Two damage pulses fire at the strike
+    -- peak (P5, t=0.96s) and again mid-deceleration (P6, t=1.15s)
+    -- to represent the full rotation connecting on both passes.
+    -- The second pulse uses a right-vector offset to mirror the
+    -- continued spin direction.
+    SPINNINGCAPOEIRA = {
+        w = 20, nwkey = "GekkoSpinningCapoeiraPulse",
+        duration = 2.1, hit_t = 0.96, hit_t2 = 1.15,
+
+        dmg  = 36, impulse  = 12500,
+        dmg2 = 28, impulse2 = 10000,
+        sweep_dist = 155, sweep_half = 58, sweep_z = 70,
     },
 }
 
@@ -566,6 +581,69 @@ local function FireTorqueKick(self)
     end)
 end
 
+local function FireSpinningCapoeira(self)
+    local A = ATTACKS.SPINNINGCAPOEIRA
+
+    ClaimKickLock(self, A.duration + 0.2)
+
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+
+    print(string.format("[GekkoCrush] SPINNINGCAPOEIRA  pulse=%d", next))
+
+    -- First pulse — strike peak (P5).  Sweep straight forward.
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+
+        local fwdRef = selfRef:GetForward()
+        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+
+        local tr = util.TraceHull({
+            start  = origin,
+            endpos = origin + fwdRef * A.sweep_dist,
+            mins   = -half, maxs = half,
+            filter = selfRef, mask = MASK_SHOT_HULL,
+        })
+
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            local impDir = (fwdRef + Vector(0, 0, 0.25)):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
+
+            print(string.format("[GekkoCrush] SPINNINGCAPOEIRA HIT1  target=%s  pulse=%d",
+                tr.Entity:GetClass(), next))
+        end
+    end)
+
+    -- Second pulse — continued spin (P6).  Sweep forward + right to
+    -- simulate the rotation having carried the strike ~90° further.
+    timer.Simple(A.hit_t2, function()
+        if not IsValid(selfRef) then return end
+
+        local fwdRef   = selfRef:GetForward()
+        local rightRef = selfRef:GetRight()
+        local sweepDir = (fwdRef + rightRef * 0.7):GetNormalized()
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+
+        local tr = util.TraceHull({
+            start  = origin,
+            endpos = origin + sweepDir * A.sweep_dist,
+            mins   = -half, maxs = half,
+            filter = selfRef, mask = MASK_SHOT_HULL,
+        })
+
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            local impDir = (sweepDir + Vector(0, 0, 0.2)):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg2, impDir * A.impulse2)
+
+            print(string.format("[GekkoCrush] SPINNINGCAPOEIRA HIT2  target=%s  pulse=%d",
+                tr.Entity:GetClass(), next))
+        end
+    end)
+end
+
 local function FireHeelHook(self)
     local A    = ATTACKS.HEELHOOK
 
@@ -853,6 +931,7 @@ function ENT:GeckoCrush_Think()
             { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
             { name = "BITE",           w = ATTACKS.BITE.w           },
             { name = "TORQUEKICK",     w = ATTACKS.TORQUEKICK.w     },
+            { name = "SPINNINGCAPOEIRA", w = ATTACKS.SPINNINGCAPOEIRA.w },
         }
 
         if kickTarget then
@@ -895,6 +974,7 @@ function ENT:GeckoCrush_Think()
     elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
     elseif attack == "BITE"            then FireBite(self)
     elseif attack == "TORQUEKICK"      then FireTorqueKick(self)
+    elseif attack == "SPINNINGCAPOEIRA" then FireSpinningCapoeira(self)
     else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end
