@@ -140,21 +140,21 @@ FK360B_PISTON_YAW     = -8
 -- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
-SK_DURATION = 0.9
+SK_DURATION = 1.4
 SK_P1_END   = 0.330
 SK_P2_END   = 0.500
 SK_P3_END   = 0.670
 SK_P4_END   = 0.800
 
 SK_RAMP       = 0.10
-SK_YAW_TOTAL  = 590
+SK_YAW_TOTAL  = 690
 SK_PED_BONE   = "b_Pedestal"
 SK_PEL_BONE   = "b_pelvis"
 SK_HIP_BONE   = "b_r_hippiston1"
 SK_ULEG_BONE  = "b_r_upperleg"
-SK_PEL_DROP   = -50
+SK_PEL_DROP   = -60
 SK_HIP_Z      = -22
-SK_ULEG_X     = 140
+SK_ULEG_X     = 110
 
 -- ============================================================
 --  FOOTBALL KICK ANIMATION  (left leg)
@@ -206,6 +206,91 @@ DGK_P4_RHIP  = Angle(  0,   0,   0)
 
 DGK_LHIP_BONE = "b_l_hippiston1"
 DGK_RHIP_BONE = "b_r_hippiston1"
+
+-- ============================================================
+--  DIAGONAL KICK R ANIMATION  (right-leg primary variant)
+--  Same tempo as DiagonalKick; three distinct strike keyframes
+--  before the final return phase.
+--
+--  Step 1: initial chamber
+--    L(-36,-29, 43)  R( 12,-22,  15)
+--  Step 2: mid-extension
+--    L(-70,-29, 43)  R(  8, -5,-105)
+--  Step 3: peak strike
+--    L(-143,-29,43)  R(-105, -5, -12)
+--  Step 4: return to REST
+-- ============================================================
+DGKR_DURATION = 1.0
+DGKR_P1_END   = 0.300 / DGKR_DURATION   -- ramp in → step 1
+DGKR_P2_END   = 0.500 / DGKR_DURATION   -- hold at step 1 → step 2
+DGKR_P3_END   = 0.700 / DGKR_DURATION   -- step 2 → step 3 peak
+DGKR_P4_END   = 0.920 / DGKR_DURATION   -- step 3 peak → return
+
+-- step 1 — initial chamber
+DGKR_P1_LHIP  = Angle( -36, -29,   43)
+DGKR_P1_RHIP  = Angle(  12, -22,   15)
+-- step 2 — mid-extension
+DGKR_P2_LHIP  = Angle( -70, -29,   43)
+DGKR_P2_RHIP  = Angle(   8,  -5, -105)
+-- step 3 — peak strike
+DGKR_P3_LHIP  = Angle(-143, -29,   43)
+DGKR_P3_RHIP  = Angle(-105,  -5,  -12)
+
+DGKR_LHIP_BONE = "b_l_hippiston1"
+DGKR_RHIP_BONE = "b_r_hippiston1"
+
+-- ============================================================
+--  BITE ANIMATION
+--  5-phase forward lunge.  Two bones not specified in a given
+--  phase hold their previous keyframe value (see driver below).
+--
+--  Phase 0 — wind-up
+--    L( 46,-15, 15)  R(-25,  0,-25)
+--    pelvis REST      spine4 REST
+--  Phase 1 — head charges backward (preparation)
+--    L( 46, 12, 19)  R(-22, 29, -8)
+--    pelvis(  0,-32,  0)  spine4 REST
+--  Phase 2 — body lean / spine charge
+--    L  hold P1       R  hold P1
+--    pelvis( -5, 15,  5)  spine4(-19, 50,102)
+--  Phase 3 — full bite strike
+--    L( -1,-36, 19)  R(-22,-22, -8)
+--    pelvis( 53, 50,129)  spine4 holds P2
+--  Phase 4 — smooth return to REST
+-- ============================================================
+BITE_DURATION = 2.8
+BITE_P0_END   = 0.380 / BITE_DURATION   -- ramp in         → phase 0 wind-up
+BITE_P1_END   = 0.490 / BITE_DURATION   -- phase 0         → phase 1 head-back
+BITE_P2_END   = 0.800 / BITE_DURATION   -- phase 1         → phase 2 body lean
+BITE_P3_END   = 1.100 / BITE_DURATION   -- phase 2         → phase 3 full strike
+BITE_P4_END   = 2.000 / BITE_DURATION   -- phase 3         → return (REST tail follows)
+
+-- phase 0 — wind-up
+BITE_P0_LHIP   = Angle(  46, -15,  15)
+BITE_P0_RHIP   = Angle( -25,   0, -25)
+BITE_P0_PELVIS = Angle(   0,   0,   0)
+BITE_P0_SPINE4 = Angle(   0,   0,   0)
+
+-- phase 1 — head charges backward
+BITE_P1_LHIP   = Angle(  46,  12,  19)
+BITE_P1_RHIP   = Angle( -22,  29,  -8)
+BITE_P1_PELVIS = Angle(   0, -32,   0)   -- x and z hold 0 from phase 0
+BITE_P1_SPINE4 = Angle(   0,   0,   0)   -- spine4 unchanged
+
+-- phase 2 — body lean  (hips hold phase-1 values; see driver)
+BITE_P2_PELVIS = Angle(  -5,  15,   5)
+BITE_P2_SPINE4 = Angle( -19,  50, 102)
+
+-- phase 3 — full bite strike  (spine4 holds phase-2 value; see driver)
+BITE_P3_LHIP   = Angle(  -1, -36,  19)
+BITE_P3_RHIP   = Angle( -22, -22,  -8)
+BITE_P3_PELVIS = Angle(  53,  50, 129)
+BITE_P3_SPINE4 = Angle( -19,  50, 102)   -- holds P2
+
+BITE_LHIP_BONE   = "b_l_hippiston1"
+BITE_RHIP_BONE   = "b_r_hippiston1"
+BITE_PELVIS_BONE = "b_pelvis"
+BITE_SPINE4_BONE = "b_spine3"   -- b_spine3: established lean bone, NOT the head-tracker
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
@@ -557,6 +642,10 @@ HEAD_PITCH_DOWN  =  60
 HEAD_SPEED       =  30
 
 local function GekkoUpdateHead(ent, dt)
+    -- BITE suppresses head tracking for the full attack duration so
+    -- the lunge pose on b_spine3 is not fought by the head driver.
+    if ent._biteHeadSuppress then return end
+
     local bone = ent._spineBone
     if not bone or bone < 0 then return end
 
@@ -1659,6 +1748,268 @@ local function GekkoDoDiagonalKickBone(ent)
 end
 
 -- ============================================================
+--  DIAGONAL KICK R BONE DRIVER  (right-leg primary variant)
+--  Jitter: randomised duration; jitter baked into all keyframe
+--  Angles at the moment each pulse fires, matching the original
+--  DiagonalKick convention exactly.
+--
+--  5-segment timeline (normalised t):
+--    [0          , P1_END] ramp  REST → P1  (chamber)
+--    [P1_END     , P2_END] hold at P1
+--    [P2_END     , P3_END] ramp  P1  → P2  (mid-extension)
+--    [P3_END     , P4_END] ramp  P2  → P3  (peak strike)
+--    [P4_END     , 1.0   ] ramp  P3  → REST (return)
+-- ============================================================
+local function GekkoDoDiagonalKickRBone(ent)
+    if ent._dgkrInited == nil then
+        ent._dgkrInited    = true
+        ent._dgkrLHipIdx   = ent:LookupBone(DGKR_LHIP_BONE) or -1
+        ent._dgkrRHipIdx   = ent:LookupBone(DGKR_RHIP_BONE) or -1
+        ent._dgkrStartTime = -9999
+        ent._dgkrDuration  = DGKR_DURATION
+        ent._dgkrPulseLast = ent:GetNWInt("GekkoDiagonalKickRPulse", 0)
+        ent._dgkrWasActive = false
+        ent._dgkrJitP1L    = DGKR_P1_LHIP
+        ent._dgkrJitP1R    = DGKR_P1_RHIP
+        ent._dgkrJitP2L    = DGKR_P2_LHIP
+        ent._dgkrJitP2R    = DGKR_P2_RHIP
+        ent._dgkrJitP3L    = DGKR_P3_LHIP
+        ent._dgkrJitP3R    = DGKR_P3_RHIP
+    end
+
+    local pulse = ent:GetNWInt("GekkoDiagonalKickRPulse", 0)
+    if pulse ~= ent._dgkrPulseLast then
+        ent._dgkrPulseLast = pulse
+        ent._dgkrStartTime = CurTime()
+        ent._dgkrDuration  = JitterDur(DGKR_DURATION)
+        ent._dgkrJitP1L    = JitterAng(DGKR_P1_LHIP)
+        ent._dgkrJitP1R    = JitterAng(DGKR_P1_RHIP)
+        ent._dgkrJitP2L    = JitterAng(DGKR_P2_LHIP)
+        ent._dgkrJitP2R    = JitterAng(DGKR_P2_RHIP)
+        ent._dgkrJitP3L    = JitterAng(DGKR_P3_LHIP)
+        ent._dgkrJitP3R    = JitterAng(DGKR_P3_RHIP)
+
+        print(string.format("[GekkoDiagonalKickR] pulse=%d  dur=%.2f", pulse, ent._dgkrDuration))
+    end
+
+    local elapsed = CurTime() - ent._dgkrStartTime
+    local active  = elapsed >= 0 and elapsed < ent._dgkrDuration
+    if not active then
+        if ent._dgkrWasActive then
+            ent._dgkrWasActive = false
+
+            ReleaseHips(ent, "DIAGONALKICKR")
+
+            if ent._dgkrLHipIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._dgkrLHipIdx, Angle(0, 0, 0), false)
+            end
+            if ent._dgkrRHipIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._dgkrRHipIdx, Angle(0, 0, 0), false)
+            end
+        end
+        return
+    end
+
+    if not ClaimHips(ent, "DIAGONALKICKR") then return end
+    ent._dgkrWasActive = true
+
+    local t    = elapsed / ent._dgkrDuration
+    local lhip, rhip
+    local REST = Angle(0, 0, 0)
+
+    if t < DGKR_P1_END then
+        -- ramp in from REST to step-1 chamber
+        local env = Smoothstep(t / DGKR_P1_END)
+        lhip = LerpAngle(REST,              ent._dgkrJitP1L, env)
+        rhip = LerpAngle(REST,              ent._dgkrJitP1R, env)
+    elseif t < DGKR_P2_END then
+        -- hold at step-1 chamber
+        lhip = ent._dgkrJitP1L
+        rhip = ent._dgkrJitP1R
+    elseif t < DGKR_P3_END then
+        -- ramp step-1 → step-2 mid-extension
+        local env = Smoothstep((t - DGKR_P2_END) / (DGKR_P3_END - DGKR_P2_END))
+        lhip = LerpAngle(ent._dgkrJitP1L, ent._dgkrJitP2L, env)
+        rhip = LerpAngle(ent._dgkrJitP1R, ent._dgkrJitP2R, env)
+    elseif t < DGKR_P4_END then
+        -- ramp step-2 → step-3 peak strike
+        local env = Smoothstep((t - DGKR_P3_END) / (DGKR_P4_END - DGKR_P3_END))
+        lhip = LerpAngle(ent._dgkrJitP2L, ent._dgkrJitP3L, env)
+        rhip = LerpAngle(ent._dgkrJitP2R, ent._dgkrJitP3R, env)
+    else
+        -- return peak strike → REST
+        local env = Smoothstep((t - DGKR_P4_END) / (1.0 - DGKR_P4_END))
+        lhip = LerpAngle(ent._dgkrJitP3L, REST, env)
+        rhip = LerpAngle(ent._dgkrJitP3R, REST, env)
+    end
+
+    if ent._dgkrLHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._dgkrLHipIdx, lhip, false)
+    end
+    if ent._dgkrRHipIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._dgkrRHipIdx, rhip, false)
+    end
+end
+
+-- ============================================================
+--  BITE BONE DRIVER
+--  Forward lunge attack — drives both hip pistons, pelvis, and
+--  b_spine3 across 5 phases.  b_spine3 is the correct lean bone;
+--  b_spine4 is the head-tracker and must NOT be driven here.
+--  Bones not keyed in a given phase hold their previous keyframe
+--  (hip pistons hold P1 through P2; spine holds P2 through P3).
+--  Full jitter on every keyframe Angle at pulse-fire time, plus
+--  randomised duration.  Head tracking is suppressed for the full
+--  duration via ent._biteHeadSuppress (read by GekkoUpdateHead).
+-- ============================================================
+local function GekkoDoBiteBone(ent)
+    if ent._biteInited == nil then
+        ent._biteInited    = true
+        ent._biteLHipIdx   = ent:LookupBone(BITE_LHIP_BONE)   or -1
+        ent._biteRHipIdx   = ent:LookupBone(BITE_RHIP_BONE)   or -1
+        ent._bitePelvisIdx = ent:LookupBone(BITE_PELVIS_BONE) or -1
+        ent._biteSpineIdx  = ent:LookupBone(BITE_SPINE4_BONE) or -1   -- b_spine3
+        ent._biteStartTime = -9999
+        ent._biteDuration  = BITE_DURATION
+        ent._bitePulseLast = ent:GetNWInt("GekkoBitePulse", 0)
+        ent._biteWasActive    = false
+        ent._biteHeadSuppress = false
+        -- initial jitter cache mirrors base constants
+        ent._biteJitP0L  = BITE_P0_LHIP
+        ent._biteJitP0R  = BITE_P0_RHIP
+        ent._biteJitP0Pv = BITE_P0_PELVIS
+        ent._biteJitP0S4 = BITE_P0_SPINE4
+        ent._biteJitP1L  = BITE_P1_LHIP
+        ent._biteJitP1R  = BITE_P1_RHIP
+        ent._biteJitP1Pv = BITE_P1_PELVIS
+        ent._biteJitP1S4 = BITE_P1_SPINE4
+        ent._biteJitP2Pv = BITE_P2_PELVIS
+        ent._biteJitP2S4 = BITE_P2_SPINE4
+        ent._biteJitP3L  = BITE_P3_LHIP
+        ent._biteJitP3R  = BITE_P3_RHIP
+        ent._biteJitP3Pv = BITE_P3_PELVIS
+        ent._biteJitP3S4 = BITE_P3_SPINE4
+    end
+
+    local pulse = ent:GetNWInt("GekkoBitePulse", 0)
+    if pulse ~= ent._bitePulseLast then
+        ent._bitePulseLast = pulse
+        ent._biteStartTime = CurTime()
+        ent._biteDuration  = JitterDur(BITE_DURATION)
+        ent._biteJitP0L  = JitterAng(BITE_P0_LHIP)
+        ent._biteJitP0R  = JitterAng(BITE_P0_RHIP)
+        ent._biteJitP0Pv = JitterAng(BITE_P0_PELVIS)
+        ent._biteJitP0S4 = JitterAng(BITE_P0_SPINE4)
+        ent._biteJitP1L  = JitterAng(BITE_P1_LHIP)
+        ent._biteJitP1R  = JitterAng(BITE_P1_RHIP)
+        ent._biteJitP1Pv = JitterAng(BITE_P1_PELVIS)
+        ent._biteJitP1S4 = JitterAng(BITE_P1_SPINE4)
+        ent._biteJitP2Pv = JitterAng(BITE_P2_PELVIS)
+        ent._biteJitP2S4 = JitterAng(BITE_P2_SPINE4)
+        ent._biteJitP3L  = JitterAng(BITE_P3_LHIP)
+        ent._biteJitP3R  = JitterAng(BITE_P3_RHIP)
+        ent._biteJitP3Pv = JitterAng(BITE_P3_PELVIS)
+        ent._biteJitP3S4 = JitterAng(BITE_P3_SPINE4)
+
+        print(string.format("[GekkoBite] pulse=%d  dur=%.2f", pulse, ent._biteDuration))
+    end
+
+    local elapsed = CurTime() - ent._biteStartTime
+    local active  = elapsed >= 0 and elapsed < ent._biteDuration
+    if not active then
+        if ent._biteWasActive then
+            ent._biteWasActive    = false
+            ent._biteHeadSuppress = false   -- restore head tracking
+            ReleaseHips(ent, "BITE")
+            if ent._biteLHipIdx   >= 0 then
+                ent:ManipulateBoneAngles(ent._biteLHipIdx,   Angle(0,0,0), false)
+            end
+            if ent._biteRHipIdx   >= 0 then
+                ent:ManipulateBoneAngles(ent._biteRHipIdx,   Angle(0,0,0), false)
+            end
+            if ent._bitePelvisIdx >= 0 then
+                ent:ManipulateBoneAngles(ent._bitePelvisIdx,  Angle(0,0,0),  false)
+                ent:ManipulateBonePosition(ent._bitePelvisIdx, Vector(0,0,0), false)
+            end
+            if ent._biteSpineIdx  >= 0 then
+                ent:ManipulateBoneAngles(ent._biteSpineIdx,  Angle(0,0,0), false)
+            end
+        end
+        return
+    end
+
+    if not ClaimHips(ent, "BITE") then return end
+    ent._biteWasActive    = true
+    ent._biteHeadSuppress = true   -- suppress GekkoUpdateHead for full duration
+
+    local t    = elapsed / ent._biteDuration
+    local REST = Angle(0, 0, 0)
+    local lhip, rhip, pelvis, spine
+
+    if t < BITE_P0_END then
+        -- ramp REST → phase-0 wind-up
+        local env = Smoothstep(t / BITE_P0_END)
+        lhip   = LerpAngle(REST,              ent._biteJitP0L,  env)
+        rhip   = LerpAngle(REST,              ent._biteJitP0R,  env)
+        pelvis = REST
+        spine  = REST
+
+    elseif t < BITE_P1_END then
+        -- ramp phase-0 → phase-1  (head charges backward)
+        local env = Smoothstep((t - BITE_P0_END) / (BITE_P1_END - BITE_P0_END))
+        lhip   = LerpAngle(ent._biteJitP0L,  ent._biteJitP1L,  env)
+        rhip   = LerpAngle(ent._biteJitP0R,  ent._biteJitP1R,  env)
+        pelvis = LerpAngle(ent._biteJitP0Pv, ent._biteJitP1Pv, env)
+        spine  = REST   -- spine stays at rest through phase 1
+
+    elseif t < BITE_P2_END then
+        -- ramp phase-1 → phase-2  (body lean / spine charge)
+        -- hip pistons hold their phase-1 value during this window
+        local env = Smoothstep((t - BITE_P1_END) / (BITE_P2_END - BITE_P1_END))
+        lhip   = ent._biteJitP1L
+        rhip   = ent._biteJitP1R
+        pelvis = LerpAngle(ent._biteJitP1Pv, ent._biteJitP2Pv, env)
+        spine  = LerpAngle(ent._biteJitP1S4, ent._biteJitP2S4, env)
+
+    elseif t < BITE_P3_END then
+        -- ramp phase-2 → phase-3  (full bite strike)
+        -- spine holds its phase-2 value; hips drive to phase-3
+        local env = Smoothstep((t - BITE_P2_END) / (BITE_P3_END - BITE_P2_END))
+        lhip   = LerpAngle(ent._biteJitP1L,  ent._biteJitP3L,  env)
+        rhip   = LerpAngle(ent._biteJitP1R,  ent._biteJitP3R,  env)
+        pelvis = LerpAngle(ent._biteJitP2Pv, ent._biteJitP3Pv, env)
+        spine  = ent._biteJitP3S4   -- identical to P2 spine
+
+    elseif t < BITE_P4_END then
+        -- smooth return phase-3 → REST
+        local env = Smoothstep((t - BITE_P3_END) / (BITE_P4_END - BITE_P3_END))
+        lhip   = LerpAngle(ent._biteJitP3L,  REST, env)
+        rhip   = LerpAngle(ent._biteJitP3R,  REST, env)
+        pelvis = LerpAngle(ent._biteJitP3Pv, REST, env)
+        spine  = LerpAngle(ent._biteJitP3S4, REST, env)
+
+    else
+        lhip   = REST
+        rhip   = REST
+        pelvis = REST
+        spine  = REST
+    end
+
+    if ent._biteLHipIdx   >= 0 then
+        ent:ManipulateBoneAngles(ent._biteLHipIdx,   lhip,   false)
+    end
+    if ent._biteRHipIdx   >= 0 then
+        ent:ManipulateBoneAngles(ent._biteRHipIdx,   rhip,   false)
+    end
+    if ent._bitePelvisIdx >= 0 then
+        ent:ManipulateBoneAngles(ent._bitePelvisIdx, pelvis, false)
+    end
+    if ent._biteSpineIdx  >= 0 then
+        ent:ManipulateBoneAngles(ent._biteSpineIdx,  spine,  false)
+    end
+end
+
+-- ============================================================
 --  HEEL HOOK BONE DRIVER
 --  Jitter: randomised duration; jitter on all scalar peak values.
 -- ============================================================
@@ -2226,6 +2577,8 @@ function ENT:Think()
     GekkoDoFootballKickBone(self)
     GekkoDoFootballKickRBone(self)
     GekkoDoDiagonalKickBone(self)
+    GekkoDoDiagonalKickRBone(self)
+    GekkoDoBiteBone(self)
     GekkoDoHeelHookBone(self)
     GekkoDoSideHookKickBone(self)
     GekkoDoAxeKickBone(self)

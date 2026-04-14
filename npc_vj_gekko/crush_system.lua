@@ -13,12 +13,14 @@ if SERVER then
     util.AddNetworkString("GekkoFootballKickPulse")
     util.AddNetworkString("GekkoRFootballKickPulse")
     util.AddNetworkString("GekkoDiagonalKickPulse")
+    util.AddNetworkString("GekkoDiagonalKickRPulse")
     util.AddNetworkString("GekkoHeelHookPulse")
     util.AddNetworkString("GekkoSideHookKickPulse")
     util.AddNetworkString("GekkoAxeKickPulse")
     util.AddNetworkString("GekkoRAxeKickPulse")
     util.AddNetworkString("GekkoJumpKickPulse")
     util.AddNetworkString("GekkoLKickPulse")
+    util.AddNetworkString("GekkoBitePulse")
 end
 
 -- ============================================================
@@ -142,6 +144,17 @@ local ATTACKS = {
         sweep_dist = 150, sweep_half = 55, sweep_z = 60,
     },
 
+    -- Right-leg mirror of DIAGONALKICK.
+    -- hit_t is slightly later (0.62) to land at the step-3 peak
+    -- of the DGKR animation.  Sweep direction flips to +right.
+    DIAGONALKICKR = {
+        w = 20, nwkey = "GekkoDiagonalKickRPulse",
+        duration = 1.4, hit_t = 0.62,
+
+        dmg = 38, impulse = 13000,
+        sweep_dist = 150, sweep_half = 55, sweep_z = 60,
+    },
+
     HEELHOOK = {
         w = 20, nwkey = "GekkoHeelHookPulse",
         duration = 1.6, hit_t = 0.62, hit_t2 = 0.82,
@@ -185,6 +198,19 @@ local ATTACKS = {
         sweep_dist = 160, sweep_half = 55, sweep_z = 75,
 
         hop_force = 240,
+    },
+
+    -- Forward lunge: upper-body / head attack driven by spine4.
+    -- hit_t (0.70s) lands mid-way through phase-3 (BITE_P2_END=0.58 →
+    -- BITE_P3_END=0.80), when the lunge is at its deepest reach.
+    -- sweep_z is elevated (110) to trace at head/upper-torso height.
+    -- Triggers from stationary or moving Gekko; no speed gate.
+    BITE = {
+        w = 20, nwkey = "GekkoBitePulse",
+        duration = 1.4, hit_t = 0.70,
+
+        dmg = 40, impulse = 13500,
+        sweep_dist = 145, sweep_half = 55, sweep_z = 110,
     },
 }
 
@@ -410,6 +436,84 @@ local function FireDiagonalKick(self)
         if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
             CrushDamageEnt(selfRef, tr.Entity, A.dmg,
                 (sweepDir + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+        end
+    end)
+end
+
+local function FireDiagonalKickR(self)
+    local A    = ATTACKS.DIAGONALKICKR
+
+    ClaimKickLock(self, A.duration + 0.2)
+
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+
+    print(string.format("[GekkoCrush] DIAGONALKICKR  pulse=%d", next))
+
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+
+        local fwdRef   = selfRef:GetForward()
+        local rightRef = selfRef:GetRight()
+        -- mirror of DIAGONALKICK: right leg sweeps toward +right
+        local sweepDir = (fwdRef + rightRef * 0.35):GetNormalized()
+
+        local origin   = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half     = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+
+        local tr = util.TraceHull({
+            start  = origin,
+            endpos = origin + sweepDir * A.sweep_dist,
+            mins   = -half, maxs = half,
+            filter = selfRef, mask = MASK_SHOT_HULL,
+        })
+
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg,
+                (sweepDir + Vector(0,0,0.3)):GetNormalized() * A.impulse)
+
+            print(string.format("[GekkoCrush] DIAGONALKICKR HIT  target=%s  pulse=%d",
+                tr.Entity:GetClass(), next))
+        end
+    end)
+end
+
+local function FireBite(self)
+    local A = ATTACKS.BITE
+
+    ClaimKickLock(self, A.duration + 0.2)
+
+    local next = (self:GetNWInt(A.nwkey, 0) % 254) + 1
+    self:SetNWInt(A.nwkey, next)
+
+    print(string.format("[GekkoCrush] BITE  pulse=%d", next))
+
+    local selfRef = self
+    timer.Simple(A.hit_t, function()
+        if not IsValid(selfRef) then return end
+
+        -- Straight forward lunge — no lateral offset.
+        -- Origin is elevated to head/spine4 height (sweep_z = 110).
+        local fwdRef = selfRef:GetForward()
+        local origin = selfRef:GetPos() + Vector(0, 0, A.sweep_z)
+        local half   = Vector(A.sweep_half, A.sweep_half, A.sweep_half)
+
+        local tr = util.TraceHull({
+            start  = origin,
+            endpos = origin + fwdRef * A.sweep_dist,
+            mins   = -half, maxs = half,
+            filter = selfRef, mask = MASK_SHOT_HULL,
+        })
+
+        if IsValid(tr.Entity) and (tr.Entity:IsNPC() or tr.Entity:IsPlayer()) then
+            -- Impulse carries a strong upward component to sell the
+            -- head-grab/lunge quality of the strike.
+            local impDir = (fwdRef + Vector(0, 0, 0.45)):GetNormalized()
+            CrushDamageEnt(selfRef, tr.Entity, A.dmg, impDir * A.impulse)
+
+            print(string.format("[GekkoCrush] BITE HIT  target=%s  pulse=%d",
+                tr.Entity:GetClass(), next))
         end
     end)
 end
@@ -693,11 +797,13 @@ function ENT:GeckoCrush_Think()
             { name = "FOOTBALLKICK",   w = ATTACKS.FOOTBALLKICK.w   },
             { name = "RFOOTBALLKICK",  w = ATTACKS.RFOOTBALLKICK.w  },
             { name = "DIAGONALKICK",   w = ATTACKS.DIAGONALKICK.w   },
+            { name = "DIAGONALKICKR",  w = ATTACKS.DIAGONALKICKR.w  },
             { name = "HEELHOOK",       w = ATTACKS.HEELHOOK.w       },
             { name = "SIDEHOOKKICK",   w = ATTACKS.SIDEHOOKKICK.w   },
             { name = "AXEKICK",        w = ATTACKS.AXEKICK.w        },
             { name = "RAXEKICK",       w = ATTACKS.RAXEKICK.w       },
             { name = "JUMPKICK",       w = ATTACKS.JUMPKICK.w       },
+            { name = "BITE",           w = ATTACKS.BITE.w           },
         }
 
         if kickTarget then
@@ -732,11 +838,13 @@ function ENT:GeckoCrush_Think()
     elseif attack == "FOOTBALLKICK"    then FireFootballKick(self)
     elseif attack == "RFOOTBALLKICK"   then FireRFootballKick(self)
     elseif attack == "DIAGONALKICK"    then FireDiagonalKick(self)
+    elseif attack == "DIAGONALKICKR"   then FireDiagonalKickR(self)
     elseif attack == "HEELHOOK"        then FireHeelHook(self)
     elseif attack == "SIDEHOOKKICK"    then FireSideHookKick(self)
     elseif attack == "AXEKICK"         then FireAxeKick(self, closestTarget, dot)
     elseif attack == "RAXEKICK"        then FireRAxeKick(self, closestTarget, dot)
     elseif attack == "JUMPKICK"        then FireJumpKick(self, closestTarget, fwd, dot)
+    elseif attack == "BITE"            then FireBite(self)
     else                                    FireSpinKick(self, closestTarget, fwd, dot, inCone)
     end
 end
