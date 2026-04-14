@@ -32,12 +32,12 @@ local RUN_ENGAGE_DIST    = 2300
 local RUN_DISENGAGE_DIST = 1600
 local RATE_SMOOTH_SPEED  = 8.0
 
-local MG_ROUNDS_MIN = 9
+local MG_ROUNDS_MIN = 11
 local MG_ROUNDS_MAX = 36
 local MG_INTERVAL   = 0.15
-local MG_DAMAGE     = 20
-local MG_SPREAD_MIN = 0.2
-local MG_SPREAD_MAX = 2.0
+local MG_DAMAGE     = 25
+local MG_SPREAD_MIN = 0.08
+local MG_SPREAD_MAX = 0.8
 
 -- Machinegun sounds
 local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
@@ -66,9 +66,9 @@ local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
 local WWEIGHT_GRENADE        = 10
 local WWEIGHT_TOPMISSILE     = 10
-local WWEIGHT_TRACKMISSILE   = 5
+local WWEIGHT_TRACKMISSILE   = 2
 local WWEIGHT_ORBITRPG       = 10
-local WWEIGHT_NIKITA         = 5
+local WWEIGHT_NIKITA         = 8
 
 local SALVO_SPREAD_XY = 220
 local SALVO_SPREAD_Z  = 80
@@ -78,7 +78,7 @@ local GL_COUNT_MIN    = 4
 local GL_COUNT_MAX    = 8
 local GL_INTERVAL     = 0.35
 local GL_SPREAD_Y     = 250
-local GL_LAUNCH_Z     = 180
+local GL_LAUNCH_Z     = 200
 local GL_SOUND_FIDGET = "mac_bo2_m32/fidget.wav"
 local GL_SOUND_FIRE   = "mac_bo2_m32/fire.wav"
 local GL_SOUND_INSERT = "mac_bo2_m32/insert.wav"
@@ -121,15 +121,15 @@ local NIKITA_MIN_DIST       = 800
 local MISSILE_SOUND_WARN    = "buttons/button17.wav"
 local MISSILE_SPAWN_FORWARD = 600
 local NIKITA_SPAWN_FORWARD  = 100
-local NIKITA_SPAWN_Z        = 400
+local NIKITA_SPAWN_Z        = 340
 
 -- --------------------------------------------------------
 --  Nikita muzzle-blast smoke cloud tuning
 -- --------------------------------------------------------
 -- How many SmokeEffect blasts to emit at the launcher nozzle.
-local NIKITA_MUZZLE_SMOKE_COUNT = 6
+local NIKITA_MUZZLE_SMOKE_COUNT = 5
 -- Scale passed to util.Effect("SmokeEffect") -- higher = bigger puff.
-local NIKITA_MUZZLE_SMOKE_SCALE = 2.2
+local NIKITA_MUZZLE_SMOKE_SCALE = 1.8
 -- Slight stagger between blasts (seconds) so they don't all stack on frame 0.
 local NIKITA_MUZZLE_SMOKE_STAGGER = 0.06
 

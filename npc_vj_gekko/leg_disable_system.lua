@@ -3,12 +3,12 @@
 --  Gekko VJ NPC — Leg disabling / grounded state
 -- ============================================================
 
-local GROUNDED_HEALTH_FRACTION = 0.90
+local GROUNDED_HEALTH_FRACTION = 0.30
 local GROUNDED_CHANCE          = 0.30
 
 local PELVIS_OFFSET_Z = -125
 local L_THIGH_ANG     = Angle(0, 0, -50)
-local R_THIGH_ANG     = Angle(126, -105, 0)
+local R_THIGH_ANG     = Angle(100, -80, 0)
 
 -- ============================================================
 --  Init

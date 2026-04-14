@@ -67,8 +67,8 @@ end
 --  JitterAng  : adds ±JITTER_DEG to each axis of a base Angle
 --  JitterDur  : shortens a duration by a random amount (never lengthens)
 -- ============================================================
-JITTER_DEG      = 5.0   -- ± degrees applied per axis
-JITTER_DUR_MAX  = 0.6   -- maximum seconds shaved off a duration
+JITTER_DEG      = 8.0   -- ± degrees applied per axis
+JITTER_DUR_MAX  = 0.4   -- maximum seconds shaved off a duration
 
 local function JitterAng(base)
     local function j() return (math.random() - 0.5) * 2 * JITTER_DEG end
@@ -97,11 +97,11 @@ KICK_L_BONE_RESET = KICK_BONE_RESET
 -- ============================================================
 --  HEADBUTT ANIMATION
 -- ============================================================
-HB_DURATION       = 0.8
-HB_PEAK           = 0.4
+HB_DURATION       = 1.3
+HB_PEAK           = 0.5
 HB_SPINE3_ANG_X   = -60
 HB_PEDESTAL_POS_X =  70
-HB_PEDESTAL_POS_Z = -45
+HB_PEDESTAL_POS_Z = -69
 HB_SPINE3_BONE    = "b_spine3"
 HB_PEDESTAL_BONE  = "b_pedestal"
 
@@ -140,21 +140,21 @@ FK360B_PISTON_YAW     = -8
 -- ============================================================
 --  SPINKICK ANIMATION
 -- ============================================================
-SK_DURATION = 1.4
-SK_P1_END   = 0.330
-SK_P2_END   = 0.500
-SK_P3_END   = 0.670
-SK_P4_END   = 0.800
+SK_DURATION = 1.5
+SK_P1_END   = 0.250
+SK_P2_END   = 0.570
+SK_P3_END   = 0.710
+SK_P4_END   = 1.200
 
-SK_RAMP       = 0.10
+SK_RAMP       = 0.15
 SK_YAW_TOTAL  = 690
 SK_PED_BONE   = "b_Pedestal"
 SK_PEL_BONE   = "b_pelvis"
 SK_HIP_BONE   = "b_r_hippiston1"
 SK_ULEG_BONE  = "b_r_upperleg"
-SK_PEL_DROP   = -60
+SK_PEL_DROP   = -80
 SK_HIP_Z      = -22
-SK_ULEG_X     = 110
+SK_ULEG_X     = 100
 
 -- ============================================================
 --  FOOTBALL KICK ANIMATION  (left leg)
@@ -175,10 +175,10 @@ FK_RHIP_BONE     = "b_r_hippiston1"
 -- ============================================================
 --  FOOTBALL KICK MIRRORED ANIMATION  (right leg)
 -- ============================================================
-FKR_DURATION      = 1.1
-FKR_PHASE_HOLD    = 0.300 / FKR_DURATION
+FKR_DURATION      = 1.3
+FKR_PHASE_HOLD    = 0.310 / FKR_DURATION
 FKR_PHASE_EXTEND  = 0.550 / FKR_DURATION
-FKR_PHASE_RECOVER = 0.700 / FKR_DURATION
+FKR_PHASE_RECOVER = 0.790 / FKR_DURATION
 
 FKR_RHIP_Y_PREP   = 105
 FKR_RHIP_X_PREP   =   36
@@ -258,12 +258,12 @@ DGKR_RHIP_BONE = "b_r_hippiston1"
 --    pelvis( 53, 50,129)  spine4 holds P2
 --  Phase 4 — smooth return to REST
 -- ============================================================
-BITE_DURATION = 2.8
-BITE_P0_END   = 0.380 / BITE_DURATION   -- ramp in         → phase 0 wind-up
-BITE_P1_END   = 0.490 / BITE_DURATION   -- phase 0         → phase 1 head-back
-BITE_P2_END   = 0.800 / BITE_DURATION   -- phase 1         → phase 2 body lean
-BITE_P3_END   = 1.100 / BITE_DURATION   -- phase 2         → phase 3 full strike
-BITE_P4_END   = 2.000 / BITE_DURATION   -- phase 3         → return (REST tail follows)
+BITE_DURATION = 1.5
+BITE_P0_END   = 0.200 / BITE_DURATION   -- ramp in         → phase 0 wind-up
+BITE_P1_END   = 0.480 / BITE_DURATION   -- phase 0         → phase 1 head-back
+BITE_P2_END   = 0.580 / BITE_DURATION   -- phase 1         → phase 2 body lean
+BITE_P3_END   = 0.780 / BITE_DURATION   -- phase 2         → phase 3 full strike
+BITE_P4_END   = 1.100 / BITE_DURATION   -- phase 3         → return (REST tail follows)
 
 -- phase 0 — wind-up
 BITE_P0_LHIP   = Angle(  46, -15,  15)
@@ -291,6 +291,9 @@ BITE_LHIP_BONE   = "b_l_hippiston1"
 BITE_RHIP_BONE   = "b_r_hippiston1"
 BITE_PELVIS_BONE = "b_pelvis"
 BITE_SPINE4_BONE = "b_spine3"   -- b_spine3: established lean bone, NOT the head-tracker
+BITE_PED_BONE    = "b_pedestal"
+BITE_PED_Z       = -70          -- crouch depth in local units
+BITE_PED_RAMP    = 0.20         -- fraction of duration used to ramp in / out
 
 -- ============================================================
 --  HEEL HOOK ANIMATION
@@ -1869,6 +1872,7 @@ local function GekkoDoBiteBone(ent)
         ent._biteRHipIdx   = ent:LookupBone(BITE_RHIP_BONE)   or -1
         ent._bitePelvisIdx = ent:LookupBone(BITE_PELVIS_BONE) or -1
         ent._biteSpineIdx  = ent:LookupBone(BITE_SPINE4_BONE) or -1   -- b_spine3
+        ent._bitePedIdx    = ent:LookupBone(BITE_PED_BONE)    or -1
         ent._biteStartTime = -9999
         ent._biteDuration  = BITE_DURATION
         ent._bitePulseLast = ent:GetNWInt("GekkoBitePulse", 0)
@@ -1933,6 +1937,9 @@ local function GekkoDoBiteBone(ent)
             end
             if ent._biteSpineIdx  >= 0 then
                 ent:ManipulateBoneAngles(ent._biteSpineIdx,  Angle(0,0,0), false)
+            end
+            if ent._bitePedIdx    >= 0 then
+                ent:ManipulateBonePosition(ent._bitePedIdx, Vector(0,0,0), false)
             end
         end
         return
@@ -2006,6 +2013,24 @@ local function GekkoDoBiteBone(ent)
     end
     if ent._biteSpineIdx  >= 0 then
         ent:ManipulateBoneAngles(ent._biteSpineIdx,  spine,  false)
+    end
+
+    -- Pedestal crouch: smooth arc for the full attack duration.
+    -- Ramps down over first BITE_PED_RAMP fraction, holds at BITE_PED_Z
+    -- through the strike, ramps back to 0 over the last BITE_PED_RAMP fraction.
+    -- Writes position Z only — no angles — so it cannot conflict with
+    -- FK360B (roll) or SpinKick (yaw) which only write pedestal angles.
+    if ent._bitePedIdx >= 0 then
+        local pedEnv
+        if t < BITE_PED_RAMP then
+            pedEnv = Smoothstep(t / BITE_PED_RAMP)
+        elseif t > (1.0 - BITE_PED_RAMP) then
+            pedEnv = Smoothstep((1.0 - t) / BITE_PED_RAMP)
+        else
+            pedEnv = 1.0
+        end
+        ent:ManipulateBonePosition(ent._bitePedIdx,
+            Vector(0, 0, BITE_PED_Z * pedEnv), false)
     end
 end
 
