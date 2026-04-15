@@ -131,35 +131,13 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
--- ============================================================
---  Aerial-chase system constants
---
---  AERIAL_Z_THRESHOLD  : how many units above the Gekko the
---    player must be before we switch into aerial-chase mode.
---    4500 u is roughly 3+ storeys -- comfortably above any
---    normal elevated cover but below skybox / noclip abuse.
---
---  AERIAL_CHASE_INTERVAL : how often (seconds) we reissue
---    MaintainAlertBehavior(true) to prod the pathfinder toward
---    the XY ground waypoint while the player is overhead.
---
---  AERIAL_ATTACK_INTERVAL : minimum seconds between independent
---    aerial attack ticks (actual cooldown also respects the
---    weapon's own NextRangeAttackTime).
---
---  AERIAL_EXIT_HYSTERESIS : player must drop back within this
---    many units below the threshold before aerial mode exits,
---    preventing rapid flicker at the boundary.
--- ============================================================
-local AERIAL_Z_THRESHOLD    = 4500
-local AERIAL_CHASE_INTERVAL = 0.3
+local AERIAL_Z_THRESHOLD     = 4500
+local AERIAL_CHASE_INTERVAL  = 0.3
 local AERIAL_ATTACK_INTERVAL = 6.0
 local AERIAL_EXIT_HYSTERESIS = 300
 
 -- ============================================================
 --  Effective-distance helper (Z weighted at 40 %)
---  Used for missile min-dist re-roll guards so a player
---  directly overhead doesn't spuriously trigger a re-roll.
 -- ============================================================
 local function GekkoEffectiveDist( posA, posB )
     local dx = posA.x - posB.x
@@ -168,7 +146,7 @@ local function GekkoEffectiveDist( posA, posB )
     return math.sqrt( dx*dx + dy*dy + dz*dz )
 end
 
--- Pure 2D (XY) distance -- used by the aerial chase system.
+-- Pure 2D (XY) distance
 local function Dist2D( posA, posB )
     local dx = posA.x - posB.x
     local dy = posA.y - posB.y
@@ -271,453 +249,8 @@ local function SendSonarLock( enemy )
 end
 
 -- ============================================================
---  AnimApply
--- ============================================================
-function ENT:AnimApply()
-    if CurTime() < (self._gekkoSuppressActivity or 0) then return true end
-    local js = self:GetGekkoJumpState()
-    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then return true end
-    return false
-end
-
-function ENT:SetAnimationTranslations()
-    if not self.AnimationTranslations then self.AnimationTranslations = {} end
-    local walkSeq = self:LookupSequence("walk")
-    local runSeq  = self:LookupSequence("run")
-    local idleSeq = self:LookupSequence("idle")
-    walkSeq = (walkSeq and walkSeq ~= -1) and walkSeq or 0
-    runSeq  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
-    idleSeq = (idleSeq and idleSeq ~= -1) and idleSeq or 0
-    self.AnimationTranslations[ACT_IDLE]                  = idleSeq
-    self.AnimationTranslations[ACT_WALK]                  = walkSeq
-    self.AnimationTranslations[ACT_RUN]                   = runSeq
-    self.AnimationTranslations[ACT_WALK_AIM]              = walkSeq
-    self.AnimationTranslations[ACT_RUN_AIM]               = runSeq
-    self.AnimationTranslations[ACT_RANGE_ATTACK1]         = idleSeq
-    self.AnimationTranslations[ACT_RANGE_ATTACK2]         = idleSeq
-    self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK1] = idleSeq
-    self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK2] = idleSeq
-    self.AnimationTranslations[ACT_IDLE_ANGRY]            = idleSeq
-    self.AnimationTranslations[ACT_COMBAT_IDLE]           = idleSeq
-    self.GekkoSeq_Walk = walkSeq
-    self.GekkoSeq_Run  = runSeq
-    self.GekkoSeq_Idle = idleSeq
-end
-
-function ENT:GekkoUpdateAnimation()
-    if self.Flinching then return end
-    local now    = CurTime()
-    local curPos = self:GetPos()
-    local vel    = 0
-    if self._gekkoLastPos and self._gekkoLastTime then
-        local dt = now - self._gekkoLastTime
-        if dt > 0 then vel = (curPos - self._gekkoLastPos):Length() / dt end
-    end
-    self._gekkoLastPos  = curPos
-    self._gekkoLastTime = now
-    self:SetNWFloat("GekkoSpeed", vel)
-    if now < (self._gekkoSuppressActivity or 0) then return end
-    if self._gekkoSkipAnimTick then self._gekkoSkipAnimTick = false return end
-    local jumpState = self:GetGekkoJumpState()
-    if jumpState == self.JUMP_RISING or jumpState == self.JUMP_FALLING or jumpState == self.JUMP_LAND
-    or (self._gekkoJustJumped and now < self._gekkoJustJumped) then
-        self:SetPoseParameter("move_x", 0) ; self:SetPoseParameter("move_y", 0)
-        return
-    end
-    if self:GeckoCrouch_Update() then return end
-    local enemy = GetActiveEnemy(self)
-    local dist  = 0
-    if IsValid(enemy) then
-        dist = self:GetPos():Distance(enemy:GetPos())
-        self._gekkoLastEnemyDist = dist
-    elseif self._gekkoLastEnemyDist then
-        dist = self._gekkoLastEnemyDist
-    end
-    if dist > RUN_ENGAGE_DIST    then self._gekkoRunning = true  end
-    if dist < RUN_DISENGAGE_DIST then self._gekkoRunning = false end
-    local targetSeq, arate
-    if vel > 5 then
-        if self._gekkoRunning then
-            targetSeq = self.GekkoSeq_Run  ; arate = vel / ANIM_RUN_SPEED
-        else
-            targetSeq = self.GekkoSeq_Walk ; arate = vel / ANIM_WALK_SPEED
-        end
-    elseif self._gekkoRunning then
-        targetSeq = self.GekkoSeq_Run  ; arate = 0.5
-    else
-        targetSeq = self.GekkoSeq_Idle ; arate = 1.0
-    end
-    arate = math.Clamp(arate, 0.5, 3.0)
-    if targetSeq and targetSeq ~= -1 then
-        if self._gekkoCurrentLocoSeq ~= targetSeq then
-            self._gekkoCurrentLocoSeq = targetSeq
-            self:ResetSequence(targetSeq)
-        end
-    end
-    if     targetSeq == self.GekkoSeq_Run  then self.Gekko_LastSeqName = "run"
-    elseif targetSeq == self.GekkoSeq_Walk then self.Gekko_LastSeqName = "walk"
-    else                                        self.Gekko_LastSeqName = "idle" end
-    self.Gekko_LastSeqIdx = targetSeq
-    self._gekkoTargetRate = arate
-    local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
-    self:SetPlaybackRate(smoothed)
-    self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
-end
-
-local function SafeInitVJTables( ent )
-    if not ent.VJ_AddOnDamage        then ent.VJ_AddOnDamage        = {} end
-    if not ent.VJ_DamageInfos        then ent.VJ_DamageInfos        = {} end
-    if not ent.VJ_DeathSounds        then ent.VJ_DeathSounds        = {} end
-    if not ent.VJ_PainSounds         then ent.VJ_PainSounds         = {} end
-    if not ent.VJ_IdleSounds         then ent.VJ_IdleSounds         = {} end
-    if not ent.VJ_FootstepSounds     then ent.VJ_FootstepSounds     = {} end
-    if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
-end
-
-function ENT:Init()
-    self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
-    self:SetSkin(1)
-    self.GekkoSpineBone = self:LookupBone("b_spine4")    or -1
-    self.GekkoLGunBone  = self:LookupBone("b_l_gunrack") or -1
-    self.GekkoRGunBone  = self:LookupBone("b_r_gunrack") or -1
-    self.Gekko_NextDebugT    = 0
-    self.Gekko_LastSeqName   = ""
-    self.Gekko_LastSeqIdx    = -1
-    self._missileCount       = 0
-    self._mgBurstActive      = false
-    self._mgBurstEndT        = 0
-    self._gekkoRunning       = false
-    self._gekkoLastEnemyDist = nil
-    self._gekkoLastPos       = self:GetPos()
-    self._gekkoLastTime      = CurTime() - 0.1
-    self._gekkoSuppressActivity  = 0
-    self._gekkoSkipAnimTick      = false
-    self._crushHitTimes          = {}
-    self._bloodSplatPulse        = 0
-    self._gibCooldownT           = 0
-    self._lastWeaponChoice       = ""
-    self._glSparkCounter         = 0
-    self._gekkoCurrentLocoSeq    = -1
-    self._gekkoTargetRate        = 1.0
-    -- LOS grace window (from previous commit)
-    self.GekkoLastVisibleTime    = 0
-    -- Aerial-chase system state
-    self._gekkoAerialMode        = false
-    self._gekkoNextChaseOverride = 0
-    self._gekkoNextAerialAtk     = 0
-    self:SetNWBool("GekkoMGFiring",     false)
-    self:SetNWInt("GekkoJumpDust",      0)
-    self:SetNWInt("GekkoLandDust",      0)
-    self:SetNWInt("GekkoFK360LandDust", 0)
-    self:SetNWInt("GekkoBloodSplat",    0)
-    SafeInitVJTables(self)
-    self:GekkoJump_Init()
-    self:GekkoTargetJump_Init()
-    self:GeckoCrouch_Init()
-    self:GekkoLegs_Init()
-    self:SetViewOffset(Vector(0, 0, 180))
-    local selfRef = self
-    timer.Simple(0, function()
-        if not IsValid(selfRef) then return end
-        selfRef:GekkoJump_Activate()
-        selfRef.StartMoveSpeed = selfRef.MoveSpeed or 150
-        selfRef.StartRunSpeed  = selfRef.RunSpeed  or 300
-        selfRef.StartWalkSpeed = selfRef.WalkSpeed or 150
-        local walkSeq = selfRef:LookupSequence("walk")
-        local runSeq  = selfRef:LookupSequence("run")
-        local idleSeq = selfRef:LookupSequence("idle")
-        selfRef.GekkoSeq_Walk = (walkSeq and walkSeq ~= -1) and walkSeq or 0
-        selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
-        selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
-        selfRef._gekkoCurrentLocoSeq = -1
-        selfRef:GeckoCrouch_CacheSeqs()
-        selfRef:SetAnimationTranslations()
-        selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
-        selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
-        selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
-        local mgAtt   = selfRef:GetAttachment(ATT_MACHINEGUN)
-        local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
-        local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
-        print(string.format(
-            "[GekkoNPC] Deferred activate | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
-            selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
-            selfRef.GekkoSeq_CrouchWalk or -1, selfRef.GekkoSeq_CrouchIdle or -1,
-            selfRef.GekkoSpineBone,
-            mgAtt and "OK" or "MISSING",
-            misLAtt and "OK" or "MISSING",
-            misRAtt and "OK" or "MISSING"
-        ))
-    end)
-end
-
-function ENT:Activate()
-    local base = self.BaseClass
-    if base and base.Activate and base.Activate ~= ENT.Activate then base.Activate(self) end
-    SafeInitVJTables(self)
-end
-
-function ENT:GetShootPos()
-    return self:GetPos() + Vector(0, 0, 180)
-end
-
-function ENT:OnTakeDamage( dmginfo )
-    dmginfo:SetDamageForce(Vector(0,0,0))
-    local hitPos = dmginfo:GetDamagePosition()
-    if hitPos == vector_origin then
-        local inflictor = dmginfo:GetInflictor()
-        if IsValid(inflictor) then
-            hitPos = inflictor:GetPos()
-        else
-            dmginfo:SetDamagePosition(self:GetPos())
-            self.BaseClass.OnTakeDamage(self, dmginfo) ; return
-        end
-    end
-    local _, maxs = self:GetCollisionBounds()
-    local headZ   = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
-    if hitPos.z > headZ then dmginfo:ScaleDamage(1/3) end
-    local rawDmg = dmginfo:GetDamage()
-    local doSplat
-    if self._gekkoLegsDisabled then
-        doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
-    else
-        doSplat = (math.random(1,BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
-    end
-    if doSplat then
-        self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
-        local variant = math.random(1,5)
-        self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse*8 + (variant-1))
-    end
-    self:GekkoLegs_OnDamage(dmginfo)
-    self:GekkoGib_OnDamage(rawDmg, dmginfo)
-    dmginfo:SetDamagePosition(self:GetPos())
-    self.BaseClass.OnTakeDamage(self, dmginfo)
-end
-
--- ============================================================
---  LOS grace window (keeps weapons firing during brief flickers)
--- ============================================================
-local VISIBLE_GRACE = 3.0
-
-function ENT:OnThinkAttack( isAttacking, enemy )
-    if IsValid(enemy) and self:Visible(enemy) then
-        self.GekkoLastVisibleTime = CurTime()
-    end
-end
-
-function ENT:OnRangeAttack( status, enemy )
-    if status ~= "PreInit" then return end
-    if not IsValid(enemy) then return true end
-    -- In aerial mode the independent attack ticker handles firing;
-    -- let VJ Base's own cycle also proceed so we get double coverage.
-    if self._gekkoAerialMode then return false end
-    local recentlySeen = (CurTime() - (self.GekkoLastVisibleTime or 0)) < VISIBLE_GRACE
-    if recentlySeen then return false end
-    if self:Visible(enemy) then
-        self.GekkoLastVisibleTime = CurTime()
-        return false
-    end
-    return true
-end
-
--- ============================================================
---  AERIAL CHASE SYSTEM
---
---  Called every tick from OnThink.
---  Returns true while aerial mode is active so OnThink can skip
---  systems that conflict (e.g. targeted-jump toward a sky pos).
---
---  What it does:
---  1. Measures raw dz between enemy and self.
---  2. When dz >= AERIAL_Z_THRESHOLD: enters aerial mode.
---     a. Computes a ground waypoint = enemy XY at the Gekko's
---        own Z floor, so TASK_GET_PATH_TO_ENEMY gets a reachable
---        navmesh position instead of a sky coordinate.
---     b. Calls self:UpdateEnemyMemory(enemy, groundWaypoint) so
---        VJ Base's internal last-known-pos points toward the
---        correct XY direction on the ground plane.
---     c. Directly patches selfData.EnemyData.VisibleTime and
---        selfData.EnemyData.Distance so:
---        - EnemyTimeout never fires (enemy is never "lost")
---        - The NextChaseTime penalty uses 2D distance, not the
---          huge 3D diagonal that inflates it to 4000+ units.
---     d. Every AERIAL_CHASE_INTERVAL seconds, calls
---        self:MaintainAlertBehavior(true) with the alwaysChase
---        flag to keep SCHEDULE_ALERT_CHASE running toward the
---        ground waypoint.
---  3. When dz drops below threshold - AERIAL_EXIT_HYSTERESIS:
---     exits aerial mode; normal VJ Base behaviour resumes.
--- ============================================================
-function ENT:GekkoAerialChase_Think( enemy )
-    local myPos  = self:GetPos()
-    local enePos = enemy:GetPos()
-    local dz     = enePos.z - myPos.z
-
-    -- Threshold check with hysteresis
-    local enterThresh = AERIAL_Z_THRESHOLD
-    local exitThresh  = AERIAL_Z_THRESHOLD - AERIAL_EXIT_HYSTERESIS
-    if self._gekkoAerialMode then
-        if dz < exitThresh then
-            -- Player came back down -- exit aerial mode cleanly
-            self._gekkoAerialMode = false
-            print("[GekkoAerial] EXIT aerial mode | dz=" .. math.floor(dz))
-            return false
-        end
-    else
-        if dz < enterThresh then return false end
-        -- Enter aerial mode
-        self._gekkoAerialMode    = true
-        self._gekkoNextChaseOverride = 0
-        self._gekkoNextAerialAtk     = CurTime() + 1.0
-        print("[GekkoAerial] ENTER aerial mode | dz=" .. math.floor(dz))
-    end
-
-    -- ---- Ground waypoint: enemy XY, Gekko Z ----
-    -- We nudge it slightly toward the Gekko so it is never exactly
-    -- at the Gekko's own feet (zero-length path guard).
-    local groundWaypoint = Vector(enePos.x, enePos.y, myPos.z)
-    local toWP = groundWaypoint - myPos
-    if toWP:Length() < 32 then
-        -- Enemy is nearly directly above; project forward a bit so
-        -- the pathfinder gets a non-trivial goal.
-        groundWaypoint = myPos + self:GetForward() * 128
-    end
-
-    -- ---- Feed VJ Base the XY position ----
-    -- UpdateEnemyMemory updates the engine's "last known position"
-    -- which is what TASK_GET_PATH_TO_ENEMY uses for routing.
-    self:UpdateEnemyMemory(enemy, groundWaypoint)
-
-    -- Patch VisibleTime every tick so EnemyTimeout never triggers.
-    -- Patch Distance with 2D distance so the chase-delay formula
-    -- (NextChaseTime += 1 when Distance > 2000) stays sane.
-    local selfData = self:GetTable()
-    if selfData and selfData.EnemyData then
-        selfData.EnemyData.VisibleTime = CurTime()
-        selfData.EnemyData.Visible     = true
-        selfData.EnemyData.Distance    = Dist2D(myPos, enePos)
-        selfData.EnemyData.VisiblePos  = groundWaypoint
-    end
-
-    -- ---- Reissue chase schedule on cadence ----
-    local now = CurTime()
-    if now >= self._gekkoNextChaseOverride then
-        self._gekkoNextChaseOverride = now + AERIAL_CHASE_INTERVAL
-        -- alwaysChase = true bypasses DisableChasingEnemy / IsGuard
-        -- and skips the melee-distance stop check.
-        self:MaintainAlertBehavior(true)
-    end
-
-    return true  -- aerial mode is active
-end
-
--- ============================================================
---  AERIAL ATTACK SYSTEM
---
---  Fires weapons at the REAL enemy position (not the ground
---  waypoint) on an independent cadence while in aerial mode.
---  This bypasses VJ Base's eneIsVisible gate entirely.
---
---  We write back IsAbleToRangeAttack = false after firing and
---  let the base restore it via its own cooldown timer so the
---  two attack pipelines don't double-fire simultaneously.
--- ============================================================
-function ENT:GekkoAerialAttack_Think( enemy )
-    if not self._gekkoAerialMode then return end
-    local now = CurTime()
-    if now < self._gekkoNextAerialAtk then return end
-
-    -- Don't fire while a burst / flinch / jump is already running
-    local selfData = self:GetTable()
-    if selfData then
-        if selfData.Flinching then return end
-        if selfData.AttackType and selfData.AttackType ~= 0 then return end
-    end
-    local js = self:GetGekkoJumpState()
-    if js == self.JUMP_RISING or js == self.JUMP_FALLING then return end
-    if self._mgBurstActive then return end
-
-    -- Roll and fire at the real position
-    local choice = RollWeapon()
-    self._lastWeaponChoice = choice
-    print("[GekkoAerial] Aerial attack | choice=" .. choice)
-    local fired = false
-    if     choice == "MG"           then fired = FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
-    elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
-    else                                 fired = FireGrenadeLauncher(self, enemy)
-    end
-
-    if fired then
-        self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
-        -- Keep the base's own range-attack cooldown in sync so it
-        -- doesn't immediately try to fire again on the next tick.
-        if selfData then
-            selfData.IsAbleToRangeAttack = false
-            selfData.NextDoAnyAttackT    = now + AERIAL_ATTACK_INTERVAL
-        end
-    else
-        -- Fire failed (e.g. entity missing); retry sooner
-        self._gekkoNextAerialAtk = now + 2.0
-    end
-end
-
-function ENT:OnThink()
-    if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
-    if self._mgBurstActive and CurTime() > self._mgBurstEndT then
-        self._mgBurstActive = false
-        self:SetNWBool("GekkoMGFiring", false)
-    end
-
-    -- Aerial systems -- run before jump/crouch so they get priority
-    local enemy = GetActiveEnemy(self)
-    if IsValid(enemy) then
-        local aerial = self:GekkoAerialChase_Think(enemy)
-        if aerial then
-            self:GekkoAerialAttack_Think(enemy)
-        end
-    elseif self._gekkoAerialMode then
-        -- Lost enemy entirely while in aerial mode; reset cleanly
-        self._gekkoAerialMode = false
-    end
-
-    self:GekkoJump_Think()
-    -- Only run targeted-jump when NOT in aerial mode, because the
-    -- target jump tries to path to the real 3D enemy position and
-    -- would fight against the aerial chase ground-waypoint.
-    if not self._gekkoAerialMode then
-        self:GekkoTargetJump_Think()
-    end
-    self:GekkoUpdateAnimation()
-    self:GeckoCrush_Think()
-
-    if CurTime() > self.Gekko_NextDebugT then
-        local dist, src
-        if IsValid(enemy) then
-            dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
-            src  = IsValid(self.VJ_TheEnemy) and "vj" or "engine"
-        elseif self._gekkoLastEnemyDist then
-            dist = math.floor(self._gekkoLastEnemyDist) ; src = "cached"
-        else
-            dist = -1 ; src = "none"
-        end
-        print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s aerial=%s",
-            self:GetNWFloat("GekkoSpeed",0), tostring(self.Gekko_LastSeqName),
-            tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
-            JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
-            tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
-            tostring(self._lastWeaponChoice), tostring(self._gekkoAerialMode)
-        ))
-        self.Gekko_NextDebugT = CurTime() + 1
-    end
-end
-
--- ============================================================
---  Weapons
+--  Weapons  (defined BEFORE GekkoAerialAttack_Think so that
+--  function can call them as upvalues, not globals)
 -- ============================================================
 local function FireMGBurst( ent, enemy )
     if ent._mgBurstActive then return false end
@@ -963,6 +496,390 @@ local function FireNikita( ent, enemy )
     end
     print(string.format("[GekkoNikita] Launched NPC | eff_dist=%.0f target=%s", dist, tostring(enemy)))
     return true
+end
+
+-- ============================================================
+--  AnimApply
+-- ============================================================
+function ENT:AnimApply()
+    if CurTime() < (self._gekkoSuppressActivity or 0) then return true end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then return true end
+    return false
+end
+
+function ENT:SetAnimationTranslations()
+    if not self.AnimationTranslations then self.AnimationTranslations = {} end
+    local walkSeq = self:LookupSequence("walk")
+    local runSeq  = self:LookupSequence("run")
+    local idleSeq = self:LookupSequence("idle")
+    walkSeq = (walkSeq and walkSeq ~= -1) and walkSeq or 0
+    runSeq  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
+    idleSeq = (idleSeq and idleSeq ~= -1) and idleSeq or 0
+    self.AnimationTranslations[ACT_IDLE]                  = idleSeq
+    self.AnimationTranslations[ACT_WALK]                  = walkSeq
+    self.AnimationTranslations[ACT_RUN]                   = runSeq
+    self.AnimationTranslations[ACT_WALK_AIM]              = walkSeq
+    self.AnimationTranslations[ACT_RUN_AIM]               = runSeq
+    self.AnimationTranslations[ACT_RANGE_ATTACK1]         = idleSeq
+    self.AnimationTranslations[ACT_RANGE_ATTACK2]         = idleSeq
+    self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK1] = idleSeq
+    self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK2] = idleSeq
+    self.AnimationTranslations[ACT_IDLE_ANGRY]            = idleSeq
+    self.AnimationTranslations[ACT_COMBAT_IDLE]           = idleSeq
+    self.GekkoSeq_Walk = walkSeq
+    self.GekkoSeq_Run  = runSeq
+    self.GekkoSeq_Idle = idleSeq
+end
+
+function ENT:GekkoUpdateAnimation()
+    if self.Flinching then return end
+    local now    = CurTime()
+    local curPos = self:GetPos()
+    local vel    = 0
+    if self._gekkoLastPos and self._gekkoLastTime then
+        local dt = now - self._gekkoLastTime
+        if dt > 0 then vel = (curPos - self._gekkoLastPos):Length() / dt end
+    end
+    self._gekkoLastPos  = curPos
+    self._gekkoLastTime = now
+    self:SetNWFloat("GekkoSpeed", vel)
+    if now < (self._gekkoSuppressActivity or 0) then return end
+    if self._gekkoSkipAnimTick then self._gekkoSkipAnimTick = false return end
+    local jumpState = self:GetGekkoJumpState()
+    if jumpState == self.JUMP_RISING or jumpState == self.JUMP_FALLING or jumpState == self.JUMP_LAND
+    or (self._gekkoJustJumped and now < self._gekkoJustJumped) then
+        self:SetPoseParameter("move_x", 0) ; self:SetPoseParameter("move_y", 0)
+        return
+    end
+    if self:GeckoCrouch_Update() then return end
+    local enemy = GetActiveEnemy(self)
+    local dist  = 0
+    if IsValid(enemy) then
+        dist = self:GetPos():Distance(enemy:GetPos())
+        self._gekkoLastEnemyDist = dist
+    elseif self._gekkoLastEnemyDist then
+        dist = self._gekkoLastEnemyDist
+    end
+    if dist > RUN_ENGAGE_DIST    then self._gekkoRunning = true  end
+    if dist < RUN_DISENGAGE_DIST then self._gekkoRunning = false end
+    local targetSeq, arate
+    if vel > 5 then
+        if self._gekkoRunning then
+            targetSeq = self.GekkoSeq_Run  ; arate = vel / ANIM_RUN_SPEED
+        else
+            targetSeq = self.GekkoSeq_Walk ; arate = vel / ANIM_WALK_SPEED
+        end
+    elseif self._gekkoRunning then
+        targetSeq = self.GekkoSeq_Run  ; arate = 0.5
+    else
+        targetSeq = self.GekkoSeq_Idle ; arate = 1.0
+    end
+    arate = math.Clamp(arate, 0.5, 3.0)
+    if targetSeq and targetSeq ~= -1 then
+        if self._gekkoCurrentLocoSeq ~= targetSeq then
+            self._gekkoCurrentLocoSeq = targetSeq
+            self:ResetSequence(targetSeq)
+        end
+    end
+    if     targetSeq == self.GekkoSeq_Run  then self.Gekko_LastSeqName = "run"
+    elseif targetSeq == self.GekkoSeq_Walk then self.Gekko_LastSeqName = "walk"
+    else                                        self.Gekko_LastSeqName = "idle" end
+    self.Gekko_LastSeqIdx = targetSeq
+    self._gekkoTargetRate = arate
+    local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
+    self:SetPlaybackRate(smoothed)
+    self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
+end
+
+local function SafeInitVJTables( ent )
+    if not ent.VJ_AddOnDamage        then ent.VJ_AddOnDamage        = {} end
+    if not ent.VJ_DamageInfos        then ent.VJ_DamageInfos        = {} end
+    if not ent.VJ_DeathSounds        then ent.VJ_DeathSounds        = {} end
+    if not ent.VJ_PainSounds         then ent.VJ_PainSounds         = {} end
+    if not ent.VJ_IdleSounds         then ent.VJ_IdleSounds         = {} end
+    if not ent.VJ_FootstepSounds     then ent.VJ_FootstepSounds     = {} end
+    if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
+end
+
+function ENT:Init()
+    self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
+    self:SetSkin(1)
+    self.GekkoSpineBone = self:LookupBone("b_spine4")    or -1
+    self.GekkoLGunBone  = self:LookupBone("b_l_gunrack") or -1
+    self.GekkoRGunBone  = self:LookupBone("b_r_gunrack") or -1
+    self.Gekko_NextDebugT    = 0
+    self.Gekko_LastSeqName   = ""
+    self.Gekko_LastSeqIdx    = -1
+    self._missileCount       = 0
+    self._mgBurstActive      = false
+    self._mgBurstEndT        = 0
+    self._gekkoRunning       = false
+    self._gekkoLastEnemyDist = nil
+    self._gekkoLastPos       = self:GetPos()
+    self._gekkoLastTime      = CurTime() - 0.1
+    self._gekkoSuppressActivity  = 0
+    self._gekkoSkipAnimTick      = false
+    self._crushHitTimes          = {}
+    self._bloodSplatPulse        = 0
+    self._gibCooldownT           = 0
+    self._lastWeaponChoice       = ""
+    self._glSparkCounter         = 0
+    self._gekkoCurrentLocoSeq    = -1
+    self._gekkoTargetRate        = 1.0
+    self.GekkoLastVisibleTime    = 0
+    self._gekkoAerialMode        = false
+    self._gekkoNextChaseOverride = 0
+    self._gekkoNextAerialAtk     = 0
+    self:SetNWBool("GekkoMGFiring",     false)
+    self:SetNWInt("GekkoJumpDust",      0)
+    self:SetNWInt("GekkoLandDust",      0)
+    self:SetNWInt("GekkoFK360LandDust", 0)
+    self:SetNWInt("GekkoBloodSplat",    0)
+    SafeInitVJTables(self)
+    self:GekkoJump_Init()
+    self:GekkoTargetJump_Init()
+    self:GeckoCrouch_Init()
+    self:GekkoLegs_Init()
+    self:SetViewOffset(Vector(0, 0, 180))
+    local selfRef = self
+    timer.Simple(0, function()
+        if not IsValid(selfRef) then return end
+        selfRef:GekkoJump_Activate()
+        selfRef.StartMoveSpeed = selfRef.MoveSpeed or 150
+        selfRef.StartRunSpeed  = selfRef.RunSpeed  or 300
+        selfRef.StartWalkSpeed = selfRef.WalkSpeed or 150
+        local walkSeq = selfRef:LookupSequence("walk")
+        local runSeq  = selfRef:LookupSequence("run")
+        local idleSeq = selfRef:LookupSequence("idle")
+        selfRef.GekkoSeq_Walk = (walkSeq and walkSeq ~= -1) and walkSeq or 0
+        selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
+        selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
+        selfRef._gekkoCurrentLocoSeq = -1
+        selfRef:GeckoCrouch_CacheSeqs()
+        selfRef:SetAnimationTranslations()
+        selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
+        selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
+        selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
+        local mgAtt   = selfRef:GetAttachment(ATT_MACHINEGUN)
+        local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
+        local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
+        print(string.format(
+            "[GekkoNPC] Deferred activate | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
+            selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
+            selfRef.GekkoSeq_CrouchWalk or -1, selfRef.GekkoSeq_CrouchIdle or -1,
+            selfRef.GekkoSpineBone,
+            mgAtt and "OK" or "MISSING",
+            misLAtt and "OK" or "MISSING",
+            misRAtt and "OK" or "MISSING"
+        ))
+    end)
+end
+
+function ENT:Activate()
+    local base = self.BaseClass
+    if base and base.Activate and base.Activate ~= ENT.Activate then base.Activate(self) end
+    SafeInitVJTables(self)
+end
+
+function ENT:GetShootPos()
+    return self:GetPos() + Vector(0, 0, 180)
+end
+
+function ENT:OnTakeDamage( dmginfo )
+    dmginfo:SetDamageForce(Vector(0,0,0))
+    local hitPos = dmginfo:GetDamagePosition()
+    if hitPos == vector_origin then
+        local inflictor = dmginfo:GetInflictor()
+        if IsValid(inflictor) then
+            hitPos = inflictor:GetPos()
+        else
+            dmginfo:SetDamagePosition(self:GetPos())
+            self.BaseClass.OnTakeDamage(self, dmginfo) ; return
+        end
+    end
+    local _, maxs = self:GetCollisionBounds()
+    local headZ   = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
+    if hitPos.z > headZ then dmginfo:ScaleDamage(1/3) end
+    local rawDmg = dmginfo:GetDamage()
+    local doSplat
+    if self._gekkoLegsDisabled then
+        doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
+    else
+        doSplat = (math.random(1,BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
+    end
+    if doSplat then
+        self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
+        local variant = math.random(1,5)
+        self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse*8 + (variant-1))
+    end
+    self:GekkoLegs_OnDamage(dmginfo)
+    self:GekkoGib_OnDamage(rawDmg, dmginfo)
+    dmginfo:SetDamagePosition(self:GetPos())
+    self.BaseClass.OnTakeDamage(self, dmginfo)
+end
+
+-- ============================================================
+--  LOS grace window
+-- ============================================================
+local VISIBLE_GRACE = 3.0
+
+function ENT:OnThinkAttack( isAttacking, enemy )
+    if IsValid(enemy) and self:Visible(enemy) then
+        self.GekkoLastVisibleTime = CurTime()
+    end
+end
+
+function ENT:OnRangeAttack( status, enemy )
+    if status ~= "PreInit" then return end
+    if not IsValid(enemy) then return true end
+    if self._gekkoAerialMode then return false end
+    local recentlySeen = (CurTime() - (self.GekkoLastVisibleTime or 0)) < VISIBLE_GRACE
+    if recentlySeen then return false end
+    if self:Visible(enemy) then
+        self.GekkoLastVisibleTime = CurTime()
+        return false
+    end
+    return true
+end
+
+-- ============================================================
+--  AERIAL CHASE SYSTEM
+-- ============================================================
+function ENT:GekkoAerialChase_Think( enemy )
+    local myPos  = self:GetPos()
+    local enePos = enemy:GetPos()
+    local dz     = enePos.z - myPos.z
+
+    local enterThresh = AERIAL_Z_THRESHOLD
+    local exitThresh  = AERIAL_Z_THRESHOLD - AERIAL_EXIT_HYSTERESIS
+    if self._gekkoAerialMode then
+        if dz < exitThresh then
+            self._gekkoAerialMode = false
+            print("[GekkoAerial] EXIT aerial mode | dz=" .. math.floor(dz))
+            return false
+        end
+    else
+        if dz < enterThresh then return false end
+        self._gekkoAerialMode    = true
+        self._gekkoNextChaseOverride = 0
+        self._gekkoNextAerialAtk     = CurTime() + 1.0
+        print("[GekkoAerial] ENTER aerial mode | dz=" .. math.floor(dz))
+    end
+
+    local groundWaypoint = Vector(enePos.x, enePos.y, myPos.z)
+    local toWP = groundWaypoint - myPos
+    if toWP:Length() < 32 then
+        groundWaypoint = myPos + self:GetForward() * 128
+    end
+
+    self:UpdateEnemyMemory(enemy, groundWaypoint)
+
+    local selfData = self:GetTable()
+    if selfData and selfData.EnemyData then
+        selfData.EnemyData.VisibleTime = CurTime()
+        selfData.EnemyData.Visible     = true
+        selfData.EnemyData.Distance    = Dist2D(myPos, enePos)
+        selfData.EnemyData.VisiblePos  = groundWaypoint
+    end
+
+    local now = CurTime()
+    if now >= self._gekkoNextChaseOverride then
+        self._gekkoNextChaseOverride = now + AERIAL_CHASE_INTERVAL
+        self:MaintainAlertBehavior(true)
+    end
+
+    return true
+end
+
+-- ============================================================
+--  AERIAL ATTACK SYSTEM
+--  All Fire* locals are defined above this function, so they
+--  are valid upvalues here.
+-- ============================================================
+function ENT:GekkoAerialAttack_Think( enemy )
+    if not self._gekkoAerialMode then return end
+    local now = CurTime()
+    if now < self._gekkoNextAerialAtk then return end
+
+    local selfData = self:GetTable()
+    if selfData then
+        if selfData.Flinching then return end
+        if selfData.AttackType and selfData.AttackType ~= 0 then return end
+    end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING or js == self.JUMP_FALLING then return end
+    if self._mgBurstActive then return end
+
+    local choice = RollWeapon()
+    self._lastWeaponChoice = choice
+    print("[GekkoAerial] Aerial attack | choice=" .. choice)
+    local fired = false
+    if     choice == "MG"           then fired = FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
+    elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
+    elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
+    elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
+    elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
+    else                                 fired = FireGrenadeLauncher(self, enemy)
+    end
+
+    if fired then
+        self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
+        if selfData then
+            selfData.IsAbleToRangeAttack = false
+            selfData.NextDoAnyAttackT    = now + AERIAL_ATTACK_INTERVAL
+        end
+    else
+        self._gekkoNextAerialAtk = now + 2.0
+    end
+end
+
+function ENT:OnThink()
+    if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
+    if self._mgBurstActive and CurTime() > self._mgBurstEndT then
+        self._mgBurstActive = false
+        self:SetNWBool("GekkoMGFiring", false)
+    end
+
+    local enemy = GetActiveEnemy(self)
+    if IsValid(enemy) then
+        local aerial = self:GekkoAerialChase_Think(enemy)
+        if aerial then
+            self:GekkoAerialAttack_Think(enemy)
+        end
+    elseif self._gekkoAerialMode then
+        self._gekkoAerialMode = false
+    end
+
+    self:GekkoJump_Think()
+    if not self._gekkoAerialMode then
+        self:GekkoTargetJump_Think()
+    end
+    self:GekkoUpdateAnimation()
+    self:GeckoCrush_Think()
+
+    if CurTime() > self.Gekko_NextDebugT then
+        local dist, src
+        if IsValid(enemy) then
+            dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
+            src  = IsValid(self.VJ_TheEnemy) and "vj" or "engine"
+        elseif self._gekkoLastEnemyDist then
+            dist = math.floor(self._gekkoLastEnemyDist) ; src = "cached"
+        else
+            dist = -1 ; src = "none"
+        end
+        print(string.format(
+            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s aerial=%s",
+            self:GetNWFloat("GekkoSpeed",0), tostring(self.Gekko_LastSeqName),
+            tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
+            JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
+            tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
+            tostring(self._lastWeaponChoice), tostring(self._gekkoAerialMode)
+        ))
+        self.Gekko_NextDebugT = CurTime() + 1
+    end
 end
 
 -- ============================================================
