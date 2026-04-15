@@ -40,13 +40,11 @@ local MG_DAMAGE     = 25
 local MG_SPREAD_MIN = 0.08
 local MG_SPREAD_MAX = 0.8
 
--- Machinegun sounds
 local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 95
 
--- Common rocket / salvo launch sounds
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
     "gekko/wp0040_se_gun_fire_02.wav",
@@ -54,7 +52,6 @@ local ROCKET_SND_FIRE = {
 }
 local ROCKET_SND_LEVEL = 95
 
--- Top-attack / track missile launch sounds
 local TOPMISSILE_SND_FIRE = {
     "gekko/wp10e0_se_stinger_pass_1.wav",
     "gekko/wp0302_se_missile_fire_1.wav",
@@ -124,9 +121,6 @@ local MISSILE_SPAWN_FORWARD = 600
 local NIKITA_SPAWN_FORWARD  = 100
 local NIKITA_SPAWN_Z        = 340
 
--- --------------------------------------------------------
---  Nikita muzzle-blast smoke cloud tuning
--- --------------------------------------------------------
 local NIKITA_MUZZLE_SMOKE_COUNT   = 5
 local NIKITA_MUZZLE_SMOKE_SCALE   = 1.8
 local NIKITA_MUZZLE_SMOKE_STAGGER = 0.06
@@ -138,18 +132,47 @@ local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- ============================================================
---  Z-distance fix: effective distance helper
---  Raw 3D distance over-penalises vertically offset targets.
---  Z is weighted at 40 % so a player 800 u directly overhead
---  registers ~320 u effective distance instead of 800 u.
---  Used for missile min-dist re-roll guards only; VJ Base's
---  own range-gate uses raw distance which is already 900 000.
+--  Aerial-chase system constants
+--
+--  AERIAL_Z_THRESHOLD  : how many units above the Gekko the
+--    player must be before we switch into aerial-chase mode.
+--    4500 u is roughly 3+ storeys -- comfortably above any
+--    normal elevated cover but below skybox / noclip abuse.
+--
+--  AERIAL_CHASE_INTERVAL : how often (seconds) we reissue
+--    MaintainAlertBehavior(true) to prod the pathfinder toward
+--    the XY ground waypoint while the player is overhead.
+--
+--  AERIAL_ATTACK_INTERVAL : minimum seconds between independent
+--    aerial attack ticks (actual cooldown also respects the
+--    weapon's own NextRangeAttackTime).
+--
+--  AERIAL_EXIT_HYSTERESIS : player must drop back within this
+--    many units below the threshold before aerial mode exits,
+--    preventing rapid flicker at the boundary.
+-- ============================================================
+local AERIAL_Z_THRESHOLD    = 4500
+local AERIAL_CHASE_INTERVAL = 0.3
+local AERIAL_ATTACK_INTERVAL = 6.0
+local AERIAL_EXIT_HYSTERESIS = 300
+
+-- ============================================================
+--  Effective-distance helper (Z weighted at 40 %)
+--  Used for missile min-dist re-roll guards so a player
+--  directly overhead doesn't spuriously trigger a re-roll.
 -- ============================================================
 local function GekkoEffectiveDist( posA, posB )
     local dx = posA.x - posB.x
     local dy = posA.y - posB.y
     local dz = (posA.z - posB.z) * 0.4
     return math.sqrt( dx*dx + dy*dy + dz*dz )
+end
+
+-- Pure 2D (XY) distance -- used by the aerial chase system.
+local function Dist2D( posA, posB )
+    local dx = posA.x - posB.x
+    local dy = posA.y - posB.y
+    return math.sqrt( dx*dx + dy*dy )
 end
 
 -- ============================================================
@@ -376,8 +399,12 @@ function ENT:Init()
     self._glSparkCounter         = 0
     self._gekkoCurrentLocoSeq    = -1
     self._gekkoTargetRate        = 1.0
-    -- Z-distance fix: tracks last time the enemy was within LOS
+    -- LOS grace window (from previous commit)
     self.GekkoLastVisibleTime    = 0
+    -- Aerial-chase system state
+    self._gekkoAerialMode        = false
+    self._gekkoNextChaseOverride = 0
+    self._gekkoNextAerialAtk     = 0
     self:SetNWBool("GekkoMGFiring",     false)
     self:SetNWInt("GekkoJumpDust",      0)
     self:SetNWInt("GekkoLandDust",      0)
@@ -388,9 +415,6 @@ function ENT:Init()
     self:GekkoTargetJump_Init()
     self:GeckoCrouch_Init()
     self:GekkoLegs_Init()
-    -- Raise the AI eye origin to the top of the hull so LOS traces
-    -- to elevated players clear nearby floor geometry instead of
-    -- hitting it and causing eneIsVisible to flicker false.
     self:SetViewOffset(Vector(0, 0, 180))
     local selfRef = self
     timer.Simple(0, function()
@@ -432,8 +456,6 @@ function ENT:Activate()
     SafeInitVJTables(self)
 end
 
--- Override GetShootPos so projectile-spawn and LOS traces originate
--- from the top of the hull rather than near the floor.
 function ENT:GetShootPos()
     return self:GetPos() + Vector(0, 0, 180)
 end
@@ -472,13 +494,9 @@ function ENT:OnTakeDamage( dmginfo )
 end
 
 -- ============================================================
---  Z-distance fix: OnThinkAttack -- keep GekkoLastVisibleTime fresh
---  Called every think tick by VJ Base while an enemy is valid.
---  We use it to timestamp genuine LOS hits so the grace window
---  in OnRangeAttack can sustain the attack cycle during brief
---  LOS interruptions (e.g. the player stepping behind a ledge).
+--  LOS grace window (keeps weapons firing during brief flickers)
 -- ============================================================
-local VISIBLE_GRACE = 3.0   -- seconds to stay "engaged" after losing LOS
+local VISIBLE_GRACE = 3.0
 
 function ENT:OnThinkAttack( isAttacking, enemy )
     if IsValid(enemy) and self:Visible(enemy) then
@@ -486,25 +504,165 @@ function ENT:OnThinkAttack( isAttacking, enemy )
     end
 end
 
--- ============================================================
---  Z-distance fix: OnRangeAttack PreInit grace window
---  VJ Base calls OnRangeAttack("PreInit", enemy) and blocks the
---  attack if this returns true.  We return false (= allow) whenever
---  the enemy was seen within VISIBLE_GRACE seconds, bypassing the
---  frame-by-frame eneIsVisible flicker that stalls weapons when
---  the player is on a high platform.
--- ============================================================
 function ENT:OnRangeAttack( status, enemy )
     if status ~= "PreInit" then return end
-    if not IsValid(enemy) then return true end  -- no valid enemy: block
+    if not IsValid(enemy) then return true end
+    -- In aerial mode the independent attack ticker handles firing;
+    -- let VJ Base's own cycle also proceed so we get double coverage.
+    if self._gekkoAerialMode then return false end
     local recentlySeen = (CurTime() - (self.GekkoLastVisibleTime or 0)) < VISIBLE_GRACE
-    if recentlySeen then return false end       -- allow attack
-    -- Fallback: if we can see them right now, also allow
+    if recentlySeen then return false end
     if self:Visible(enemy) then
         self.GekkoLastVisibleTime = CurTime()
         return false
     end
-    return true  -- truly out of sight and grace expired: block
+    return true
+end
+
+-- ============================================================
+--  AERIAL CHASE SYSTEM
+--
+--  Called every tick from OnThink.
+--  Returns true while aerial mode is active so OnThink can skip
+--  systems that conflict (e.g. targeted-jump toward a sky pos).
+--
+--  What it does:
+--  1. Measures raw dz between enemy and self.
+--  2. When dz >= AERIAL_Z_THRESHOLD: enters aerial mode.
+--     a. Computes a ground waypoint = enemy XY at the Gekko's
+--        own Z floor, so TASK_GET_PATH_TO_ENEMY gets a reachable
+--        navmesh position instead of a sky coordinate.
+--     b. Calls self:UpdateEnemyMemory(enemy, groundWaypoint) so
+--        VJ Base's internal last-known-pos points toward the
+--        correct XY direction on the ground plane.
+--     c. Directly patches selfData.EnemyData.VisibleTime and
+--        selfData.EnemyData.Distance so:
+--        - EnemyTimeout never fires (enemy is never "lost")
+--        - The NextChaseTime penalty uses 2D distance, not the
+--          huge 3D diagonal that inflates it to 4000+ units.
+--     d. Every AERIAL_CHASE_INTERVAL seconds, calls
+--        self:MaintainAlertBehavior(true) with the alwaysChase
+--        flag to keep SCHEDULE_ALERT_CHASE running toward the
+--        ground waypoint.
+--  3. When dz drops below threshold - AERIAL_EXIT_HYSTERESIS:
+--     exits aerial mode; normal VJ Base behaviour resumes.
+-- ============================================================
+function ENT:GekkoAerialChase_Think( enemy )
+    local myPos  = self:GetPos()
+    local enePos = enemy:GetPos()
+    local dz     = enePos.z - myPos.z
+
+    -- Threshold check with hysteresis
+    local enterThresh = AERIAL_Z_THRESHOLD
+    local exitThresh  = AERIAL_Z_THRESHOLD - AERIAL_EXIT_HYSTERESIS
+    if self._gekkoAerialMode then
+        if dz < exitThresh then
+            -- Player came back down -- exit aerial mode cleanly
+            self._gekkoAerialMode = false
+            print("[GekkoAerial] EXIT aerial mode | dz=" .. math.floor(dz))
+            return false
+        end
+    else
+        if dz < enterThresh then return false end
+        -- Enter aerial mode
+        self._gekkoAerialMode    = true
+        self._gekkoNextChaseOverride = 0
+        self._gekkoNextAerialAtk     = CurTime() + 1.0
+        print("[GekkoAerial] ENTER aerial mode | dz=" .. math.floor(dz))
+    end
+
+    -- ---- Ground waypoint: enemy XY, Gekko Z ----
+    -- We nudge it slightly toward the Gekko so it is never exactly
+    -- at the Gekko's own feet (zero-length path guard).
+    local groundWaypoint = Vector(enePos.x, enePos.y, myPos.z)
+    local toWP = groundWaypoint - myPos
+    if toWP:Length() < 32 then
+        -- Enemy is nearly directly above; project forward a bit so
+        -- the pathfinder gets a non-trivial goal.
+        groundWaypoint = myPos + self:GetForward() * 128
+    end
+
+    -- ---- Feed VJ Base the XY position ----
+    -- UpdateEnemyMemory updates the engine's "last known position"
+    -- which is what TASK_GET_PATH_TO_ENEMY uses for routing.
+    self:UpdateEnemyMemory(enemy, groundWaypoint)
+
+    -- Patch VisibleTime every tick so EnemyTimeout never triggers.
+    -- Patch Distance with 2D distance so the chase-delay formula
+    -- (NextChaseTime += 1 when Distance > 2000) stays sane.
+    local selfData = self:GetTable()
+    if selfData and selfData.EnemyData then
+        selfData.EnemyData.VisibleTime = CurTime()
+        selfData.EnemyData.Visible     = true
+        selfData.EnemyData.Distance    = Dist2D(myPos, enePos)
+        selfData.EnemyData.VisiblePos  = groundWaypoint
+    end
+
+    -- ---- Reissue chase schedule on cadence ----
+    local now = CurTime()
+    if now >= self._gekkoNextChaseOverride then
+        self._gekkoNextChaseOverride = now + AERIAL_CHASE_INTERVAL
+        -- alwaysChase = true bypasses DisableChasingEnemy / IsGuard
+        -- and skips the melee-distance stop check.
+        self:MaintainAlertBehavior(true)
+    end
+
+    return true  -- aerial mode is active
+end
+
+-- ============================================================
+--  AERIAL ATTACK SYSTEM
+--
+--  Fires weapons at the REAL enemy position (not the ground
+--  waypoint) on an independent cadence while in aerial mode.
+--  This bypasses VJ Base's eneIsVisible gate entirely.
+--
+--  We write back IsAbleToRangeAttack = false after firing and
+--  let the base restore it via its own cooldown timer so the
+--  two attack pipelines don't double-fire simultaneously.
+-- ============================================================
+function ENT:GekkoAerialAttack_Think( enemy )
+    if not self._gekkoAerialMode then return end
+    local now = CurTime()
+    if now < self._gekkoNextAerialAtk then return end
+
+    -- Don't fire while a burst / flinch / jump is already running
+    local selfData = self:GetTable()
+    if selfData then
+        if selfData.Flinching then return end
+        if selfData.AttackType and selfData.AttackType ~= 0 then return end
+    end
+    local js = self:GetGekkoJumpState()
+    if js == self.JUMP_RISING or js == self.JUMP_FALLING then return end
+    if self._mgBurstActive then return end
+
+    -- Roll and fire at the real position
+    local choice = RollWeapon()
+    self._lastWeaponChoice = choice
+    print("[GekkoAerial] Aerial attack | choice=" .. choice)
+    local fired = false
+    if     choice == "MG"           then fired = FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
+    elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
+    elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
+    elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
+    elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
+    else                                 fired = FireGrenadeLauncher(self, enemy)
+    end
+
+    if fired then
+        self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
+        -- Keep the base's own range-attack cooldown in sync so it
+        -- doesn't immediately try to fire again on the next tick.
+        if selfData then
+            selfData.IsAbleToRangeAttack = false
+            selfData.NextDoAnyAttackT    = now + AERIAL_ATTACK_INTERVAL
+        end
+    else
+        -- Fire failed (e.g. entity missing); retry sooner
+        self._gekkoNextAerialAtk = now + 2.0
+    end
 end
 
 function ENT:OnThink()
@@ -513,14 +671,30 @@ function ENT:OnThink()
         self._mgBurstActive = false
         self:SetNWBool("GekkoMGFiring", false)
     end
+
+    -- Aerial systems -- run before jump/crouch so they get priority
+    local enemy = GetActiveEnemy(self)
+    if IsValid(enemy) then
+        local aerial = self:GekkoAerialChase_Think(enemy)
+        if aerial then
+            self:GekkoAerialAttack_Think(enemy)
+        end
+    elseif self._gekkoAerialMode then
+        -- Lost enemy entirely while in aerial mode; reset cleanly
+        self._gekkoAerialMode = false
+    end
+
     self:GekkoJump_Think()
-    self:GekkoTargetJump_Think()
-    -- Random jump system (inactive when targeted system fires)
-    -- if self:GekkoJump_ShouldJump() then self:GekkoJump_Execute() end
+    -- Only run targeted-jump when NOT in aerial mode, because the
+    -- target jump tries to path to the real 3D enemy position and
+    -- would fight against the aerial chase ground-waypoint.
+    if not self._gekkoAerialMode then
+        self:GekkoTargetJump_Think()
+    end
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
+
     if CurTime() > self.Gekko_NextDebugT then
-        local enemy = GetActiveEnemy(self)
         local dist, src
         if IsValid(enemy) then
             dist = math.floor(self:GetPos():Distance(enemy:GetPos()))
@@ -531,12 +705,12 @@ function ENT:OnThink()
             dist = -1 ; src = "none"
         end
         print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s",
+            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s aerial=%s",
             self:GetNWFloat("GekkoSpeed",0), tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
-            tostring(self._lastWeaponChoice)
+            tostring(self._lastWeaponChoice), tostring(self._gekkoAerialMode)
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
@@ -615,11 +789,6 @@ local function FireGrenadeLauncher( ent, enemy )
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
     local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
     local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
-
-    -- NOTE: forward, right, and origin are intentionally NOT cached here.
-    -- They are re-sampled inside each timer callback so grenades always
-    -- launch from the Gekko's *current* position and facing at fire time.
-
     ent._glSparkCounter = 0
     ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
     timer.Simple(GL_FIDGET_LEAD + (count-1)*GL_INTERVAL + 0.1, function()
@@ -630,12 +799,9 @@ local function FireGrenadeLauncher( ent, enemy )
         local shotNumber = i+1
         timer.Simple(GL_FIDGET_LEAD + i*GL_INTERVAL, function()
             if not IsValid(ent) then return end
-
-            -- Re-sample position/facing every shot
             local forward = ent:GetForward()
             local right   = ent:GetRight()
             local origin  = ent:GetPos() + Vector(0,0,GL_LAUNCH_Z)
-
             ent:EmitSound(GL_SOUND_FIRE, 80, math.random(95, 105), 1)
             GLSparkAtAttachment(ent, shotNumber)
             GLVaporAtAttachment(ent, shotNumber)
@@ -687,8 +853,6 @@ local function FireOrbitRpg( ent, enemy )
 end
 
 local function FireTopMissile( ent, enemy )
-    -- Use effective distance so a player directly overhead doesn't
-    -- spuriously trigger the too-close re-roll.
     local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
         print(string.format("[GekkoTM] Too close (eff=%.0f) -- re-rolling", dist))
@@ -741,17 +905,12 @@ local function FireTrackMissile( ent, enemy )
     return true
 end
 
--- ============================================================
---  Weapon: Nikita homing cruise missile (full VJ SNPC)
--- ============================================================
-
 local function NikitaMuzzleSmoke( ent )
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local attData = ent:GetAttachment(attIdx)
     local nozzle  = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
     local nozzDir = attData and attData.Ang:Forward() or ent:GetForward()
-
     for i = 0, NIKITA_MUZZLE_SMOKE_COUNT - 1 do
         local delay  = i * NIKITA_MUZZLE_SMOKE_STAGGER
         local pos    = nozzle
@@ -774,9 +933,7 @@ local function FireNikita( ent, enemy )
         print(string.format("[GekkoNikita] Too close (eff=%.0f) -- re-rolling", dist))
         return FireMGBurst(ent, enemy)
     end
-
     NikitaMuzzleSmoke(ent)
-
     local toTarget2D = (enemy:GetPos() - ent:GetPos())
     toTarget2D.z = 0
     if toTarget2D:Length() > 0 then toTarget2D:Normalize() end
@@ -809,7 +966,7 @@ local function FireNikita( ent, enemy )
 end
 
 -- ============================================================
---  Range attack
+--  Range attack (VJ Base pipeline -- normal / ground combat)
 -- ============================================================
 function ENT:OnRangeAttackExecute( status, enemy, projectile )
     if status ~= "Init" then return end
@@ -838,6 +995,7 @@ function ENT:OnDeath( dmginfo, hitgroup, status )
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
+    self._gekkoAerialMode = false
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
