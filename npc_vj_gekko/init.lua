@@ -15,6 +15,7 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("crush_system.lua")
 include("jump_system.lua")
+include("targeted_jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
@@ -370,6 +371,7 @@ function ENT:Init()
     self:SetNWInt("GekkoBloodSplat",    0)
     SafeInitVJTables(self)
     self:GekkoJump_Init()
+    self:GekkoTargetJump_Init()
     self:GeckoCrouch_Init()
     self:GekkoLegs_Init()
     local selfRef = self
@@ -452,7 +454,9 @@ function ENT:OnThink()
         self:SetNWBool("GekkoMGFiring", false)
     end
     self:GekkoJump_Think()
-    if self:GekkoJump_ShouldJump() then self:GekkoJump_Execute() end
+    self:GekkoTargetJump_Think()
+    -- Random jump system (inactive when targeted system fires)
+    -- if self:GekkoJump_ShouldJump() then self:GekkoJump_Execute() end
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
     if CurTime() > self.Gekko_NextDebugT then
