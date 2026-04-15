@@ -1,14 +1,5 @@
 -- ============================================================
 --  npc_vj_gekko / init.lua
---  Weapon list:
---  1. Machine-gun burst         (FireBullets)
---  2. Single accurate missile   (obj_vj_rocket)
---  3. Double inaccurate salvo   (obj_vj_rocket x2)
---  4. Grenade launcher barrage  (bombin_gas_grenade / stun / flash)
---  5. Top-attack terror missile (sent_npc_topmissile)
---  6. Active-track missile      (sent_npc_trackmissile)
---  7. Orbit RPG                 (sent_orbital_rpg)
---  8. Nikita cruise missile     (npc_vj_gekko_nikita)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -133,14 +124,19 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 
 local AERIAL_Z_THRESHOLD     = 4500
 local AERIAL_CHASE_INTERVAL  = 0.3
+-- Interval between aerial weapon fires (VJ Base's own NextRangeAttackTime
+-- governs ground cadence; this governs aerial-only intercept cadence).
 local AERIAL_ATTACK_INTERVAL = 6.0
 local AERIAL_EXIT_HYSTERESIS = 300
 
--- How often the watchdog checks for a stuck IsAbleToRangeAttack
-local WATCHDOG_INTERVAL = 2.0
+-- Watchdog polls this often; only un-sticks IsAbleToRangeAttack,
+-- never zeros any timer (zeroing timers re-triggers VJ Base instantly).
+local WATCHDOG_INTERVAL      = 3.0
+-- How far past the attack deadline before watchdog intervenes.
+local WATCHDOG_GRACE         = 8.0
 
 -- ============================================================
---  Effective-distance helper (Z weighted at 40 %)
+--  Helpers
 -- ============================================================
 local function GekkoEffectiveDist( posA, posB )
     local dx = posA.x - posB.x
@@ -149,16 +145,12 @@ local function GekkoEffectiveDist( posA, posB )
     return math.sqrt( dx*dx + dy*dy + dz*dz )
 end
 
--- Pure 2D (XY) distance
 local function Dist2D( posA, posB )
     local dx = posA.x - posB.x
     local dy = posA.y - posB.y
     return math.sqrt( dx*dx + dy*dy )
 end
 
--- ============================================================
---  Helpers
--- ============================================================
 local function GetActiveEnemy( ent )
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -252,8 +244,7 @@ local function SendSonarLock( enemy )
 end
 
 -- ============================================================
---  Weapons  (defined BEFORE GekkoAerialAttack_Think so that
---  function can call them as upvalues, not globals)
+--  Weapons
 -- ============================================================
 local function FireMGBurst( ent, enemy )
     if ent._mgBurstActive then return false end
@@ -391,7 +382,6 @@ end
 local function FireTopMissile( ent, enemy )
     local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
-        print(string.format("[GekkoTM] Too close (eff=%.0f) -- re-rolling", dist))
         local alt = RerollNotMissile("TOPMISSILE")
         if     alt == "MG"       then return FireMGBurst(ent, enemy)
         elseif alt == "MISSILE"  then return FireMissile(ent, enemy)
@@ -405,18 +395,16 @@ local function FireTopMissile( ent, enemy )
     local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
     local faceAng    = (enemy:GetPos()-launchPos):GetNormalized():Angle() ; faceAng.p=0
     local missile = ents.Create("sent_npc_topmissile")
-    if not IsValid(missile) then print("[GekkoTM] ERROR: create failed") return FireGrenadeLauncher(ent,enemy) end
+    if not IsValid(missile) then return FireGrenadeLauncher(ent,enemy) end
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    print(string.format("[GekkoTM] Launched | eff_dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
 
 local function FireTrackMissile( ent, enemy )
     local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
-        print(string.format("[GekkoTRK] Too close (eff=%.0f) -- re-rolling", dist))
         local alt = RerollNotMissile("TRACKMISSILE")
         if     alt == "MG"          then return FireMGBurst(ent, enemy)
         elseif alt == "MISSILE"     then return FireMissile(ent, enemy)
@@ -432,12 +420,11 @@ local function FireTrackMissile( ent, enemy )
     local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
     local faceAng    = (enemy:GetPos()-launchPos):GetNormalized():Angle() ; faceAng.p=0
     local missile = ents.Create("sent_npc_trackmissile")
-    if not IsValid(missile) then print("[GekkoTRK] ERROR: create failed") return FireGrenadeLauncher(ent,enemy) end
+    if not IsValid(missile) then return FireGrenadeLauncher(ent,enemy) end
     missile.Owner    = ent
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    print(string.format("[GekkoTRK] Launched | eff_dist=%.0f tracking=%s", dist, tostring(enemy)))
     return true
 end
 
@@ -466,7 +453,6 @@ end
 local function FireNikita( ent, enemy )
     local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < NIKITA_MIN_DIST then
-        print(string.format("[GekkoNikita] Too close (eff=%.0f) -- re-rolling", dist))
         return FireMGBurst(ent, enemy)
     end
     NikitaMuzzleSmoke(ent)
@@ -480,7 +466,6 @@ local function FireNikita( ent, enemy )
     local launchDir = (aimPos - spawnPos):GetNormalized()
     local nikita = ents.Create("npc_vj_gekko_nikita")
     if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: npc_vj_gekko_nikita create failed")
         return FireMissile(ent, enemy)
     end
     nikita:SetPos(spawnPos)
@@ -497,32 +482,40 @@ local function FireNikita( ent, enemy )
             nikita:SetEnemy(enemy)
         end
     end
-    print(string.format("[GekkoNikita] Launched NPC | eff_dist=%.0f target=%s", dist, tostring(enemy)))
     return true
 end
 
 -- ============================================================
+--  Dispatch helper used by both ground (Execute) and aerial
+--  (PreInit intercept) paths.
+-- ============================================================
+local function GekkoFireWeapon( ent, enemy )
+    local choice = RollWeapon()
+    ent._lastWeaponChoice = choice
+    print("[GekkoFire] " .. choice)
+    if     choice == "MG"           then return FireMGBurst(ent, enemy)
+    elseif choice == "MISSILE"      then return FireMissile(ent, enemy)
+    elseif choice == "SALVO"        then return FireDoubleSalvo(ent, enemy)
+    elseif choice == "TOPMISSILE"   then return FireTopMissile(ent, enemy)
+    elseif choice == "TRACKMISSILE" then return FireTrackMissile(ent, enemy)
+    elseif choice == "ORBITRPG"     then return FireOrbitRpg(ent, enemy)
+    elseif choice == "NIKITA"       then return FireNikita(ent, enemy)
+    else                                 return FireGrenadeLauncher(ent, enemy)
+    end
+end
+
+-- ============================================================
 --  Attack readiness reset
---  Call this whenever we need to hand control back to the VJ
---  Base range-attack state machine (aerial exit, watchdog).
---  We NEVER touch IsAbleToRangeAttack or NextDoAnyAttackT
---  during normal aerial fire -- those belong to VJ Base only.
+--  Only un-sticks the boolean gate and clears AttackType.
+--  NEVER zeros NextRangeAttackTime or NextAnyAttackTime_Range
+--  -- doing so would re-trigger VJ Base's fire cycle instantly.
 -- ============================================================
 function ENT:GekkoResetAttackReadiness()
     local sd = self:GetTable()
     if not sd then return end
-    -- Un-freeze the range attack gate
-    sd.IsAbleToRangeAttack   = true
-    -- Clear any stale attack-type lock
-    sd.AttackType            = 0
-    -- Let the next attack fire immediately
-    sd.NextRangeAttackTime   = 0
-    sd.NextAnyAttackTime_Range = 0
-    -- Reset VJ Base's combined "any attack" timer too
-    if sd.NextDoAnyAttackT ~= nil then
-        sd.NextDoAnyAttackT = CurTime()
-    end
-    print("[GekkoReset] Attack readiness restored")
+    sd.IsAbleToRangeAttack = true
+    sd.AttackType          = 0
+    print("[GekkoReset] IsAbleToRangeAttack un-stuck")
 end
 
 -- ============================================================
@@ -658,7 +651,7 @@ function ENT:Init()
     self._gekkoAerialMode        = false
     self._gekkoNextChaseOverride = 0
     self._gekkoNextAerialAtk     = 0
-    self._gekkoNextWatchdog      = 0   -- watchdog timer
+    self._gekkoNextWatchdog      = 0
     self:SetNWBool("GekkoMGFiring",     false)
     self:SetNWInt("GekkoJumpDust",      0)
     self:SetNWInt("GekkoLandDust",      0)
@@ -673,7 +666,6 @@ function ENT:Init()
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
-        selfRef:GekkoJump_Activate()
         selfRef.StartMoveSpeed = selfRef.MoveSpeed or 150
         selfRef.StartRunSpeed  = selfRef.RunSpeed  or 300
         selfRef.StartWalkSpeed = selfRef.WalkSpeed or 150
@@ -689,18 +681,10 @@ function ENT:Init()
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
         selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
         selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
-        local mgAtt   = selfRef:GetAttachment(ATT_MACHINEGUN)
-        local misLAtt = selfRef:GetAttachment(ATT_MISSILE_L)
-        local misRAtt = selfRef:GetAttachment(ATT_MISSILE_R)
-        print(string.format(
-            "[GekkoNPC] Deferred activate | walk=%d run=%d idle=%d | c_walk=%d cidle=%d | Spine4=%d | MG=%s MissL=%s MissR=%s",
-            selfRef.GekkoSeq_Walk, selfRef.GekkoSeq_Run, selfRef.GekkoSeq_Idle,
-            selfRef.GekkoSeq_CrouchWalk or -1, selfRef.GekkoSeq_CrouchIdle or -1,
-            selfRef.GekkoSpineBone,
-            mgAtt and "OK" or "MISSING",
-            misLAtt and "OK" or "MISSING",
-            misRAtt and "OK" or "MISSING"
-        ))
+        selfRef:GekkoJump_Activate()
+        print("[GekkoNPC] Activated | walk=" .. selfRef.GekkoSeq_Walk
+            .. " run=" .. selfRef.GekkoSeq_Run
+            .. " idle=" .. selfRef.GekkoSeq_Idle)
     end)
 end
 
@@ -748,10 +732,8 @@ function ENT:OnTakeDamage( dmginfo )
 end
 
 -- ============================================================
---  LOS grace window
+--  LOS grace (used by OnThinkAttack)
 -- ============================================================
-local VISIBLE_GRACE = 3.0
-
 function ENT:OnThinkAttack( isAttacking, enemy )
     if IsValid(enemy) and self:Visible(enemy) then
         self.GekkoLastVisibleTime = CurTime()
@@ -761,59 +743,45 @@ end
 -- ============================================================
 --  OnRangeAttack
 --
---  "PreInit" fires BEFORE VJ Base spawns the base projectile.
---  Returning true  = block the attack entirely (VJ Base does nothing).
---  Returning false = let VJ Base continue (it would try to spawn
---                    RangeAttackProjectiles, which is false here,
---                    so it would fall through to OnRangeAttackExecute).
+--  This is the SINGLE chokepoint that decides whether VJ Base
+--  fires or we fire ourselves.
 --
---  For AERIAL mode we fire the weapon ourselves here, then return
---  TRUE to stop VJ Base from doing anything further.  This is the
---  safe pattern -- returning false in aerial mode previously let
---  VJ Base start an attack cycle with a nil projectile, stalling
---  IsAbleToRangeAttack permanently.
+--  AERIAL mode  (player is AERIAL_Z_THRESHOLD units above):
+--    We own the cadence via _gekkoNextAerialAtk.
+--    Fire ourselves then return TRUE to fully suppress VJ Base.
+--    If the aerial cooldown hasn't expired, still return TRUE
+--    so VJ Base stays blocked until we're ready.
 --
---  For GROUND mode we simply return false so VJ Base runs its
---  normal pipeline through to OnRangeAttackExecute.
+--  GROUND mode:
+--    Return FALSE unconditionally so VJ Base's state machine
+--    continues normally to OnRangeAttackExecute.
+--    Do NOT fire here -- OnRangeAttackExecute does it.
 -- ============================================================
 function ENT:OnRangeAttack( status, enemy )
     if status ~= "PreInit" then return end
-    if not IsValid(enemy) then return true end  -- block: no target
+    if not IsValid(enemy) then return true end  -- no target: suppress
 
-    -- AERIAL: intercept here, fire ourselves, suppress VJ Base
     if self._gekkoAerialMode then
         local now = CurTime()
         if now >= self._gekkoNextAerialAtk then
-            local choice = RollWeapon()
-            self._lastWeaponChoice = choice
-            print("[GekkoAerial][PreInit] Aerial intercept | choice=" .. choice)
-            local fired = false
-            if     choice == "MG"           then fired = FireMGBurst(self, enemy)
-            elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
-            elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
-            elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
-            elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
-            elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
-            elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
-            else                                 fired = FireGrenadeLauncher(self, enemy)
-            end
-            if fired then
-                self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
-            else
-                self._gekkoNextAerialAtk = now + 2.0
-            end
+            local fired = GekkoFireWeapon(self, enemy)
+            self._gekkoNextAerialAtk = now + (fired and AERIAL_ATTACK_INTERVAL or 2.0)
+            print(string.format("[GekkoAerial] Fired | next=%.1f", self._gekkoNextAerialAtk))
+        else
+            print(string.format("[GekkoAerial] Blocked (cooldown %.1fs left)",
+                self._gekkoNextAerialAtk - now))
         end
-        -- Always return true in aerial mode: we handled it (or it's on
-        -- cooldown). Either way, prevent VJ Base from touching anything.
-        return true
+        return true  -- always suppress VJ Base in aerial mode
     end
 
-    -- GROUND: allow VJ Base to run its normal pipeline
+    -- Ground: let VJ Base run through to OnRangeAttackExecute
     return false
 end
 
 -- ============================================================
 --  AERIAL CHASE SYSTEM
+--  Keeps the Gekko pathing toward the ground projection of an
+--  elevated enemy, and manages the aerial mode flag.
 -- ============================================================
 function ENT:GekkoAerialChase_Think( enemy )
     local myPos  = self:GetPos()
@@ -822,12 +790,12 @@ function ENT:GekkoAerialChase_Think( enemy )
 
     local enterThresh = AERIAL_Z_THRESHOLD
     local exitThresh  = AERIAL_Z_THRESHOLD - AERIAL_EXIT_HYSTERESIS
+
     if self._gekkoAerialMode then
         if dz < exitThresh then
             self._gekkoAerialMode = false
-            -- Give VJ Base a clean slate so ground attacks resume immediately
             self:GekkoResetAttackReadiness()
-            print("[GekkoAerial] EXIT aerial mode | dz=" .. math.floor(dz))
+            print("[GekkoAerial] EXIT | dz=" .. math.floor(dz))
             return false
         end
     else
@@ -835,15 +803,13 @@ function ENT:GekkoAerialChase_Think( enemy )
         self._gekkoAerialMode        = true
         self._gekkoNextChaseOverride = 0
         self._gekkoNextAerialAtk     = CurTime() + 1.0
-        print("[GekkoAerial] ENTER aerial mode | dz=" .. math.floor(dz))
+        print("[GekkoAerial] ENTER | dz=" .. math.floor(dz))
     end
 
     local groundWaypoint = Vector(enePos.x, enePos.y, myPos.z)
-    local toWP = groundWaypoint - myPos
-    if toWP:Length() < 32 then
+    if (groundWaypoint - myPos):Length() < 32 then
         groundWaypoint = myPos + self:GetForward() * 128
     end
-
     self:UpdateEnemyMemory(enemy, groundWaypoint)
 
     local selfData = self:GetTable()
@@ -864,55 +830,11 @@ function ENT:GekkoAerialChase_Think( enemy )
 end
 
 -- ============================================================
---  AERIAL ATTACK SYSTEM
---  This is now a secondary path: GekkoAerialChase_Think keeps
---  the Gekko moving toward the ground projection, while
---  OnRangeAttack(PreInit) intercepts VJ Base's own fire
---  trigger and routes it through our weapons.  This function
---  is kept as a fallback self-tick for cases where VJ Base's
---  attack trigger hasn't fired yet this interval.
--- ============================================================
-function ENT:GekkoAerialAttack_Think( enemy )
-    if not self._gekkoAerialMode then return end
-    local now = CurTime()
-    if now < self._gekkoNextAerialAtk then return end
-
-    local selfData = self:GetTable()
-    if selfData then
-        if selfData.Flinching then return end
-        if selfData.AttackType and selfData.AttackType ~= 0 then return end
-    end
-    local js = self:GetGekkoJumpState()
-    if js == self.JUMP_RISING or js == self.JUMP_FALLING then return end
-    if self._mgBurstActive then return end
-
-    local choice = RollWeapon()
-    self._lastWeaponChoice = choice
-    print("[GekkoAerial] Self-tick attack | choice=" .. choice)
-    local fired = false
-    if     choice == "MG"           then fired = FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
-    elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
-    else                                 fired = FireGrenadeLauncher(self, enemy)
-    end
-
-    -- NOTE: do NOT touch selfData.IsAbleToRangeAttack or
-    -- NextDoAnyAttackT here.  Let VJ Base own those entirely.
-    if fired then
-        self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
-    else
-        self._gekkoNextAerialAtk = now + 2.0
-    end
-end
-
--- ============================================================
---  Watchdog: runs every WATCHDOG_INTERVAL seconds.
---  If IsAbleToRangeAttack is stuck false while the Gekko has
---  a valid enemy and is not mid-burst, force-reset it.
+--  Watchdog
+--  Polls every WATCHDOG_INTERVAL seconds.
+--  ONLY un-sticks IsAbleToRangeAttack if it has been false
+--  for longer than WATCHDOG_GRACE seconds past its deadline.
+--  Never touches NextRangeAttackTime or any other timer.
 -- ============================================================
 function ENT:GekkoWatchdog_Think( enemy )
     local now = CurTime()
@@ -925,21 +847,20 @@ function ENT:GekkoWatchdog_Think( enemy )
     local sd = self:GetTable()
     if not sd then return end
 
-    -- IsAbleToRangeAttack should have been restored by VJ Base's own
-    -- timer (NextRangeAttackTime).  If it hasn't, we intervene.
     if sd.IsAbleToRangeAttack == false then
         local deadline = (sd.NextRangeAttackTime or 0)
-        if now > deadline + 1.0 then
-            -- It's been at least 1s past when it should have reset
+        if now > deadline + WATCHDOG_GRACE then
             print(string.format(
-                "[GekkoWatchdog] IsAbleToRangeAttack stuck false (deadline=%.1f now=%.1f) -- forcing reset",
-                deadline, now
-            ))
+                "[GekkoWatchdog] Stuck false for %.1fs past deadline -- un-sticking",
+                now - deadline))
             self:GekkoResetAttackReadiness()
         end
     end
 end
 
+-- ============================================================
+--  OnThink
+-- ============================================================
 function ENT:OnThink()
     if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
@@ -949,10 +870,7 @@ function ENT:OnThink()
 
     local enemy = GetActiveEnemy(self)
     if IsValid(enemy) then
-        local aerial = self:GekkoAerialChase_Think(enemy)
-        if aerial then
-            self:GekkoAerialAttack_Think(enemy)
-        end
+        self:GekkoAerialChase_Think(enemy)
         self:GekkoWatchdog_Think(enemy)
     elseif self._gekkoAerialMode then
         self._gekkoAerialMode = false
@@ -980,36 +898,26 @@ function ENT:OnThink()
         local able = sd and tostring(sd.IsAbleToRangeAttack) or "?"
         local nrat = sd and string.format("%.1f", sd.NextRangeAttackTime or 0) or "?"
         print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s aerial=%s ableRng=%s nrat=%s",
-            self:GetNWFloat("GekkoSpeed",0), tostring(self.Gekko_LastSeqName),
-            tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
+            "[GekkoDBG] seq=%s run=%s dist=%d(%s) jump=%s mgActive=%s lastWpn=%s aerial=%s ableRng=%s nrat=%s",
+            tostring(self.Gekko_LastSeqName), tostring(self._gekkoRunning),
+            dist, src,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
-            tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
-            tostring(self._lastWeaponChoice), tostring(self._gekkoAerialMode),
-            able, nrat
+            tostring(self._mgBurstActive), tostring(self._lastWeaponChoice),
+            tostring(self._gekkoAerialMode), able, nrat
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
 end
 
 -- ============================================================
---  Range attack (VJ Base pipeline -- normal / ground combat)
+--  OnRangeAttackExecute  (ground mode only)
+--  VJ Base calls this after PreInit returns false.
+--  This is the one and only ground fire path.
 -- ============================================================
 function ENT:OnRangeAttackExecute( status, enemy, projectile )
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
-    local choice = RollWeapon()
-    self._lastWeaponChoice = choice
-    print("[GekkoWpn] Roll -> " .. choice)
-    if     choice == "MG"           then return FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"      then return FireMissile(self, enemy)
-    elseif choice == "SALVO"        then return FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"       then return FireNikita(self, enemy)
-    else                                 return FireGrenadeLauncher(self, enemy)
-    end
+    return GekkoFireWeapon(self, enemy)
 end
 
 -- ============================================================
