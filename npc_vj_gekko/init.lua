@@ -136,6 +136,9 @@ local AERIAL_CHASE_INTERVAL  = 0.3
 local AERIAL_ATTACK_INTERVAL = 6.0
 local AERIAL_EXIT_HYSTERESIS = 300
 
+-- How often the watchdog checks for a stuck IsAbleToRangeAttack
+local WATCHDOG_INTERVAL = 2.0
+
 -- ============================================================
 --  Effective-distance helper (Z weighted at 40 %)
 -- ============================================================
@@ -499,6 +502,30 @@ local function FireNikita( ent, enemy )
 end
 
 -- ============================================================
+--  Attack readiness reset
+--  Call this whenever we need to hand control back to the VJ
+--  Base range-attack state machine (aerial exit, watchdog).
+--  We NEVER touch IsAbleToRangeAttack or NextDoAnyAttackT
+--  during normal aerial fire -- those belong to VJ Base only.
+-- ============================================================
+function ENT:GekkoResetAttackReadiness()
+    local sd = self:GetTable()
+    if not sd then return end
+    -- Un-freeze the range attack gate
+    sd.IsAbleToRangeAttack   = true
+    -- Clear any stale attack-type lock
+    sd.AttackType            = 0
+    -- Let the next attack fire immediately
+    sd.NextRangeAttackTime   = 0
+    sd.NextAnyAttackTime_Range = 0
+    -- Reset VJ Base's combined "any attack" timer too
+    if sd.NextDoAnyAttackT ~= nil then
+        sd.NextDoAnyAttackT = CurTime()
+    end
+    print("[GekkoReset] Attack readiness restored")
+end
+
+-- ============================================================
 --  AnimApply
 -- ============================================================
 function ENT:AnimApply()
@@ -631,6 +658,7 @@ function ENT:Init()
     self._gekkoAerialMode        = false
     self._gekkoNextChaseOverride = 0
     self._gekkoNextAerialAtk     = 0
+    self._gekkoNextWatchdog      = 0   -- watchdog timer
     self:SetNWBool("GekkoMGFiring",     false)
     self:SetNWInt("GekkoJumpDust",      0)
     self:SetNWInt("GekkoLandDust",      0)
@@ -730,17 +758,58 @@ function ENT:OnThinkAttack( isAttacking, enemy )
     end
 end
 
+-- ============================================================
+--  OnRangeAttack
+--
+--  "PreInit" fires BEFORE VJ Base spawns the base projectile.
+--  Returning true  = block the attack entirely (VJ Base does nothing).
+--  Returning false = let VJ Base continue (it would try to spawn
+--                    RangeAttackProjectiles, which is false here,
+--                    so it would fall through to OnRangeAttackExecute).
+--
+--  For AERIAL mode we fire the weapon ourselves here, then return
+--  TRUE to stop VJ Base from doing anything further.  This is the
+--  safe pattern -- returning false in aerial mode previously let
+--  VJ Base start an attack cycle with a nil projectile, stalling
+--  IsAbleToRangeAttack permanently.
+--
+--  For GROUND mode we simply return false so VJ Base runs its
+--  normal pipeline through to OnRangeAttackExecute.
+-- ============================================================
 function ENT:OnRangeAttack( status, enemy )
     if status ~= "PreInit" then return end
-    if not IsValid(enemy) then return true end
-    if self._gekkoAerialMode then return false end
-    local recentlySeen = (CurTime() - (self.GekkoLastVisibleTime or 0)) < VISIBLE_GRACE
-    if recentlySeen then return false end
-    if self:Visible(enemy) then
-        self.GekkoLastVisibleTime = CurTime()
-        return false
+    if not IsValid(enemy) then return true end  -- block: no target
+
+    -- AERIAL: intercept here, fire ourselves, suppress VJ Base
+    if self._gekkoAerialMode then
+        local now = CurTime()
+        if now >= self._gekkoNextAerialAtk then
+            local choice = RollWeapon()
+            self._lastWeaponChoice = choice
+            print("[GekkoAerial][PreInit] Aerial intercept | choice=" .. choice)
+            local fired = false
+            if     choice == "MG"           then fired = FireMGBurst(self, enemy)
+            elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
+            elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
+            elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
+            elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
+            elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
+            elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
+            else                                 fired = FireGrenadeLauncher(self, enemy)
+            end
+            if fired then
+                self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
+            else
+                self._gekkoNextAerialAtk = now + 2.0
+            end
+        end
+        -- Always return true in aerial mode: we handled it (or it's on
+        -- cooldown). Either way, prevent VJ Base from touching anything.
+        return true
     end
-    return true
+
+    -- GROUND: allow VJ Base to run its normal pipeline
+    return false
 end
 
 -- ============================================================
@@ -756,12 +825,14 @@ function ENT:GekkoAerialChase_Think( enemy )
     if self._gekkoAerialMode then
         if dz < exitThresh then
             self._gekkoAerialMode = false
+            -- Give VJ Base a clean slate so ground attacks resume immediately
+            self:GekkoResetAttackReadiness()
             print("[GekkoAerial] EXIT aerial mode | dz=" .. math.floor(dz))
             return false
         end
     else
         if dz < enterThresh then return false end
-        self._gekkoAerialMode    = true
+        self._gekkoAerialMode        = true
         self._gekkoNextChaseOverride = 0
         self._gekkoNextAerialAtk     = CurTime() + 1.0
         print("[GekkoAerial] ENTER aerial mode | dz=" .. math.floor(dz))
@@ -794,8 +865,12 @@ end
 
 -- ============================================================
 --  AERIAL ATTACK SYSTEM
---  All Fire* locals are defined above this function, so they
---  are valid upvalues here.
+--  This is now a secondary path: GekkoAerialChase_Think keeps
+--  the Gekko moving toward the ground projection, while
+--  OnRangeAttack(PreInit) intercepts VJ Base's own fire
+--  trigger and routes it through our weapons.  This function
+--  is kept as a fallback self-tick for cases where VJ Base's
+--  attack trigger hasn't fired yet this interval.
 -- ============================================================
 function ENT:GekkoAerialAttack_Think( enemy )
     if not self._gekkoAerialMode then return end
@@ -813,7 +888,7 @@ function ENT:GekkoAerialAttack_Think( enemy )
 
     local choice = RollWeapon()
     self._lastWeaponChoice = choice
-    print("[GekkoAerial] Aerial attack | choice=" .. choice)
+    print("[GekkoAerial] Self-tick attack | choice=" .. choice)
     local fired = false
     if     choice == "MG"           then fired = FireMGBurst(self, enemy)
     elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
@@ -825,14 +900,43 @@ function ENT:GekkoAerialAttack_Think( enemy )
     else                                 fired = FireGrenadeLauncher(self, enemy)
     end
 
+    -- NOTE: do NOT touch selfData.IsAbleToRangeAttack or
+    -- NextDoAnyAttackT here.  Let VJ Base own those entirely.
     if fired then
         self._gekkoNextAerialAtk = now + AERIAL_ATTACK_INTERVAL
-        if selfData then
-            selfData.IsAbleToRangeAttack = false
-            selfData.NextDoAnyAttackT    = now + AERIAL_ATTACK_INTERVAL
-        end
     else
         self._gekkoNextAerialAtk = now + 2.0
+    end
+end
+
+-- ============================================================
+--  Watchdog: runs every WATCHDOG_INTERVAL seconds.
+--  If IsAbleToRangeAttack is stuck false while the Gekko has
+--  a valid enemy and is not mid-burst, force-reset it.
+-- ============================================================
+function ENT:GekkoWatchdog_Think( enemy )
+    local now = CurTime()
+    if now < self._gekkoNextWatchdog then return end
+    self._gekkoNextWatchdog = now + WATCHDOG_INTERVAL
+
+    if not IsValid(enemy) then return end
+    if self._mgBurstActive then return end
+
+    local sd = self:GetTable()
+    if not sd then return end
+
+    -- IsAbleToRangeAttack should have been restored by VJ Base's own
+    -- timer (NextRangeAttackTime).  If it hasn't, we intervene.
+    if sd.IsAbleToRangeAttack == false then
+        local deadline = (sd.NextRangeAttackTime or 0)
+        if now > deadline + 1.0 then
+            -- It's been at least 1s past when it should have reset
+            print(string.format(
+                "[GekkoWatchdog] IsAbleToRangeAttack stuck false (deadline=%.1f now=%.1f) -- forcing reset",
+                deadline, now
+            ))
+            self:GekkoResetAttackReadiness()
+        end
     end
 end
 
@@ -849,8 +953,10 @@ function ENT:OnThink()
         if aerial then
             self:GekkoAerialAttack_Think(enemy)
         end
+        self:GekkoWatchdog_Think(enemy)
     elseif self._gekkoAerialMode then
         self._gekkoAerialMode = false
+        self:GekkoResetAttackReadiness()
     end
 
     self:GekkoJump_Think()
@@ -870,13 +976,17 @@ function ENT:OnThink()
         else
             dist = -1 ; src = "none"
         end
+        local sd   = self:GetTable()
+        local able = sd and tostring(sd.IsAbleToRangeAttack) or "?"
+        local nrat = sd and string.format("%.1f", sd.NextRangeAttackTime or 0) or "?"
         print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s aerial=%s",
+            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s aerial=%s ableRng=%s nrat=%s",
             self:GetNWFloat("GekkoSpeed",0), tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
-            tostring(self._lastWeaponChoice), tostring(self._gekkoAerialMode)
+            tostring(self._lastWeaponChoice), tostring(self._gekkoAerialMode),
+            able, nrat
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
