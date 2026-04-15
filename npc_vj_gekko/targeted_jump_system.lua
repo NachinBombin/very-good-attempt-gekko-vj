@@ -296,9 +296,11 @@ function ENT:GekkoTargetJump_Think()
         if math.abs(cv.x) > 0.5 or math.abs(cv.y) > 0.5 then
             self:SetVelocity(Vector(0, 0, cv.z))
         end
-        self.VJ_IsMoving               = false
-        self.VJ_CanMoveThink           = false
-        self._gekkoSuppressActivity    = now + 0.2
+        -- VJ_IsMoving, VJ_CanMoveThink, and _gekkoSuppressActivity are set
+        -- once by TJ_ForceSeq() on LAND state entry. Do NOT re-stamp them
+        -- every tick: doing so perpetually refreshes the suppress timer and
+        -- blocks VJ Base range-attack scheduling for the full land duration
+        -- + watchdog grace (up to ~11s of weapon silence per jump).
     end
 
     -- Prevent physics from tumbling the Gekko mid-air.

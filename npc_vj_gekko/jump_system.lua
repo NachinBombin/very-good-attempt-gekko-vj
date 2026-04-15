@@ -1,5 +1,5 @@
 -- ============================================================
---  npc_vj_gekko / jump_system.lua
+-- npc_vj_gekko / jump_system.lua
 -- ============================================================
 
 local JUMP_NONE    = 0
@@ -25,7 +25,7 @@ local JUMP_LAND_SUPPRESS_PAD = 1.1
 local JUMP_POST_LAND_COOLDOWN = 3.0
 
 -- ============================================================
---  Internal helpers
+-- Internal helpers
 -- ============================================================
 
 local function GetLocalState(ent)
@@ -64,7 +64,6 @@ function ENT:GekkoJump_Init()
     self._jumpRisingStartTime = 0
     self._jumpDidLiftoff      = false
     self._jumpLandCooldown    = CurTime() + JUMP_POST_LAND_COOLDOWN
-    -- Track the last state we entered so we only apply one-shot flags on transition.
     self._jumpLastState       = JUMP_NONE
 
     self.JUMP_NONE    = JUMP_NONE
@@ -82,7 +81,7 @@ function ENT:GekkoJump_Activate()
     self._seqLand = self:LookupSequence("land")
 
     print(string.format(
-        "[GekkoJump] Activate | jump=%d  fall=%d  land=%d",
+        "[GekkoJump] Activate | jump=%d fall=%d land=%d",
         self._seqJump, self._seqFall, self._seqLand
     ))
 end
@@ -111,7 +110,7 @@ function ENT:GekkoJump_ShouldJump()
     if self._mgBurstActive                then return false end
 
     local enemy = self:GetEnemy()
-    if not IsValid(enemy)                 then return false end
+    if not IsValid(enemy) then return false end
 
     local dist = self:GetPos():Distance2D(enemy:GetPos())
     if dist < JUMP_MIN_ENEMY_DIST or dist > JUMP_MAX_ENEMY_DIST then return false end
@@ -120,15 +119,18 @@ function ENT:GekkoJump_ShouldJump()
 end
 
 -- ============================================================
+-- ForceSeq: sets the sequence and one-shot flags on state ENTRY.
+-- Called only at transition points, never every tick.
+-- ============================================================
 local function ForceSeq(ent, seq, rate, suppressDur, seqLabel)
     ent:ResetSequence(seq)
     ent:SetCycle(0)
     ent:SetPlaybackRate(rate)
-    ent.Gekko_LastSeqIdx   = seq
-    ent.Gekko_LastSeqName  = seqLabel or "jump_phase"
+    ent.Gekko_LastSeqIdx       = seq
+    ent.Gekko_LastSeqName      = seqLabel or "jump_phase"
     ent._gekkoSuppressActivity = CurTime() + suppressDur
-    ent.VJ_IsMoving        = false
-    ent.VJ_CanMoveThink    = false
+    ent.VJ_IsMoving            = false
+    ent.VJ_CanMoveThink        = false
 end
 
 -- ============================================================
@@ -140,8 +142,8 @@ function ENT:GekkoJump_Execute()
 
     local enemy = self:GetEnemy()
     local fwd   = IsValid(enemy)
-                  and (enemy:GetPos() - self:GetPos()):GetNormalized()
-                  or  self:GetForward()
+        and (enemy:GetPos() - self:GetPos()):GetNormalized()
+        or self:GetForward()
     fwd.z = 0
     fwd:Normalize()
 
@@ -150,9 +152,9 @@ function ENT:GekkoJump_Execute()
 
     self:SetMoveType(MOVETYPE_FLYGRAVITY)
 
-    local vel = self:GetVelocity()
-    vel.z     = jumpForce
-    vel       = vel + fwd * JUMP_FORWARD_FORCE
+    local vel  = self:GetVelocity()
+    vel.z      = jumpForce
+    vel        = vel + fwd * JUMP_FORWARD_FORCE
     self:SetVelocity(vel)
 
     self:SetSchedule(SCHED_NONE)
@@ -186,10 +188,6 @@ function ENT:GekkoJump_Think()
     local grounded = GekkoIsGrounded(self)
     local now      = CurTime()
 
-    -- ── One-shot flags on state ENTRY only (not every tick) ──────────
-    -- _gekkoSuppressActivity, VJ_IsMoving, VJ_CanMoveThink are set by
-    -- ForceSeq() at state transitions.  Re-stamping them every tick was
-    -- permanently blocking VJBase range attack scheduling.
     if state ~= self._jumpLastState then
         if state == JUMP_RISING or state == JUMP_FALLING then
             self.VJ_IsMoving     = false
@@ -203,12 +201,8 @@ function ENT:GekkoJump_Think()
         if math.abs(cv.x) > 0.5 or math.abs(cv.y) > 0.5 then
             self:SetVelocity(Vector(0, 0, cv.z))
         end
-        self.VJ_IsMoving     = false
-        self.VJ_CanMoveThink = false
-        self._gekkoSuppressActivity = now + 0.2
     end
 
-    -- Angle correction while airborne
     if state == JUMP_RISING or state == JUMP_FALLING then
         local a = self:GetAngles()
         if math.abs(a.p) > 0.5 or math.abs(a.r) > 0.5 then
@@ -218,19 +212,17 @@ function ENT:GekkoJump_Think()
 
     if not self._jumpThinkPrint or now > self._jumpThinkPrint then
         print(string.format(
-            "[GekkoJump] Think | state=%d  velZ=%.1f  grounded=%s",
+            "[GekkoJump] Think | state=%d velZ=%.1f grounded=%s",
             state, vel.z, tostring(grounded)
         ))
         self._jumpThinkPrint = now + 0.2
     end
 
-    -- ── RISING ────────────────────────────────────────────────
     if state == JUMP_RISING then
         if vel.z > 50 then
             self._jumpDidLiftoff = true
         end
 
-        -- Abort: never got airborne within timeout.
         if not self._jumpDidLiftoff and
            (now - self._jumpRisingStartTime) > JUMP_RISING_TIMEOUT then
             SetLocalState(self, JUMP_NONE)
@@ -238,12 +230,12 @@ function ENT:GekkoJump_Think()
             self:SetGekkoJumpTimer(0)
             self:SetMoveType(MOVETYPE_STEP)
             self:SetVelocity(Vector(0, 0, 0))
-            self.Gekko_LastSeqIdx  = -1
-            self.Gekko_LastSeqName = ""
+            self.Gekko_LastSeqIdx       = -1
+            self.Gekko_LastSeqName      = ""
             self._gekkoSuppressActivity = now + 0.15
-            self.VJ_CanMoveThink = true
-            self._jumpCooldown     = now + JUMP_COOLDOWN_MAX * 2
-            self._jumpLandCooldown = now + JUMP_POST_LAND_COOLDOWN
+            self.VJ_CanMoveThink        = true
+            self._jumpCooldown          = now + JUMP_COOLDOWN_MAX * 2
+            self._jumpLandCooldown      = now + JUMP_POST_LAND_COOLDOWN
             self:GekkoJump_StopJetFX()
             if self._gekkoCrouching then
                 self._gekkoCrouchJustEntered = true
@@ -272,7 +264,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING ───────────────────────────────────────────────
     if state == JUMP_FALLING then
         if self._seqFall ~= -1 then
             if self:GetSequence() ~= self._seqFall then
@@ -285,7 +276,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING → LAND ────────────────────────────────────────
     if state == JUMP_FALLING and grounded then
         SetLocalState(self, JUMP_LAND)
         self._jumpLastState = JUMP_LAND
@@ -313,13 +303,12 @@ function ENT:GekkoJump_Think()
         return
     end
 
-    -- ── LAND → NONE ───────────────────────────────────────────
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         SetLocalState(self, JUMP_NONE)
         self._jumpLastState = JUMP_NONE
         self:SetGekkoJumpTimer(0)
-        self.Gekko_LastSeqIdx  = -1
-        self.Gekko_LastSeqName = ""
+        self.Gekko_LastSeqIdx       = -1
+        self.Gekko_LastSeqName      = ""
         self._gekkoSuppressActivity = now + 0.08
         self._gekkoSkipAnimTick     = true
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then

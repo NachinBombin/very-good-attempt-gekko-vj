@@ -122,7 +122,7 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
-local AERIAL_Z_THRESHOLD     = 4500
+local AERIAL_Z_THRESHOLD     = 450
 local AERIAL_CHASE_INTERVAL  = 0.3
 -- Interval between aerial weapon fires (VJ Base's own NextRangeAttackTime
 -- governs ground cadence; this governs aerial-only intercept cadence).
