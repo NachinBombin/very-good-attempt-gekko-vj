@@ -47,19 +47,6 @@ ENT.ConstantlyFaceEnemy_Postures    = "Both"
 ENT.ConstantlyFaceEnemy_MinDistance = 1
 
 -- ============================================================
---  NetworkVars
--- ============================================================
-function ENT:SetupDataTables()
-    self:NetworkVar("Int",   5, "GekkoJumpState")
-    self:NetworkVar("Float", 3, "GekkoJumpTimer")
-end
-
--- ============================================================
---  FK360 shared timing constant
--- ============================================================
-ENT.FK360_DURATION = 0.9
-
--- ============================================================
 --  Attack config
 -- ============================================================
 ENT.HasMeleeAttack = false
@@ -71,6 +58,26 @@ ENT.RangeAttackMaxDistance                = 900000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
 ENT.NextRangeAttackTime                   = 6
 ENT.NextAnyAttackTime_Range               = 2
+
+-- Open the VJ Base angle gate to near-omnidirectional (default is ~100).
+-- The base checks: headDir:Dot(toEnemy) > cos(rad(RangeAttackAngleRadius))
+-- At 100 deg the Gekko's horizontal head direction fails this check whenever
+-- the player is steeply above, blocking all weapons and causing the stare bug.
+-- 175 deg means the dot product only fails at extreme behind+below angles.
+ENT.RangeAttackAngleRadius = 175
+
+-- ============================================================
+--  NetworkVars
+-- ============================================================
+function ENT:SetupDataTables()
+    self:NetworkVar("Int",   5, "GekkoJumpState")
+    self:NetworkVar("Float", 3, "GekkoJumpTimer")
+end
+
+-- ============================================================
+--  FK360 shared timing constant
+-- ============================================================
+ENT.FK360_DURATION = 0.9
 
 -- ============================================================
 --  Physics / damage

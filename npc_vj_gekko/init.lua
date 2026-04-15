@@ -127,11 +127,8 @@ local NIKITA_SPAWN_Z        = 340
 -- --------------------------------------------------------
 --  Nikita muzzle-blast smoke cloud tuning
 -- --------------------------------------------------------
--- How many SmokeEffect blasts to emit at the launcher nozzle.
-local NIKITA_MUZZLE_SMOKE_COUNT = 5
--- Scale passed to util.Effect("SmokeEffect") -- higher = bigger puff.
-local NIKITA_MUZZLE_SMOKE_SCALE = 1.8
--- Slight stagger between blasts (seconds) so they don't all stack on frame 0.
+local NIKITA_MUZZLE_SMOKE_COUNT   = 5
+local NIKITA_MUZZLE_SMOKE_SCALE   = 1.8
 local NIKITA_MUZZLE_SMOKE_STAGGER = 0.06
 
 local JUMP_STATE_NAMES       = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
@@ -139,6 +136,21 @@ local HEAD_Z_FRACTION        = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
+
+-- ============================================================
+--  Z-distance fix: effective distance helper
+--  Raw 3D distance over-penalises vertically offset targets.
+--  Z is weighted at 40 % so a player 800 u directly overhead
+--  registers ~320 u effective distance instead of 800 u.
+--  Used for missile min-dist re-roll guards only; VJ Base's
+--  own range-gate uses raw distance which is already 900 000.
+-- ============================================================
+local function GekkoEffectiveDist( posA, posB )
+    local dx = posA.x - posB.x
+    local dy = posA.y - posB.y
+    local dz = (posA.z - posB.z) * 0.4
+    return math.sqrt( dx*dx + dy*dy + dz*dz )
+end
 
 -- ============================================================
 --  Helpers
@@ -330,12 +342,12 @@ function ENT:GekkoUpdateAnimation()
 end
 
 local function SafeInitVJTables( ent )
-    if not ent.VJ_AddOnDamage       then ent.VJ_AddOnDamage       = {} end
-    if not ent.VJ_DamageInfos       then ent.VJ_DamageInfos       = {} end
-    if not ent.VJ_DeathSounds       then ent.VJ_DeathSounds       = {} end
-    if not ent.VJ_PainSounds        then ent.VJ_PainSounds        = {} end
-    if not ent.VJ_IdleSounds        then ent.VJ_IdleSounds        = {} end
-    if not ent.VJ_FootstepSounds    then ent.VJ_FootstepSounds    = {} end
+    if not ent.VJ_AddOnDamage        then ent.VJ_AddOnDamage        = {} end
+    if not ent.VJ_DamageInfos        then ent.VJ_DamageInfos        = {} end
+    if not ent.VJ_DeathSounds        then ent.VJ_DeathSounds        = {} end
+    if not ent.VJ_PainSounds         then ent.VJ_PainSounds         = {} end
+    if not ent.VJ_IdleSounds         then ent.VJ_IdleSounds         = {} end
+    if not ent.VJ_FootstepSounds     then ent.VJ_FootstepSounds     = {} end
     if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
 end
 
@@ -364,6 +376,8 @@ function ENT:Init()
     self._glSparkCounter         = 0
     self._gekkoCurrentLocoSeq    = -1
     self._gekkoTargetRate        = 1.0
+    -- Z-distance fix: tracks last time the enemy was within LOS
+    self.GekkoLastVisibleTime    = 0
     self:SetNWBool("GekkoMGFiring",     false)
     self:SetNWInt("GekkoJumpDust",      0)
     self:SetNWInt("GekkoLandDust",      0)
@@ -374,6 +388,10 @@ function ENT:Init()
     self:GekkoTargetJump_Init()
     self:GeckoCrouch_Init()
     self:GekkoLegs_Init()
+    -- Raise the AI eye origin to the top of the hull so LOS traces
+    -- to elevated players clear nearby floor geometry instead of
+    -- hitting it and causing eneIsVisible to flicker false.
+    self:SetViewOffset(Vector(0, 0, 180))
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -414,6 +432,12 @@ function ENT:Activate()
     SafeInitVJTables(self)
 end
 
+-- Override GetShootPos so projectile-spawn and LOS traces originate
+-- from the top of the hull rather than near the floor.
+function ENT:GetShootPos()
+    return self:GetPos() + Vector(0, 0, 180)
+end
+
 function ENT:OnTakeDamage( dmginfo )
     dmginfo:SetDamageForce(Vector(0,0,0))
     local hitPos = dmginfo:GetDamagePosition()
@@ -445,6 +469,42 @@ function ENT:OnTakeDamage( dmginfo )
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
+end
+
+-- ============================================================
+--  Z-distance fix: OnThinkAttack -- keep GekkoLastVisibleTime fresh
+--  Called every think tick by VJ Base while an enemy is valid.
+--  We use it to timestamp genuine LOS hits so the grace window
+--  in OnRangeAttack can sustain the attack cycle during brief
+--  LOS interruptions (e.g. the player stepping behind a ledge).
+-- ============================================================
+local VISIBLE_GRACE = 3.0   -- seconds to stay "engaged" after losing LOS
+
+function ENT:OnThinkAttack( isAttacking, enemy )
+    if IsValid(enemy) and self:Visible(enemy) then
+        self.GekkoLastVisibleTime = CurTime()
+    end
+end
+
+-- ============================================================
+--  Z-distance fix: OnRangeAttack PreInit grace window
+--  VJ Base calls OnRangeAttack("PreInit", enemy) and blocks the
+--  attack if this returns true.  We return false (= allow) whenever
+--  the enemy was seen within VISIBLE_GRACE seconds, bypassing the
+--  frame-by-frame eneIsVisible flicker that stalls weapons when
+--  the player is on a high platform.
+-- ============================================================
+function ENT:OnRangeAttack( status, enemy )
+    if status ~= "PreInit" then return end
+    if not IsValid(enemy) then return true end  -- no valid enemy: block
+    local recentlySeen = (CurTime() - (self.GekkoLastVisibleTime or 0)) < VISIBLE_GRACE
+    if recentlySeen then return false end       -- allow attack
+    -- Fallback: if we can see them right now, also allow
+    if self:Visible(enemy) then
+        self.GekkoLastVisibleTime = CurTime()
+        return false
+    end
+    return true  -- truly out of sight and grace expired: block
 end
 
 function ENT:OnThink()
@@ -627,9 +687,11 @@ local function FireOrbitRpg( ent, enemy )
 end
 
 local function FireTopMissile( ent, enemy )
-    local dist = ent:GetPos():Distance(enemy:GetPos())
+    -- Use effective distance so a player directly overhead doesn't
+    -- spuriously trigger the too-close re-roll.
+    local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
-        print(string.format("[GekkoTM] Too close (%.0f) -- re-rolling", dist))
+        print(string.format("[GekkoTM] Too close (eff=%.0f) -- re-rolling", dist))
         local alt = RerollNotMissile("TOPMISSILE")
         if     alt == "MG"       then return FireMGBurst(ent, enemy)
         elseif alt == "MISSILE"  then return FireMissile(ent, enemy)
@@ -647,14 +709,14 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    print(string.format("[GekkoTM] Launched | dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
+    print(string.format("[GekkoTM] Launched | eff_dist=%.0f spawnOffset=%d", dist, TOPMISSILE_LAUNCH_Z))
     return true
 end
 
 local function FireTrackMissile( ent, enemy )
-    local dist = ent:GetPos():Distance(enemy:GetPos())
+    local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
-        print(string.format("[GekkoTRK] Too close (%.0f) -- re-rolling", dist))
+        print(string.format("[GekkoTRK] Too close (eff=%.0f) -- re-rolling", dist))
         local alt = RerollNotMissile("TRACKMISSILE")
         if     alt == "MG"          then return FireMGBurst(ent, enemy)
         elseif alt == "MISSILE"     then return FireMissile(ent, enemy)
@@ -675,7 +737,7 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    print(string.format("[GekkoTRK] Launched | dist=%.0f tracking=%s", dist, tostring(enemy)))
+    print(string.format("[GekkoTRK] Launched | eff_dist=%.0f tracking=%s", dist, tostring(enemy)))
     return true
 end
 
@@ -683,31 +745,21 @@ end
 --  Weapon: Nikita homing cruise missile (full VJ SNPC)
 -- ============================================================
 
--- Emits a burst of SmokeEffect blasts at the missile launcher nozzle
--- to simulate a rocket back-blast cloud that quickly dissipates.
--- util.Effect("SmokeEffect") uses the engine's built-in smoke particle
--- system -- the same one fired by common Source rockets -- so it looks
--- natural and fades on its own without any extra cleanup.
 local function NikitaMuzzleSmoke( ent )
-    -- Pick whichever launcher attachment the counter currently points at.
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local attData = ent:GetAttachment(attIdx)
     local nozzle  = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    -- Direction the nozzle faces (forward out of the launcher tube).
     local nozzDir = attData and attData.Ang:Forward() or ent:GetForward()
 
-    -- Fire several staggered blasts so the cloud builds up over a few frames
-    -- rather than popping in as one instant puff.
     for i = 0, NIKITA_MUZZLE_SMOKE_COUNT - 1 do
         local delay  = i * NIKITA_MUZZLE_SMOKE_STAGGER
-        -- Capture current values; nozzle is static for one launch event.
         local pos    = nozzle
         local normal = nozzDir
         timer.Simple(delay, function()
             if not IsValid(ent) then return end
             local ed = EffectData()
-            ed:SetOrigin(pos + normal * (i * 4))  -- spread blasts slightly along barrel
+            ed:SetOrigin(pos + normal * (i * 4))
             ed:SetNormal(normal)
             ed:SetScale(NIKITA_MUZZLE_SMOKE_SCALE)
             ed:SetMagnitude(1)
@@ -717,13 +769,12 @@ local function NikitaMuzzleSmoke( ent )
 end
 
 local function FireNikita( ent, enemy )
-    local dist = ent:GetPos():Distance(enemy:GetPos())
+    local dist = GekkoEffectiveDist(ent:GetPos(), enemy:GetPos())
     if dist < NIKITA_MIN_DIST then
-        print(string.format("[GekkoNikita] Too close (%.0f) -- re-rolling", dist))
+        print(string.format("[GekkoNikita] Too close (eff=%.0f) -- re-rolling", dist))
         return FireMGBurst(ent, enemy)
     end
 
-    -- Launcher back-blast smoke cloud (fires immediately at the nozzle)
     NikitaMuzzleSmoke(ent)
 
     local toTarget2D = (enemy:GetPos() - ent:GetPos())
@@ -753,7 +804,7 @@ local function FireNikita( ent, enemy )
             nikita:SetEnemy(enemy)
         end
     end
-    print(string.format("[GekkoNikita] Launched NPC | dist=%.0f target=%s", dist, tostring(enemy)))
+    print(string.format("[GekkoNikita] Launched NPC | eff_dist=%.0f target=%s", dist, tostring(enemy)))
     return true
 end
 
