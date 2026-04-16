@@ -69,6 +69,21 @@ local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
 local BM_SND_LEVEL    = 95
 local BM_MUZZLE_SCALE = 3.5
 
+-- Weapon-select reload cue (plays once per attack cycle, before the weapon fires)
+local RELOAD_SNDS = {
+    "gekko/reload/reloadbig_1.wav",
+    "gekko/reload/reloadbig_2.wav",
+    "gekko/reload/reloadbig_shell.wav",
+    "gekko/reload/reloadbig_2_shell.wav",
+    "gekko/reload/reloadmedium_1.wav",
+    "gekko/reload/reloadmedium_2.wav",
+    "gekko/reload/reloadmedium_shell.wav",
+    "gekko/reload/reloadsmall_1.wav",
+    "gekko/reload/reloadsmall_2.wav",
+    "gekko/reload/reloadsmall_shell.wav",
+}
+local RELOAD_SND_LEVEL = 105
+
 local WWEIGHT_MG             = 35
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
@@ -788,6 +803,8 @@ function ENT:OnRangeAttackExecute( status, enemy, projectile )
     if not IsValid(enemy) then return true end
     local choice = RollWeapon()
     self._lastWeaponChoice = choice
+    -- Play a randomized reload/chamber sound the moment the weapon is chosen
+    self:EmitSound(RELOAD_SNDS[math.random(#RELOAD_SNDS)], RELOAD_SND_LEVEL, 100, 1)
     print("[GekkoWpn] Roll -> " .. choice)
     if     choice == "MG"          then return FireMGBurst(self, enemy)
     elseif choice == "MISSILE"     then return FireMissile(self, enemy)
