@@ -63,26 +63,26 @@ local TOPMISSILE_SND_FIRE = {
 }
 local TOPMISSILE_SND_LEVEL = 95
 
-local WWEIGHT_MG             = 35
-local WWEIGHT_MISSILE_SINGLE = 20
+local WWEIGHT_MG             = 30
+local WWEIGHT_MISSILE_SINGLE = 14
 local WWEIGHT_MISSILE_DOUBLE = 5
 local WWEIGHT_GRENADE        = 10
 local WWEIGHT_TOPMISSILE     = 10
-local WWEIGHT_TRACKMISSILE   = 2
-local WWEIGHT_ORBITRPG       = 10
-local WWEIGHT_NIKITA         = 8
-local WWEIGHT_BUSHMASTER     = 12  -- M242 Bushmaster 25mm chain gun
+local WWEIGHT_TRACKMISSILE   = 1
+local WWEIGHT_ORBITRPG       = 15
+local WWEIGHT_NIKITA         = 5
+local WWEIGHT_BUSHMASTER     = 10  -- M242 Bushmaster 25mm chain gun
 
 -- Bushmaster burst config
-local BUSH_ROUNDS_MIN      = 4
-local BUSH_ROUNDS_MAX      = 15
-local BUSH_INTERVAL        = 0.36   -- seconds between rounds
+local BUSH_ROUNDS_MIN      = 7
+local BUSH_ROUNDS_MAX      = 12
+local BUSH_INTERVAL        = 0.41   -- seconds between rounds
 local BUSH_BONE_NAME       = "b_pelvis1"
-local BUSH_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
+local BUSH_SND_SHOTS       = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BUSH_SND_LEVEL       = 100
-local BUSH_CHAIN_EVERY     = 4
-local BUSH_SND_CHAININSERT = "gekko/chaininsert.wav"
-local BUSH_MUZZLE_SCALE    = 2.5
+local BUSH_CHAIN_EVERY     = 1
+local BUSH_SND_CHAININSERT =  "gekko/brushmaster_25mm/20mm_stop.wav"
+local BUSH_MUZZLE_SCALE    = 3.5
 
 local SALVO_SPREAD_XY = 220
 local SALVO_SPREAD_Z  = 80
@@ -655,7 +655,7 @@ local function FireBushmaster( ent, enemy )
     ent:SetNWBool("GekkoBushFiring", true)
 
     -- Snapshot aim position at burst start (same as orbital RPG)
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    local aimPos = enemy:GetPos() + Vector(0.5, 0.5, 40)
 
     print(string.format("[GekkoBush] Firing %d rounds from b_pelvis1", rounds))
 
