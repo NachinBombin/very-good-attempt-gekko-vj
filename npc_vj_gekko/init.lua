@@ -131,9 +131,9 @@ local AERIAL_EXIT_HYSTERESIS = 300
 
 -- Watchdog polls this often; only un-sticks IsAbleToRangeAttack,
 -- never zeros any timer (zeroing timers re-triggers VJ Base instantly).
-local WATCHDOG_INTERVAL      = 3.0
+local WATCHDOG_INTERVAL      = 0.5
 -- How far past the attack deadline before watchdog intervenes.
-local WATCHDOG_GRACE         = 8.0
+local WATCHDOG_GRACE         = 2.0
 
 -- ============================================================
 --  Helpers
@@ -515,9 +515,14 @@ function ENT:GekkoResetAttackReadiness()
     if not sd then return end
     sd.IsAbleToRangeAttack = true
     sd.AttackType          = 0
+    -- If the attack deadline has already passed, give VJ Base a short
+    -- window (0.5s) so it reschedules normally without firing instantly.
+    local now = CurTime()
+    if (sd.NextRangeAttackTime or 0) < now then
+        sd.NextRangeAttackTime = now + 0.5
+    end
     print("[GekkoReset] IsAbleToRangeAttack un-stuck")
 end
-
 -- ============================================================
 --  AnimApply
 -- ============================================================

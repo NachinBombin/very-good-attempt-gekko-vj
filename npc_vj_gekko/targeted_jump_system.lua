@@ -403,7 +403,7 @@ function ENT:GekkoTargetJump_Think()
     end
 
     -- ── LAND -> NONE ────────────────────────────────────────────
-    if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
+     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         TJ_SetLocalState(self, JUMP_NONE)
         self._tjLastState           = JUMP_NONE
         self:SetGekkoJumpTimer(0)
@@ -418,6 +418,7 @@ function ENT:GekkoTargetJump_Think()
             self.Gekko_LastSeqName = "idle"
         end
         self.VJ_CanMoveThink = true
+        self:GekkoResetAttackReadiness()
         if self._gekkoCrouching then self._gekkoCrouchJustEntered = true end
     end
 end

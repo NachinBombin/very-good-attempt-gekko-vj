@@ -318,6 +318,7 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqName = "idle"
         end
         self.VJ_CanMoveThink = true
+        self:GekkoResetAttackReadiness()
 
         if self._gekkoCrouching then
             self._gekkoCrouchJustEntered = true
