@@ -122,27 +122,17 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
--- FIX 1: Threshold lowered from 450 to 200.
--- The old value created a 0-449 unit dead zone where aerial mode never
--- engaged, leaving the Gekko on the broken ground-combat path while the
--- player stood on any roof or ledge. 200 units (roughly one floor of
--- architecture) is the correct trigger height.
+-- Aerial mode: engage when player is this many units above the Gekko.
+-- Lowered from 450 -> 200 to eliminate the dead-zone on rooftops/ledges.
 local AERIAL_Z_THRESHOLD     = 200
 local AERIAL_CHASE_INTERVAL  = 0.3
--- Interval between aerial weapon fires (VJ Base's own NextRangeAttackTime
--- governs ground cadence; this governs aerial-only intercept cadence).
 local AERIAL_ATTACK_INTERVAL = 6.0
--- FIX 1b: Hysteresis reduced proportionally (was 300, ratio kept at ~60%).
+-- Hysteresis kept at ~60% of threshold so aerial mode doesn't flicker.
 local AERIAL_EXIT_HYSTERESIS = 120
 
--- Watchdog polls this often; only un-sticks IsAbleToRangeAttack,
--- never zeros any timer (zeroing timers re-triggers VJ Base instantly).
-local WATCHDOG_INTERVAL      = 0.5
--- FIX 3: Grace cut from 2.0s to 0.3s.
--- 2.0s meant every stuck-attack cycle produced 2 full seconds of weapon
--- silence. 0.3s is long enough to never false-fire on a running MG burst,
--- but short enough to be imperceptible to the player.
-local WATCHDOG_GRACE         = 0.3
+-- Watchdog: only un-sticks IsAbleToRangeAttack, never resets timers.
+local WATCHDOG_INTERVAL = 0.5
+local WATCHDOG_GRACE    = 0.3
 
 -- ============================================================
 --  Helpers
@@ -152,12 +142,6 @@ local function GekkoEffectiveDist( posA, posB )
     local dy = posA.y - posB.y
     local dz = (posA.z - posB.z) * 0.4
     return math.sqrt( dx*dx + dy*dy + dz*dz )
-end
-
-local function Dist2D( posA, posB )
-    local dx = posA.x - posB.x
-    local dy = posA.y - posB.y
-    return math.sqrt( dx*dx + dy*dy )
 end
 
 local function GetActiveEnemy( ent )
@@ -480,7 +464,7 @@ local function FireNikita( ent, enemy )
     nikita:SetPos(spawnPos)
     nikita:SetAngles(launchDir:Angle())
     nikita:SetOwner(ent)
-    nikita._NikitaOwner    = ent
+    nikita._NikitaOwner     = ent
     nikita._NikitaTargetEnt = enemy
     nikita:Spawn()
     nikita:Activate()
@@ -494,37 +478,28 @@ local function FireNikita( ent, enemy )
     return true
 end
 
--- ============================================================
---  Dispatch helper used by both ground Execute and aerial
---  PreInit intercept paths.
--- ============================================================
 local function GekkoFireWeapon( ent, enemy )
     local choice = RollWeapon()
     ent._lastWeaponChoice = choice
     print("GekkoFire: " .. choice)
-    if     choice == "MG"          then return FireMGBurst(ent, enemy)
-    elseif choice == "MISSILE"     then return FireMissile(ent, enemy)
-    elseif choice == "SALVO"       then return FireDoubleSalvo(ent, enemy)
-    elseif choice == "TOPMISSILE"  then return FireTopMissile(ent, enemy)
-    elseif choice == "TRACKMISSILE"then return FireTrackMissile(ent, enemy)
-    elseif choice == "ORBITRPG"    then return FireOrbitRpg(ent, enemy)
-    elseif choice == "NIKITA"      then return FireNikita(ent, enemy)
-    else                                return FireGrenadeLauncher(ent, enemy) end
+    if     choice == "MG"           then return FireMGBurst(ent, enemy)
+    elseif choice == "MISSILE"      then return FireMissile(ent, enemy)
+    elseif choice == "SALVO"        then return FireDoubleSalvo(ent, enemy)
+    elseif choice == "TOPMISSILE"   then return FireTopMissile(ent, enemy)
+    elseif choice == "TRACKMISSILE" then return FireTrackMissile(ent, enemy)
+    elseif choice == "ORBITRPG"     then return FireOrbitRpg(ent, enemy)
+    elseif choice == "NIKITA"       then return FireNikita(ent, enemy)
+    else                                 return FireGrenadeLauncher(ent, enemy) end
 end
 
 -- ============================================================
---  Attack readiness reset.  Only un-sticks the boolean gate
---  and clears AttackType.
---  NEVER zeros NextRangeAttackTime or NextAnyAttackTime_Range
---  -- doing so would re-trigger VJ Base's fire cycle instantly.
+--  Attack readiness reset
 -- ============================================================
 function ENT:GekkoResetAttackReadiness()
     local sd = self:GetTable()
     if not sd then return end
     sd.IsAbleToRangeAttack = true
     sd.AttackType          = 0
-    -- If the attack deadline has already passed, give VJ Base a short
-    -- window (0.5s) so it reschedules normally without firing instantly.
     local now = CurTime()
     if (sd.NextRangeAttackTime or 0) < now then
         sd.NextRangeAttackTime = now + 0.5
@@ -552,20 +527,20 @@ function ENT:SetAnimationTranslations()
     walkSeq = (walkSeq and walkSeq >= -1) and walkSeq or 0
     runSeq  = (runSeq  and runSeq  >= -1) and runSeq  or 0
     idleSeq = (idleSeq and idleSeq >= -1) and idleSeq or 0
-    self.AnimationTranslations[ACT_IDLE]               = idleSeq
-    self.AnimationTranslations[ACT_WALK]               = walkSeq
-    self.AnimationTranslations[ACT_RUN]                = runSeq
-    self.AnimationTranslations[ACT_WALK_AIM]           = walkSeq
-    self.AnimationTranslations[ACT_RUN_AIM]            = runSeq
-    self.AnimationTranslations[ACT_RANGE_ATTACK1]      = idleSeq
-    self.AnimationTranslations[ACT_RANGE_ATTACK2]      = idleSeq
+    self.AnimationTranslations[ACT_IDLE]                  = idleSeq
+    self.AnimationTranslations[ACT_WALK]                  = walkSeq
+    self.AnimationTranslations[ACT_RUN]                   = runSeq
+    self.AnimationTranslations[ACT_WALK_AIM]              = walkSeq
+    self.AnimationTranslations[ACT_RUN_AIM]               = runSeq
+    self.AnimationTranslations[ACT_RANGE_ATTACK1]         = idleSeq
+    self.AnimationTranslations[ACT_RANGE_ATTACK2]         = idleSeq
     self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK1] = idleSeq
     self.AnimationTranslations[ACT_GESTURE_RANGE_ATTACK2] = idleSeq
-    self.AnimationTranslations[ACT_IDLE_ANGRY]         = idleSeq
-    self.AnimationTranslations[ACT_COMBAT_IDLE]        = idleSeq
-    self._GekkoSeqWalk  = walkSeq
-    self._GekkoSeqRun   = runSeq
-    self._GekkoSeqIdle  = idleSeq
+    self.AnimationTranslations[ACT_IDLE_ANGRY]            = idleSeq
+    self.AnimationTranslations[ACT_COMBAT_IDLE]           = idleSeq
+    self._GekkoSeqWalk = walkSeq
+    self._GekkoSeqRun  = runSeq
+    self._GekkoSeqIdle = idleSeq
 end
 
 function ENT:GekkoUpdateAnimation()
@@ -589,7 +564,7 @@ function ENT:GekkoUpdateAnimation()
         self:SetPoseParameter("movey", 0)
         return
     end
-    if self:GeckoCrouchUpdate() then return end
+    if self:GeckoCrouch_Update() then return end
     local enemy = GetActiveEnemy(self)
     local dist  = 0
     if IsValid(enemy) then
@@ -622,52 +597,52 @@ function ENT:GekkoUpdateAnimation()
     if     targetSeq == self._GekkoSeqRun  then self._GekkoLastSeqName = "run"
     elseif targetSeq == self._GekkoSeqWalk then self._GekkoLastSeqName = "walk"
     else                                         self._GekkoLastSeqName = "idle" end
-    self._GekkoLastSeqIdx  = targetSeq
-    self._gekkoTargetRate  = arate
+    self._GekkoLastSeqIdx = targetSeq
+    self._gekkoTargetRate = arate
     local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
     self:SetPlaybackRate(smoothed)
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
 local function SafeInitVJTables( ent )
-    if not ent.VJAddOnDamage   then ent.VJAddOnDamage   = {} end
-    if not ent.VJDamageInfos   then ent.VJDamageInfos   = {} end
-    if not ent.VJDeathSounds   then ent.VJDeathSounds   = {} end
-    if not ent.VJPainSounds    then ent.VJPainSounds    = {} end
-    if not ent.VJIdleSounds    then ent.VJIdleSounds    = {} end
+    if not ent.VJAddOnDamage    then ent.VJAddOnDamage    = {} end
+    if not ent.VJDamageInfos    then ent.VJDamageInfos    = {} end
+    if not ent.VJDeathSounds    then ent.VJDeathSounds    = {} end
+    if not ent.VJPainSounds     then ent.VJPainSounds     = {} end
+    if not ent.VJIdleSounds     then ent.VJIdleSounds     = {} end
     if not ent.VJFootstepSounds then ent.VJFootstepSounds = {} end
     if not ent.AnimationTranslations then ent.AnimationTranslations = {} end
 end
 
+-- ============================================================
+--  Initialize
+-- ============================================================
 function ENT:Initialize()
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
     self:SetSkin(1)
-    self._GekkoSpineBone    = self:LookupBone("bip_spine_4") or -1
-    self._GekkoLGunBone     = self:LookupBone("b_lgunrack")  or -1
-    self._GekkoRGunBone     = self:LookupBone("b_rgunrack")  or -1
-    self._GekkoNextDebugT   = 0
-    self._GekkoLastSeqName  = ""
-    self._GekkoLastSeqIdx   = -1
-    self._missileCount      = 0
-    self._mgBurstActive     = false
-    self._mgBurstEndT       = 0
-    self._gekkoRunning      = false
+    self._GekkoSpineBone     = self:LookupBone("bip_spine_4") or -1
+    self._GekkoLGunBone      = self:LookupBone("b_lgunrack")  or -1
+    self._GekkoRGunBone      = self:LookupBone("b_rgunrack")  or -1
+    self._GekkoNextDebugT    = 0
+    self._GekkoLastSeqName   = ""
+    self._GekkoLastSeqIdx    = -1
+    self._missileCount       = 0
+    self._mgBurstActive      = false
+    self._mgBurstEndT        = 0
+    self._gekkoRunning       = false
     self._gekkoLastEnemyDist = nil
-    self._gekkoLastPos      = self:GetPos()
-    self._gekkoLastTime     = CurTime() - 0.1
+    self._gekkoLastPos       = self:GetPos()
+    self._gekkoLastTime      = CurTime() - 0.1
     self._gekkoSuppressActivity = 0
-    self._gekkoSkipAnimTick = false
-    self._crushHitTimes     = {}
-    self._bloodSplatPulse   = 0
-    self._gibCooldownT      = 0
-    self._lastWeaponChoice  = ""
-    self._glSparkCounter    = 0
+    self._gekkoSkipAnimTick  = false
+    self._crushHitTimes      = {}
+    self._bloodSplatPulse    = 0
+    self._gibCooldownT       = 0
+    self._lastWeaponChoice   = ""
+    self._glSparkCounter     = 0
     self._gekkoCurrentLocoSeq = -1
-    self._gekkoTargetRate   = 1.0
-    self.GekkoLastVisibleTime   = 0
-    -- FIX: All aerial-mode fields use the underscore prefix consistently.
-    -- Initialising them here ensures a clean state on every spawn/re-activate
-    -- and prevents stale values carrying over across entity re-use.
+    self._gekkoTargetRate    = 1.0
+    self.GekkoLastVisibleTime    = 0
     self._gekkoAerialMode        = false
     self._gekkoNextChaseOverride = 0
     self._gekkoNextAerialAtk     = 0
@@ -678,17 +653,18 @@ function ENT:Initialize()
     self:SetNWInt("GekkoFK360LandDust", 0)
     self:SetNWInt("GekkoBloodSplat",    0)
     SafeInitVJTables(self)
-    self:GekkoJumpInit()
-    self:GekkoTargetJumpInit()
-    self:GeckoCrouchInit()
-    self:GekkoLegsInit()
+    -- Correct underscore-pattern names from each subsystem file:
+    self:GekkoJump_Init()
+    self:GekkoTargetJump_Init()
+    self:GeckoCrouch_Init()
+    self:GekkoLegs_Init()
     self:SetViewOffset(Vector(0, 0, 180))
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
-        selfRef._StartMoveSpeed  = selfRef.MoveSpeed  or 150
-        selfRef._StartRunSpeed   = selfRef.RunSpeed   or 300
-        selfRef._StartWalkSpeed  = selfRef.WalkSpeed  or 150
+        selfRef._StartMoveSpeed = selfRef.MoveSpeed  or 150
+        selfRef._StartRunSpeed  = selfRef.RunSpeed   or 300
+        selfRef._StartWalkSpeed = selfRef.WalkSpeed  or 150
         local walkSeq = selfRef:LookupSequence("walk")
         local runSeq  = selfRef:LookupSequence("run")
         local idleSeq = selfRef:LookupSequence("idle")
@@ -696,15 +672,14 @@ function ENT:Initialize()
         selfRef._GekkoSeqRun  = (runSeq  and runSeq  >= -1) and runSeq  or 0
         selfRef._GekkoSeqIdle = (idleSeq and idleSeq >= -1) and idleSeq or 0
         selfRef._gekkoCurrentLocoSeq = -1
-        selfRef:GeckoCrouchCacheSeqs()
+        selfRef:GeckoCrouch_CacheSeqs()
         selfRef:SetAnimationTranslations()
         selfRef._GekkoSpineBone = selfRef:LookupBone("bip_spine_4") or -1
         selfRef._GekkoLGunBone  = selfRef:LookupBone("b_lgunrack")  or -1
         selfRef._GekkoRGunBone  = selfRef:LookupBone("b_rgunrack")  or -1
-        selfRef:GekkoJumpActivate()
+        selfRef:GekkoJump_Activate()
         print("GekkoNPC Activated | walk="..selfRef._GekkoSeqWalk.." run="..selfRef._GekkoSeqRun.." idle="..selfRef._GekkoSeqIdle)
     end)
-    -- Guarantee OnThink runs even if VJ Base stops calling it
     timer.Create("GekkoThink_" .. self:EntIndex(), 0.1, 0, function()
         if not IsValid(self) then timer.Remove("GekkoThink_" .. self:EntIndex()) ; return end
         self:OnThink()
@@ -723,6 +698,9 @@ function ENT:GetShootPos()
     return self:GetPos() + Vector(0, 0, 180)
 end
 
+-- ============================================================
+--  OnTakeDamage
+-- ============================================================
 function ENT:OnTakeDamage( dmginfo )
     dmginfo:SetDamageForce(Vector(0,0,0))
     local hitPos = dmginfo:GetDamagePosition()
@@ -753,14 +731,14 @@ function ENT:OnTakeDamage( dmginfo )
         local variant = math.random(1,5)
         self:SetNWInt("GekkoBloodSplat", (self._bloodSplatPulse % 8) * 5 + (variant-1))
     end
-    self:GekkoLegsOnDamage(dmginfo)
-    self:GekkoGibOnDamage(rawDmg, dmginfo)
+    self:GekkoLegs_OnDamage(dmginfo)
+    self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
 
 -- ============================================================
---  LOS grace used by OnThinkAttack
+--  OnThinkAttack  (LOS grace window)
 -- ============================================================
 function ENT:OnThinkAttack( isAttacking, enemy )
     if IsValid(enemy) and self:Visible(enemy) then
@@ -770,24 +748,10 @@ end
 
 -- ============================================================
 --  OnRangeAttack
---
---  This is the SINGLE chokepoint that decides whether VJ Base
---  fires or we fire ourselves.
---
---  AERIAL mode (player is AERIAL_Z_THRESHOLD units above):
---    We own the cadence via _gekkoNextAerialAtk.
---    Fire ourselves then return TRUE to fully suppress VJ Base.
---    If the aerial cooldown hasn't expired, still return TRUE
---    so VJ Base stays blocked until we're ready.
---
---  GROUND mode:
---    Return FALSE unconditionally so VJ Base's state machine
---    continues normally to OnRangeAttackExecute.
---    Do NOT fire here -- OnRangeAttackExecute does it.
 -- ============================================================
 function ENT:OnRangeAttack( status, enemy )
     if status ~= "PreInit" then return end
-    if not IsValid(enemy) then return true end  -- no target: suppress
+    if not IsValid(enemy) then return true end
 
     if self._gekkoAerialMode then
         local now = CurTime()
@@ -799,17 +763,14 @@ function ENT:OnRangeAttack( status, enemy )
             print(string.format("[GekkoAerial] Blocked (cooldown %.1fs left)",
                 self._gekkoNextAerialAtk - now))
         end
-        return true  -- always suppress VJ Base in aerial mode
+        return true
     end
 
-    -- Ground: let VJ Base run through to OnRangeAttackExecute
     return false
 end
 
 -- ============================================================
---  AERIAL CHASE SYSTEM
---  Keeps the Gekko pathing toward the ground projection of an
---  elevated enemy, and manages the aerial mode flag.
+--  Aerial chase system
 -- ============================================================
 function ENT:GekkoAerialChase_Think( enemy )
     local myPos  = self:GetPos()
@@ -838,21 +799,13 @@ function ENT:GekkoAerialChase_Think( enemy )
     if (groundWaypoint - myPos):Length() < 32 then
         groundWaypoint = myPos + self:GetForward() * 128
     end
-    -- Nav uses the ground projection so the Gekko walks under the player.
     self:UpdateEnemyMemory(enemy, groundWaypoint)
 
     local selfData = self:GetTable()
     if selfData and selfData.EnemyData then
         selfData.EnemyData.VisibleTime = CurTime()
         selfData.EnemyData.Visible     = true
-        -- FIX 2: Use Z-weighted effective distance, not flat 2D.
-        -- Dist2D was causing VJ Base's scheduler to treat a directly
-        -- overhead enemy as "very close", misfiring its distance guards.
         selfData.EnemyData.Distance    = GekkoEffectiveDist(myPos, enePos)
-        -- FIX 2b: VisiblePos must point at the REAL enemy position, not
-        -- the ground projection. Weapon systems read VisiblePos for aim;
-        -- writing the floor coord here was sending rockets into the ground
-        -- and confusing VJ Base's secondary dot-product checks.
         selfData.EnemyData.VisiblePos  = enePos
     end
 
@@ -867,10 +820,6 @@ end
 
 -- ============================================================
 --  Watchdog
---  Polls every WATCHDOG_INTERVAL seconds.
---  ONLY un-sticks IsAbleToRangeAttack if it has been false
---  for longer than WATCHDOG_GRACE seconds past its deadline.
---  Never touches NextRangeAttackTime or any other timer.
 -- ============================================================
 function ENT:GekkoWatchdogThink( enemy )
     local now = CurTime()
@@ -898,7 +847,7 @@ end
 --  OnThink
 -- ============================================================
 function ENT:OnThink()
-    if self._gekkoLegsDisabled then self:GekkoLegsThink() end
+    if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
 
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
@@ -910,20 +859,17 @@ function ENT:OnThink()
         self:GekkoAerialChase_Think(enemy)
         self:GekkoWatchdogThink(enemy)
     elseif self._gekkoAerialMode then
-        -- FIX: aerial mode MUST be cleared when there is no valid enemy.
-        -- Without this, losing the target while airborne would leave
-        -- _gekkoAerialMode=true forever, permanently suppressing VJ Base.
         self._gekkoAerialMode = false
         self:GekkoResetAttackReadiness()
     end
 
-    self:GekkoJumpThink()
+    self:GekkoJump_Think()
     if not self._gekkoAerialMode then
-        self:GekkoTargetJumpThink()
+        self:GekkoTargetJump_Think()
     end
 
     self:GekkoUpdateAnimation()
-    self:GeckoCrushThink()
+    self:GeckoCrush_Think()
 
     if CurTime() > self._GekkoNextDebugT then
         local dist, src
@@ -950,8 +896,6 @@ end
 
 -- ============================================================
 --  OnRangeAttackExecute  (ground mode only)
---  VJ Base calls this after PreInit returns false.
---  This is the one and only ground fire path.
 -- ============================================================
 function ENT:OnRangeAttackExecute( status, enemy, projectile )
     if status ~= "Init" then return end
@@ -960,7 +904,7 @@ function ENT:OnRangeAttackExecute( status, enemy, projectile )
 end
 
 -- ============================================================
---  Death
+--  OnDeath
 -- ============================================================
 function ENT:OnDeath( dmginfo, hitgroup, status )
     if status ~= "Finish" then return end
@@ -970,9 +914,6 @@ function ENT:OnDeath( dmginfo, hitgroup, status )
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
-    -- FIX: clear the aerial-mode flag on death using the correct underscore field.
-    -- Without this, a Gekko that dies while _gekkoAerialMode=true would re-animate
-    -- from a dirty state if the entity slot is reused.
     self._gekkoAerialMode = false
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
