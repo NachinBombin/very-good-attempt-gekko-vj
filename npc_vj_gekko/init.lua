@@ -65,7 +65,6 @@ local BM_ROUNDS_MIN   = 7
 local BM_ROUNDS_MAX   = 13
 local BM_INTERVAL     = 0.38
 local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
-local BM_SND_STOP     = "gekko/brushmaster_25mm/20mm_stop.wav"
 local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
 local BM_SND_LEVEL    = 95
 local BM_MUZZLE_SCALE = 3.5
@@ -769,7 +768,6 @@ local function FireBushmaster( ent, enemy )
             eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
             util.Effect("MuzzleFlash", eff)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-            ent:EmitSound(BM_SND_STOP,  BM_SND_LEVEL, math.random(95, 105), 1)
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
