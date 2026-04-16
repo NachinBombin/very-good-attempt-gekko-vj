@@ -1,7 +1,16 @@
 -- cl_init.lua  (CLIENT)
--- Render-only: model + rockettrail particle + engine dynamic light.
--- Position is driven entirely by the server Think(); no client Think needed.
+-- Render-only: model + scaled sprite trail + engine dynamic light.
+-- rockettrail particle replaced with util.SpriteTrail at 0.35x size
+-- so the Bushmaster round has a visually smaller tail than standard missiles.
 include("shared.lua")
+
+-- Rockettrail reference sizes (full):  startWidth~22, endWidth~1, lifetime~0.6
+-- 0.35x scale:
+local TRAIL_START  = 7.7   -- 22 * 0.35
+local TRAIL_END    = 0.35  --  1 * 0.35
+local TRAIL_TIME   = 0.21  --  0.6 * 0.35
+local TRAIL_MAT    = "trails/smoke"
+local TRAIL_COLOR  = Color(210, 210, 200, 180)
 
 -- =========================================================================
 -- Initialise
@@ -14,15 +23,19 @@ function ENT:Initialize()
         Vector( 24,  24,  24)
     )
 
-    -- Thruster/tracer particle (same attach pattern as orbital RPG)
-    local ok, part = pcall(CreateParticleSystem, self, "rockettrail", PATTACH_POINT_FOLLOW, 0)
-    if ok and IsValid(part) then
-        self._thrusterPart = part
-    end
+    -- Scaled sprite trail instead of the full rockettrail particle system
+    util.SpriteTrail(
+        self, 0,
+        TRAIL_COLOR,
+        false,
+        TRAIL_START, TRAIL_END,
+        TRAIL_TIME,
+        1 / TRAIL_START,
+        TRAIL_MAT
+    )
 
     -- Acid-lime tracer light: r=180 g=255 b=40
     -- Distinct from orbital RPG (orange/amber) and standard rockets (white/yellow)
-    -- Still reads as a reddish-yellowish-greenish tracer in motion
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
         dlight.style      = 0
@@ -54,7 +67,5 @@ end
 -- Cleanup
 -- =========================================================================
 function ENT:OnRemove()
-    if IsValid(self._thrusterPart) then
-        self._thrusterPart:StopEmission()
-    end
+    -- SpriteTrail cleans itself up automatically; nothing extra needed
 end
