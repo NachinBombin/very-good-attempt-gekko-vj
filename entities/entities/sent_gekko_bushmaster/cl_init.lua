@@ -15,20 +15,16 @@ function ENT:Initialize()
     )
 
     -- Thruster/tracer particle  (same system as orbital RPG)
-    local ok, part = pcall(CreateParticleSystem, self, "rockettrail", PATTACH_POINT_FOLLOW, 0)
-    if ok and IsValid(part) then
-        self._thrusterPart = part
-    end
-
+   
     -- Persistent dynamic light  (warm tracer glow, smaller than RPG)
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
         dlight.style      = 0
-        dlight.r          = 255
-        dlight.g          = 200
-        dlight.b          = 80
-        dlight.brightness = 1.5
-        dlight.size       = 48
+        dlight.r          = 250
+        dlight.g          = 220
+        dlight.b          = 70
+        dlight.brightness = 9.5
+        dlight.size       = 30
         dlight.decay      = 0
         dlight.dietime    = CurTime() + 9999
     end
