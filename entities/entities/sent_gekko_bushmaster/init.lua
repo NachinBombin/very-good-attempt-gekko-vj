@@ -1,11 +1,7 @@
 -- init.lua  (SERVER)
 -- M242 Bushmaster 25mm round.
--- Exact copy of sent_orbital_rpg with:
---   SPEED        = 2900  (vs 400)
---   ORBIT_RADIUS_A = 5   (vs 22)
---   ORBIT_RADIUS_B = 3   (vs 13)
---   DAMAGE       = 40,  BLAST_RADIUS = 25
--- No flame sound (fast round, not a missile).
+-- Position is set entirely by the Gekko's FireBushmaster logic.
+-- No position manipulation here.
 
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
@@ -40,8 +36,8 @@ function ENT:Initialize()
     self:SetSpawnDir(self:GetForward())
 
     self._birthTime  = now
-    -- Shift origin 50 units up so the burst appears at cannon height
-    self._origin     = self:GetPos() + Vector(0, 0, 50)
+    -- Origin is exactly where the Gekko placed us — no offset here
+    self._origin     = self:GetPos()
     self._forward    = self:GetForward()
 
     local fwd   = self._forward
@@ -94,26 +90,40 @@ end
 -- =========================================================================
 -- Touch
 -- =========================================================================
-function ENT:Touch(other)
-    if IsValid(other) and other ~= self:GetOwner() then
-        self:Explode(self:GetPos(), Vector(0, 0, 1), other)
-    end
+function ENT:Touch( other )
+    if other == self:GetOwner() then return end
+    local tr = util.TraceLine({
+        start  = self:GetPos(),
+        endpos = self:GetPos() + self:GetForward() * 8,
+        filter = { self, self:GetOwner() },
+        mask   = MASK_SHOT,
+    })
+    self:Explode(tr.HitPos, tr.HitNormal, other)
 end
 
 -- =========================================================================
 -- Explode
 -- =========================================================================
-function ENT:Explode(pos, normal, hitEnt)
-    local effectData = EffectData()
-    effectData:SetOrigin(pos)
-    effectData:SetNormal(normal)
-    effectData:SetScale(0.3)
-    util.Effect("Explosion", effectData, true, true)
+function ENT:Explode( hitPos, hitNormal, hitEnt )
+    if self._exploded then return end
+    self._exploded = true
 
-    local owner = IsValid(self:GetOwner()) and self:GetOwner() or self
-    util.BlastDamage(self, owner, pos, BLAST_RADIUS, DAMAGE)
+    local dmg = DamageInfo()
+    dmg:SetDamage(DAMAGE)
+    dmg:SetAttacker(IsValid(self:GetOwner()) and self:GetOwner() or self)
+    dmg:SetInflictor(self)
+    dmg:SetDamageType(DMG_BLAST)
+    dmg:SetDamagePosition(hitPos)
+    dmg:SetDamageForce(hitNormal * -DAMAGE * 50)
 
-    util.Decal("Scorch", pos + normal, pos - normal)
+    util.BlastDamage(self, IsValid(self:GetOwner()) and self:GetOwner() or self,
+        hitPos, BLAST_RADIUS, DAMAGE)
+
+    local eff = EffectData()
+    eff:SetOrigin(hitPos)
+    eff:SetNormal(hitNormal)
+    eff:SetScale(1)
+    util.Effect("Explosion", eff)
 
     self:Remove()
 end
