@@ -122,18 +122,27 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
-local AERIAL_Z_THRESHOLD     = 450
+-- FIX 1: Threshold lowered from 450 to 200.
+-- The old value created a 0-449 unit dead zone where aerial mode never
+-- engaged, leaving the Gekko on the broken ground-combat path while the
+-- player stood on any roof or ledge. 200 units (roughly one floor of
+-- architecture) is the correct trigger height.
+local AERIAL_Z_THRESHOLD     = 200
 local AERIAL_CHASE_INTERVAL  = 0.3
 -- Interval between aerial weapon fires (VJ Base's own NextRangeAttackTime
 -- governs ground cadence; this governs aerial-only intercept cadence).
 local AERIAL_ATTACK_INTERVAL = 6.0
-local AERIAL_EXIT_HYSTERESIS = 300
+-- FIX 1b: Hysteresis reduced proportionally (was 300, ratio kept at ~60%).
+local AERIAL_EXIT_HYSTERESIS = 120
 
 -- Watchdog polls this often; only un-sticks IsAbleToRangeAttack,
 -- never zeros any timer (zeroing timers re-triggers VJ Base instantly).
 local WATCHDOG_INTERVAL      = 0.5
--- How far past the attack deadline before watchdog intervenes.
-local WATCHDOG_GRACE         = 2.0
+-- FIX 3: Grace cut from 2.0s to 0.3s.
+-- 2.0s meant every stuck-attack cycle produced 2 full seconds of weapon
+-- silence. 0.3s is long enough to never false-fire on a running MG burst,
+-- but short enough to be imperceptible to the player.
+local WATCHDOG_GRACE         = 0.3
 
 -- ============================================================
 --  Helpers
@@ -822,14 +831,22 @@ function ENT:GekkoAerialChase_Think( enemy )
     if (groundWaypoint - myPos):Length() < 32 then
         groundWaypoint = myPos + self:GetForward() * 128
     end
+    -- Nav uses the ground projection so the Gekko walks under the player.
     self:UpdateEnemyMemory(enemy, groundWaypoint)
 
     local selfData = self:GetTable()
     if selfData and selfData.EnemyData then
         selfData.EnemyData.VisibleTime = CurTime()
         selfData.EnemyData.Visible     = true
-        selfData.EnemyData.Distance    = Dist2D(myPos, enePos)
-        selfData.EnemyData.VisiblePos  = groundWaypoint
+        -- FIX 2: Use Z-weighted effective distance, not flat 2D.
+        -- Dist2D was causing VJ Base's scheduler to treat a directly
+        -- overhead enemy as "very close", misfiring its distance guards.
+        selfData.EnemyData.Distance    = GekkoEffectiveDist(myPos, enePos)
+        -- FIX 2b: VisiblePos must point at the REAL enemy position, not
+        -- the ground projection. Weapon systems read VisiblePos for aim;
+        -- writing the floor coord here was sending rockets into the ground
+        -- and confusing VJ Base's secondary dot-product checks.
+        selfData.EnemyData.VisiblePos  = enePos
     end
 
     local now = CurTime()
