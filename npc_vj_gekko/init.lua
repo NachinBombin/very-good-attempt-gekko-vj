@@ -619,7 +619,8 @@ end
 -- ============================================================
 function ENT:Initialize()
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
-    self:SetSkin(1)
+    -- FIX: skin 1 was transparent/missing materials — use skin 0 (correct olive-green skin)
+    self:SetSkin(0)
     self._GekkoSpineBone     = self:LookupBone("bip_spine_4") or -1
     self._GekkoLGunBone      = self:LookupBone("b_lgunrack")  or -1
     self._GekkoRGunBone      = self:LookupBone("b_rgunrack")  or -1
@@ -763,7 +764,9 @@ function ENT:OnRangeAttack( status, enemy )
             print(string.format("[GekkoAerial] Blocked (cooldown %.1fs left)",
                 self._gekkoNextAerialAtk - now))
         end
-        return true
+        -- FIX: return false so VJBase never latches IsAbleToRangeAttack=false.
+        -- Aerial cooldown is fully self-managed via _gekkoNextAerialAtk above.
+        return false
     end
 
     return false
