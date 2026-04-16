@@ -686,13 +686,20 @@ function ENT:Init()
         selfRef.GekkoSpineBone = selfRef:LookupBone("b_spine4")    or -1
         selfRef.GekkoLGunBone  = selfRef:LookupBone("b_l_gunrack") or -1
         selfRef.GekkoRGunBone  = selfRef:LookupBone("b_r_gunrack") or -1
-        selfRef:GekkoJump_Activate()
-        print("[GekkoNPC] Activated | walk=" .. selfRef.GekkoSeq_Walk
-            .. " run=" .. selfRef.GekkoSeq_Run
-            .. " idle=" .. selfRef.GekkoSeq_Idle)
-    end)
-end
+           selfRef:GekkoJump_Activate()
+    print("[GekkoNPC] Activated | walk=" .. selfRef.GekkoSeq_Walk
+        .. " run=" .. selfRef.GekkoSeq_Run
+        .. " idle=" .. selfRef.GekkoSeq_Idle)
+  end)
 
+  -- Guarantee OnThink runs even if VJ Base stops calling it
+  timer.Create("GekkoThink_" .. self:EntIndex(), 0.1, 0, function()
+    if not IsValid(self) then
+      timer.Remove("GekkoThink_" .. self:EntIndex()) return
+    end
+    self:OnThink()
+  end)
+end
 function ENT:Activate()
     local base = self.BaseClass
     if base and base.Activate and base.Activate ~= ENT.Activate then base.Activate(self) end
@@ -929,7 +936,8 @@ end
 --  Death
 -- ============================================================
 function ENT:OnDeath( dmginfo, hitgroup, status )
-    if status ~= "Finish" then return end
+  if status ~= "Finish" then return end
+  timer.Remove("GekkoThink_" .. self:EntIndex())
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos      = self:GetPos()
     self:SetGekkoJumpState(self.JUMP_NONE)
