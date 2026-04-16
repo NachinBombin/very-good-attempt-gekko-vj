@@ -1,8 +1,11 @@
 -- init.lua  (SERVER)
--- Gekko M242 Bushmaster 25mm Round
--- Copies the exact movement pattern from sent_orbital_rpg/init.lua.
--- Speed: 2900 u/s.  Orbit: very small ellipse (A=5, B=3).
--- Damage: 40, blast radius 25, distance-falloff via BlastDamage.
+-- M242 Bushmaster 25mm round.
+-- Exact copy of sent_orbital_rpg with:
+--   SPEED        = 2900  (vs 400)
+--   ORBIT_RADIUS_A = 5   (vs 22)
+--   ORBIT_RADIUS_B = 3   (vs 13)
+--   DAMAGE       = 40,  BLAST_RADIUS = 25
+-- No flame sound (fast round, not a missile).
 
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
@@ -36,7 +39,6 @@ function ENT:Initialize()
     self:SetSpawnPos(self:GetPos())
     self:SetSpawnDir(self:GetForward())
 
-    -- Server-side cached values for Think performance
     self._birthTime  = now
     self._origin     = self:GetPos()
     self._forward    = self:GetForward()
@@ -59,7 +61,7 @@ function ENT:Initialize()
 end
 
 -- =========================================================================
--- Think  (runs every tick, server-only)
+-- Think
 -- =========================================================================
 function ENT:Think()
     local t     = CurTime() - self._birthTime
@@ -101,19 +103,16 @@ end
 -- Explode
 -- =========================================================================
 function ENT:Explode(pos, normal, hitEnt)
+    local effectData = EffectData()
+    effectData:SetOrigin(pos)
+    effectData:SetNormal(normal)
+    effectData:SetScale(0.3)
+    util.Effect("Explosion", effectData, true, true)
+
     local owner = IsValid(self:GetOwner()) and self:GetOwner() or self
-
-    local ed = EffectData()
-    ed:SetOrigin(pos)
-    ed:SetNormal(normal)
-    ed:SetScale(0.25)
-    util.Effect("Explosion", ed, true, true)
-
     util.BlastDamage(self, owner, pos, BLAST_RADIUS, DAMAGE)
 
     util.Decal("Scorch", pos + normal, pos - normal)
 
     self:Remove()
 end
-
-function ENT:OnRemove() end
