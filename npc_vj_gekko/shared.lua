@@ -38,55 +38,13 @@ ENT.TurningSpeed  = 6
 ENT.SightDistance = 900000
 ENT.EnemyTimeout  = 260
 
--- ============================================================
---  Sight / detection -- the root cause of the Z-stare bug
---
---  EnemyXRayDetection = true
---    VJ Base init.lua line 1096 shows that when this flag is
---    true, self:Visible() bypasses the engine LOS trace and
---    returns true unconditionally.  The range attack gate on
---    line 2266 opens: "eneIsVisible" is always true regardless
---    of how steeply above the player is standing.
---
---  SightAngle = 360
---    IsInViewCone() uses GetFOV() which mirrors SightAngle.
---    At 360 deg the view cone check always passes, so
---    eneData.VisibleTime is written every single tick and
---    EnemyTimeout can never fire while a player is alive.
---
---  ConstantlyFaceEnemy_IfVisible = false
---    Previously true: the Gekko only rotated toward the enemy
---    when Visible() returned true.  With xray detection the
---    body now always turns toward the player at any elevation
---    so ranged weapons point correctly when they fire.
--- ============================================================
-ENT.SightAngle               = 360
-ENT.EnemyXRayDetection       = true
+ENT.VJ_NPC_UseGestures = false
 
 ENT.ConstantlyFaceEnemy             = true
-ENT.ConstantlyFaceEnemy_IfVisible   = false   -- face at ALL times, not just when LOS is clear
+ENT.ConstantlyFaceEnemy_IfVisible   = true
 ENT.ConstantlyFaceEnemy_IfAttacking = true
 ENT.ConstantlyFaceEnemy_Postures    = "Both"
 ENT.ConstantlyFaceEnemy_MinDistance = 1
-
--- ============================================================
---  Attack config
--- ============================================================
-ENT.HasMeleeAttack = false
-
-ENT.HasRangeAttack                        = true
-ENT.RangeAttackProjectiles                = false
-ENT.RangeAttackMinDistance                = 0
-ENT.RangeAttackMaxDistance                = 900000
-ENT.TimeUntilRangeAttackProjectileRelease = 0.1
-ENT.NextRangeAttackTime                   = 6
-ENT.NextAnyAttackTime_Range               = 2
-
--- Widen angle gate to near-omnidirectional.
--- cos(rad(180)) = -1 so the dot product check always passes.
--- Combined with EnemyXRayDetection this permanently defeats
--- every geometric check inside the range attack gate.
-ENT.RangeAttackAngleRadius = 180
 
 -- ============================================================
 --  NetworkVars
@@ -100,6 +58,19 @@ end
 --  FK360 shared timing constant
 -- ============================================================
 ENT.FK360_DURATION = 0.9
+
+-- ============================================================
+--  Attack config
+-- ============================================================
+ENT.HasMeleeAttack = false
+
+ENT.HasRangeAttack                        = true
+ENT.RangeAttackProjectiles                = false
+ENT.RangeAttackMinDistance                = 0
+ENT.RangeAttackMaxDistance                = 900000
+ENT.TimeUntilRangeAttackProjectileRelease = 0.1
+ENT.NextRangeAttackTime                   = 6
+ENT.NextAnyAttackTime_Range               = 2
 
 -- ============================================================
 --  Physics / damage
