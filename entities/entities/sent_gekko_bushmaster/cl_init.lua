@@ -1,54 +1,37 @@
--- cl_init.lua (CLIENT)
+-- cl_init.lua  (CLIENT)
+-- Rendering only: model + dynamic light glow.
+-- Server drives the position via MOVETYPE_NOCLIP; client just draws.
+
 include("shared.lua")
 
 function ENT:Initialize()
-    self._birthTime = self:GetBirthTime()
-    self._origin    = self:GetSpawnPos()
-    self._forward   = self:GetSpawnDir()
+    if not IsValid(self) then return end
+    self:SetRenderBounds(
+        Vector(-32, -32, -32),
+        Vector( 32,  32,  32)
+    )
 
-    local fwd   = self._forward
-    local right = fwd:Cross(Vector(0, 0, 1))
-    if right:LengthSqr() < 0.001 then right = fwd:Cross(Vector(0, 1, 0)) end
-    right:Normalize()
-    local up = right:Cross(fwd)
-    up:Normalize()
-    self._right = right
-    self._up    = up
-    self._fixedAngle = self:GetAngles()
-end
-
-local SPEED          = 2900
-local ORBIT_RADIUS_A = 5
-local ORBIT_RADIUS_B = 3
-local ORBIT_SPEED    = 4.5
-
-function ENT:Think()
-    local t      = CurTime() - (self._birthTime or self:GetBirthTime())
-    local phase  = t * ORBIT_SPEED
-    local centre = (self._origin or self:GetSpawnPos()) + (self._forward or self:GetSpawnDir()) * (SPEED * t)
-    local right  = self._right or Vector(1,0,0)
-    local up     = self._up    or Vector(0,0,1)
-    local offset = right * (ORBIT_RADIUS_A * math.cos(phase))
-                 + up    * (ORBIT_RADIUS_B * math.sin(phase))
-    self:SetPos(centre + offset)
-    self:SetAngles(self._fixedAngle or self:GetAngles())
-    -- Returning true reschedules Think every frame on base_anim SENTs.
-    -- NextClientThink is not available on this base and must not be called.
-    return true
+    -- Small orange/yellow muzzle glow to suggest a hot round in flight
+    self._dynLight = DynamicLight(self:EntIndex())
+    if self._dynLight then
+        self._dynLight.style      = 0
+        self._dynLight.r          = 255
+        self._dynLight.g          = 200
+        self._dynLight.b          = 80
+        self._dynLight.brightness = 1.5
+        self._dynLight.size       = 48
+        self._dynLight.decay      = 0
+        self._dynLight.dietime    = CurTime() + 9999
+    end
 end
 
 function ENT:Draw()
     self:DrawModel()
-    -- Tracer-style glow
-    local dlight = DynamicLight(self:EntIndex())
-    if dlight then
-        dlight.Pos     = self:GetPos()
-        dlight.r       = 255
-        dlight.g       = 200
-        dlight.b       = 80
-        dlight.Brightness = 1.5
-        dlight.Size    = 48
-        dlight.Decay   = 800
-        dlight.DieTime = CurTime() + 0.05
+    if self._dynLight then
+        self._dynLight.pos     = self:GetPos()
+        self._dynLight.dietime = CurTime() + 0.05
     end
+end
+
+function ENT:OnRemove()
 end
