@@ -14,8 +14,12 @@ function ENT:Initialize()
         Vector( 24,  24,  24)
     )
 
-    -- Thruster/tracer particle  (same system as orbital RPG)
-   
+    -- Thruster/tracer particle (same attach pattern as orbital RPG)
+    local ok, part = pcall(CreateParticleSystem, self, "rockettrail", PATTACH_POINT_FOLLOW, 0)
+    if ok and IsValid(part) then
+        self._thrusterPart = part
+    end
+
     -- Persistent dynamic light  (warm tracer glow, smaller than RPG)
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
