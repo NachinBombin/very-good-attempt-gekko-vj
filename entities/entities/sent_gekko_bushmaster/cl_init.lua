@@ -32,7 +32,8 @@ function ENT:Think()
                  + up    * (ORBIT_RADIUS_B * math.sin(phase))
     self:SetPos(centre + offset)
     self:SetAngles(self._fixedAngle or self:GetAngles())
-    self:NextClientThink(CurTime())
+    -- Returning true reschedules Think every frame on base_anim SENTs.
+    -- NextClientThink is not available on this base and must not be called.
     return true
 end
 
