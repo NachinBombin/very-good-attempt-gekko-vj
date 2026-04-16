@@ -68,6 +68,12 @@ local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
 local BM_SND_LEVEL    = 95
 local BM_MUZZLE_SCALE = 3.5
+-- Trail: 0.35x grenade trail size, more transparent
+local BM_TRAIL_MATERIAL  = "trails/smoke"
+local BM_TRAIL_LIFETIME  = 0.21   -- 0.6 * 0.35
+local BM_TRAIL_STARTSIZE = 7.7    -- 22  * 0.35
+local BM_TRAIL_ENDSIZE   = 0.35   -- 1   * 0.35
+local BM_TRAIL_COLOR     = Color(235, 235, 235, 80)  -- same tint as GL trail, alpha 80 (was 200)
 
 -- Weapon-select reload cue (plays once per attack cycle, before the weapon fires)
 local RELOAD_SNDS = {
@@ -238,6 +244,14 @@ local function AttachGrenadeTrail( gren )
     if not IsValid(gren) then return end
     util.SpriteTrail(gren,0,GL_TRAIL_COLOR,false,GL_TRAIL_STARTSIZE,GL_TRAIL_ENDSIZE,
         GL_TRAIL_LIFETIME,1/GL_TRAIL_STARTSIZE,GL_TRAIL_MATERIAL)
+end
+
+local function AttachBushmasterTrail( shell )
+    if not IsValid(shell) then return end
+    util.SpriteTrail(shell, 0, BM_TRAIL_COLOR, false,
+        BM_TRAIL_STARTSIZE, BM_TRAIL_ENDSIZE,
+        BM_TRAIL_LIFETIME, 1 / BM_TRAIL_STARTSIZE,
+        BM_TRAIL_MATERIAL)
 end
 
 local function RerollNotMissile( exclude )
@@ -777,6 +791,7 @@ local function FireBushmaster( ent, enemy )
                 shell:SetOwner(ent)
                 shell:Spawn()
                 shell:Activate()
+                AttachBushmasterTrail(shell)
             end
             local eff = EffectData()
             eff:SetOrigin(src) ; eff:SetNormal(dir)
@@ -803,7 +818,6 @@ function ENT:OnRangeAttackExecute( status, enemy, projectile )
     if not IsValid(enemy) then return true end
     local choice = RollWeapon()
     self._lastWeaponChoice = choice
-    -- Play a randomized reload/chamber sound the moment the weapon is chosen
     self:EmitSound(RELOAD_SNDS[math.random(#RELOAD_SNDS)], RELOAD_SND_LEVEL, 100, 1)
     print("[GekkoWpn] Roll -> " .. choice)
     if     choice == "MG"          then return FireMGBurst(self, enemy)
