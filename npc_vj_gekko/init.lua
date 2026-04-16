@@ -68,12 +68,13 @@ local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
 local BM_SND_LEVEL    = 95
 local BM_MUZZLE_SCALE = 3.5
--- Trail: 0.35x grenade trail size, more transparent
+-- Trail: tuned for a 3900 u/s round — long streak, narrow, semi-transparent
+-- startsize wider than endsize gives a tapered smoke/glow look
 local BM_TRAIL_MATERIAL  = "trails/smoke"
-local BM_TRAIL_LIFETIME  = 0.21   -- 0.6 * 0.35
-local BM_TRAIL_STARTSIZE = 7.7    -- 22  * 0.35
-local BM_TRAIL_ENDSIZE   = 0.35   -- 1   * 0.35
-local BM_TRAIL_COLOR     = Color(235, 235, 235, 80)  -- same tint as GL trail, alpha 80 (was 200)
+local BM_TRAIL_LIFETIME  = 0.55   -- long enough to leave a visible streak at speed
+local BM_TRAIL_STARTSIZE = 5      -- narrow — this is a cannon round, not a rocket
+local BM_TRAIL_ENDSIZE   = 0.5
+local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)  -- faint white smoke, alpha 90
 
 -- Weapon-select reload cue (plays once per attack cycle, before the weapon fires)
 local RELOAD_SNDS = {
