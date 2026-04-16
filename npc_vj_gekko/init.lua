@@ -73,15 +73,19 @@ local WWEIGHT_ORBITRPG       = 15
 local WWEIGHT_NIKITA         = 5
 local WWEIGHT_BUSHMASTER     = 10  -- M242 Bushmaster 25mm chain gun
 
+-- Total weight pool = 30+14+5+10+10+1+15+5+10 = 100
+local WWEIGHT_TOTAL = 100
+
 -- Bushmaster burst config
 local BUSH_ROUNDS_MIN      = 7
 local BUSH_ROUNDS_MAX      = 12
 local BUSH_INTERVAL        = 0.41   -- seconds between rounds
 local BUSH_BONE_NAME       = "b_pelvis1"
-local BUSH_SND_SHOTS       = "gekko/brushmaster_25mm/20mm_shoot.wav"
+-- FIX: must be a table so math.random(#BUSH_SND_SHOTS) works correctly
+local BUSH_SND_SHOTS       = { "gekko/brushmaster_25mm/20mm_shoot.wav" }
 local BUSH_SND_LEVEL       = 100
 local BUSH_CHAIN_EVERY     = 1
-local BUSH_SND_CHAININSERT =  "gekko/brushmaster_25mm/20mm_stop.wav"
+local BUSH_SND_CHAININSERT = "gekko/brushmaster_25mm/20mm_stop.wav"
 local BUSH_MUZZLE_SCALE    = 3.5
 
 local SALVO_SPREAD_XY = 220
@@ -146,9 +150,6 @@ local HEAD_Z_FRACTION        = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
-
--- Total weight pool = 35+20+5+10+10+2+10+8+12 = 112
-local WWEIGHT_TOTAL = 112
 
 -- ============================================================
 --  Helpers
@@ -639,12 +640,7 @@ end
 
 -- ============================================================
 --  Weapon: M242 Bushmaster 25mm chain gun
---  Fires a burst of sent_gekko_bushmaster rounds.
---  Launch logic is identical to FireOrbitRpg: src from b_pelvis1
---  bone, dir = (enemyPos+40z - src):Normalized(), entity spawned
---  at src facing dir. No spread added — the orbital motion handles
---  natural variation. Burst of BUSH_ROUNDS_MIN..MAX rounds at
---  BUSH_INTERVAL seconds apart.
+--  Fires a burst of sent_gekko_bushmaster rounds from b_pelvis1.
 -- ============================================================
 local function FireBushmaster( ent, enemy )
     if ent._bushmasterActive then return false end
@@ -654,7 +650,6 @@ local function FireBushmaster( ent, enemy )
     ent._bushmasterEndT   = CurTime() + (rounds * BUSH_INTERVAL) + 1.0
     ent:SetNWBool("GekkoBushFiring", true)
 
-    -- Snapshot aim position at burst start (same as orbital RPG)
     local aimPos = enemy:GetPos() + Vector(0.5, 0.5, 40)
 
     print(string.format("[GekkoBush] Firing %d rounds from b_pelvis1", rounds))
@@ -664,11 +659,9 @@ local function FireBushmaster( ent, enemy )
         timer.Simple(roundIdx * BUSH_INTERVAL, function()
             if not IsValid(ent) then return end
 
-            -- Re-acquire enemy aim each shot (same pattern as orbital RPG)
             local curEnemy = GetActiveEnemy(ent)
             local curAim   = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0, 0, 40)) or aimPos
 
-            -- Muzzle source: b_pelvis1 bone world position
             local src
             local pelvisIdx = ent.GekkoPelvisBone
             if pelvisIdx and pelvisIdx >= 0 then
@@ -677,10 +670,8 @@ local function FireBushmaster( ent, enemy )
             end
             src = src or (ent:GetPos() + Vector(0, 0, 80))
 
-            -- Direction: exactly like orbital RPG
             local dir = (curAim - src):GetNormalized()
 
-            -- Spawn the bushmaster round
             local proj = ents.Create("sent_gekko_bushmaster")
             if IsValid(proj) then
                 proj:SetPos(src)
@@ -690,7 +681,6 @@ local function FireBushmaster( ent, enemy )
                 proj:Activate()
             end
 
-            -- Bigger muzzle flash (scale 2.5)
             local eff = EffectData()
             eff:SetOrigin(src)
             eff:SetNormal(dir)
@@ -744,13 +734,13 @@ local function FireTrackMissile( ent, enemy )
     if dist < MISSILE_MIN_DIST then
         print(string.format("[GekkoTRK] Too close (%.0f) -- re-rolling", dist))
         local alt = RerollNotMissile("TRACKMISSILE")
-        if     alt == "MG"          then return FireMGBurst(ent, enemy)
-        elseif alt == "MISSILE"     then return FireMissile(ent, enemy)
-        elseif alt == "SALVO"       then return FireDoubleSalvo(ent, enemy)
-        elseif alt == "TOPMISSILE"  then return FireTopMissile(ent, enemy)
-        elseif alt == "ORBITRPG"    then return FireOrbitRpg(ent, enemy)
-        elseif alt == "BUSHMASTER"  then return FireBushmaster(ent, enemy)
-        else                             return FireGrenadeLauncher(ent, enemy) end
+        if     alt == "MG"           then return FireMGBurst(ent, enemy)
+        elseif alt == "MISSILE"      then return FireMissile(ent, enemy)
+        elseif alt == "SALVO"        then return FireDoubleSalvo(ent, enemy)
+        elseif alt == "TOPMISSILE"   then return FireTopMissile(ent, enemy)
+        elseif alt == "ORBITRPG"     then return FireOrbitRpg(ent, enemy)
+        elseif alt == "BUSHMASTER"   then return FireBushmaster(ent, enemy)
+        else                              return FireGrenadeLauncher(ent, enemy) end
     end
     SendSonarLock(enemy)
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
@@ -792,14 +782,14 @@ local function FireNikita( ent, enemy )
     if dist < NIKITA_MIN_DIST then
         print(string.format("[GekkoNK] Too close (%.0f) -- re-rolling", dist))
         local alt = RerollNotMissile("NIKITA")
-        if     alt == "MG"          then return FireMGBurst(ent, enemy)
-        elseif alt == "MISSILE"     then return FireMissile(ent, enemy)
-        elseif alt == "SALVO"       then return FireDoubleSalvo(ent, enemy)
-        elseif alt == "TOPMISSILE"  then return FireTopMissile(ent, enemy)
+        if     alt == "MG"           then return FireMGBurst(ent, enemy)
+        elseif alt == "MISSILE"      then return FireMissile(ent, enemy)
+        elseif alt == "SALVO"        then return FireDoubleSalvo(ent, enemy)
+        elseif alt == "TOPMISSILE"   then return FireTopMissile(ent, enemy)
         elseif alt == "TRACKMISSILE" then return FireTrackMissile(ent, enemy)
-        elseif alt == "ORBITRPG"    then return FireOrbitRpg(ent, enemy)
-        elseif alt == "BUSHMASTER"  then return FireBushmaster(ent, enemy)
-        else                             return FireGrenadeLauncher(ent, enemy) end
+        elseif alt == "ORBITRPG"     then return FireOrbitRpg(ent, enemy)
+        elseif alt == "BUSHMASTER"   then return FireBushmaster(ent, enemy)
+        else                              return FireGrenadeLauncher(ent, enemy) end
     end
     NikitaMuzzleSmoke(ent)
     sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
@@ -835,19 +825,41 @@ function ENT:CustomAttack()
     print(string.format("[GekkoWPN] Rolled: %s", choice))
 
     local fired = false
-    if     choice == "MG"          then fired = FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"     then fired = FireMissile(self, enemy)
-    elseif choice == "SALVO"       then fired = FireDoubleSalvo(self, enemy)
-    elseif choice == "GRENADE"     then fired = FireGrenadeLauncher(self, enemy)
-    elseif choice == "TOPMISSILE"  then fired = FireTopMissile(self, enemy)
+    if     choice == "MG"           then fired = FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"      then fired = FireMissile(self, enemy)
+    elseif choice == "SALVO"        then fired = FireDoubleSalvo(self, enemy)
+    elseif choice == "GRENADE"      then fired = FireGrenadeLauncher(self, enemy)
+    elseif choice == "TOPMISSILE"   then fired = FireTopMissile(self, enemy)
     elseif choice == "TRACKMISSILE" then fired = FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"    then fired = FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"      then fired = FireNikita(self, enemy)
-    elseif choice == "BUSHMASTER"  then fired = FireBushmaster(self, enemy)
+    elseif choice == "ORBITRPG"     then fired = FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"       then fired = FireNikita(self, enemy)
+    elseif choice == "BUSHMASTER"   then fired = FireBushmaster(self, enemy)
     end
 
     if not fired then
         print("[GekkoWPN] Primary failed, fallback MG")
         FireMGBurst(self, enemy)
     end
+end
+
+-- ============================================================
+--  Death
+-- ============================================================
+function ENT:OnDeath( dmginfo, hitgroup, status )
+    if status ~= "Finish" then return end
+    local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
+    local pos      = self:GetPos()
+    self:SetGekkoJumpState(self.JUMP_NONE)
+    self:SetMoveType(MOVETYPE_STEP)
+    self:SetNWBool("GekkoMGFiring", false)
+    self:SetNWBool("GekkoBushFiring", false)
+    timer.Simple(0.8, function()
+        if not IsValid(self) then return end
+        ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
+        self:EmitSound(VJ.PICK({
+            "weapons/mgs3/explosion_01.wav",
+            "weapons/mgs3/explosion_02.wav"
+        }), 511, 100, 2)
+        util.BlastDamage(self, attacker, pos, 512, 256)
+    end)
 end
