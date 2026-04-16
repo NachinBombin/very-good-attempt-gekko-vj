@@ -20,13 +20,15 @@ function ENT:Initialize()
         self._thrusterPart = part
     end
 
-    -- Persistent dynamic light  (warm tracer glow, smaller than RPG)
+    -- Acid-lime tracer light: r=180 g=255 b=40
+    -- Distinct from orbital RPG (orange/amber) and standard rockets (white/yellow)
+    -- Still reads as a reddish-yellowish-greenish tracer in motion
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
         dlight.style      = 0
-        dlight.r          = 250
-        dlight.g          = 220
-        dlight.b          = 70
+        dlight.r          = 180
+        dlight.g          = 255
+        dlight.b          = 40
         dlight.brightness = 9.5
         dlight.size       = 30
         dlight.decay      = 0

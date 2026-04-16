@@ -40,7 +40,8 @@ function ENT:Initialize()
     self:SetSpawnDir(self:GetForward())
 
     self._birthTime  = now
-    self._origin     = self:GetPos()
+    -- Shift origin 50 units up so the burst appears at cannon height
+    self._origin     = self:GetPos() + Vector(0, 0, 50)
     self._forward    = self:GetForward()
 
     local fwd   = self._forward
