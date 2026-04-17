@@ -36,7 +36,6 @@ function ENT:Initialize()
     self:SetSpawnDir(self:GetForward())
 
     self._birthTime  = now
-    -- Origin is exactly where the Gekko placed us — no offset here
     self._origin     = self:GetPos()
     self._forward    = self:GetForward()
 
@@ -107,6 +106,12 @@ end
 function ENT:Explode( hitPos, hitNormal, hitEnt )
     if self._exploded then return end
     self._exploded = true
+
+    -- Impact light: sent at true detonation position, perfect timing
+    net.Start("GekkoImpactLight")
+        net.WriteVector(hitPos)
+        net.WriteUInt(2, 2)   -- typeID 2 = Bushmaster
+    net.Broadcast()
 
     local dmg = DamageInfo()
     dmg:SetDamage(DAMAGE)

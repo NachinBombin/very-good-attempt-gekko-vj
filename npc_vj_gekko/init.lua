@@ -50,7 +50,7 @@ local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 95
 local MG_FLASH_EVERY     = 3
-local MG_LIGHT_EVERY     = 4   -- send impact light every N connected MG rounds
+local MG_LIGHT_EVERY     = 4
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -79,8 +79,6 @@ local BM_TRAIL_LIFETIME  = 0.55
 local BM_TRAIL_STARTSIZE = 5
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
-local BM_SHELL_SPEED     = 2200
-local BM_IMPACT_DELAY_MAX = 1.5
 
 local RELOAD_SNDS = {
     "gekko/reload/reloadbig_1.wav",
@@ -208,7 +206,7 @@ end
 local function SendImpactLight(hitPos, typeID)
     net.Start("GekkoImpactLight")
         net.WriteVector(hitPos)
-        net.WriteUInt(typeID, 2)   -- 1=MG  2=Bushmaster
+        net.WriteUInt(typeID, 2)
     net.Broadcast()
 end
 
@@ -293,7 +291,7 @@ local function SendSonarLock( enemy )
 end
 
 -- ============================================================
---  MG impact light hook (throttled, server-side trace -> net)
+--  MG impact light hook (hitscan: throttled trace -> net)
 -- ============================================================
 local _mgHitCount = {}
 
@@ -825,6 +823,8 @@ end
 
 -- ============================================================
 --  Weapon: Bushmaster 25mm cannon
+--  Impact light is sent from sent_gekko_bushmaster:Explode()
+--  so timing and position are exact.
 -- ============================================================
 local function FireBushmaster( ent, enemy )
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
@@ -855,15 +855,6 @@ local function FireBushmaster( ent, enemy )
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-            -- Trace shell path -> schedule impact light timed to shell arrival
-            local tr = util.TraceLine({ start = src, endpos = src + dir * 32768, filter = ent })
-            if tr.Hit then
-                local hitPos  = tr.HitPos
-                local travelT = math.min((tr.Fraction * 32768) / BM_SHELL_SPEED, BM_IMPACT_DELAY_MAX)
-                timer.Simple(travelT, function()
-                    SendImpactLight(hitPos, 2)
-                end)
-            end
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
