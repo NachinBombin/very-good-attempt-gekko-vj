@@ -60,7 +60,7 @@ local PRESETS = {
         scaleMax   = 1.40,
         texture    = "effects/muzzleflash_light",
     },
-}  -- ← THIS closing brace was missing, killing the entire file
+}
 
 -- ============================================================
 -- ACTIVE FLASH TABLE
@@ -78,6 +78,13 @@ local function SpawnGekkoFlash(pos, normal, presetID)
     local tex = p.texture
     if tex == "" then tex = "effects/muzzleflash_light" end
 
+    -- Convert the firing direction vector to a proper Angle for ProjectedTexture.
+    -- GMod's ProjectedTexture points along the FORWARD axis of the angle.
+    -- Vector:Angle() returns pitch/yaw correctly but pitch sign must be negated
+    -- because ProjectedTexture uses a left-handed pitch convention.
+    local ang = normal:Angle()
+    ang.p = -ang.p
+
     proj:SetTexture(tex)
     proj:SetFOV(p.fov * scale)
     proj:SetNearZ(p.nearz)
@@ -87,7 +94,7 @@ local function SpawnGekkoFlash(pos, normal, presetID)
     if proj.SetEnableShadows then proj:SetEnableShadows(false) end -- perf: no shadows on flash
 
     proj:SetPos(pos)
-    proj:SetAngles(normal:Angle())
+    proj:SetAngles(ang)
     proj:Update()
 
     table.insert(ActiveFlashes, {
