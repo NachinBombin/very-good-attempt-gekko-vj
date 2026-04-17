@@ -1,11 +1,20 @@
 -- ============================================================
 --  npc_vj_gekko / init.lua
+--  Weapon list:
+--  1. Machine-gun burst         (FireBullets)
+--  2. Single accurate missile   (obj_vj_rocket)
+--  3. Double inaccurate salvo   (obj_vj_rocket x2)
+--  4. Grenade launcher barrage  (bombin_gas_grenade / stun / flash)
+--  5. Top-attack terror missile (sent_npc_topmissile)
+--  6. Active-track missile      (sent_npc_trackmissile)
+--  7. Orbit RPG                 (sent_orbital_rpg)
+--  8. Nikita cruise missile     (npc_vj_gekko_nikita)
+--  9. Bushmaster 25mm cannon    (sent_gekko_bushmaster x7-13)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
-AddCSLuaFile("impact_light_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -16,7 +25,6 @@ include("leg_disable_system.lua")
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
 util.AddNetworkString("GekkoMuzzleFlash")
-util.AddNetworkString("GekkoImpactLight")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L  = 9
@@ -39,8 +47,7 @@ local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 95
-local MG_FLASH_EVERY     = 3
-local MG_LIGHT_EVERY     = 4
+local MG_FLASH_EVERY     = 3   -- projected flash every N rounds (throttle)
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -56,13 +63,14 @@ local TOPMISSILE_SND_FIRE = {
 }
 local TOPMISSILE_SND_LEVEL = 95
 
-local BM_ROUNDS_MIN      = 7
-local BM_ROUNDS_MAX      = 13
-local BM_INTERVAL        = 0.38
-local BM_SND_SHOOT       = "gekko/brushmaster_25mm/20mm_shoot.wav"
-local BM_SND_RELOAD      = "gekko/brushmaster_25mm/20mm_reload.wav"
-local BM_SND_LEVEL       = 95
-local BM_MUZZLE_SCALE    = 3.5
+-- Bushmaster 25mm cannon
+local BM_ROUNDS_MIN   = 7
+local BM_ROUNDS_MAX   = 13
+local BM_INTERVAL     = 0.38
+local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
+local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
+local BM_SND_LEVEL    = 95
+local BM_MUZZLE_SCALE = 3.5
 local BM_MUZZLE_Z_OFFSET = 120
 local BM_TRAIL_MATERIAL  = "trails/smoke"
 local BM_TRAIL_LIFETIME  = 0.55
@@ -182,19 +190,15 @@ local function RollWeapon()
     return "BRUSHMASTER"
 end
 
+-- ============================================================
+--  Muzzle flash net helper
+--  presetID: 1=MG  2=MISSILE  3=BUSHMASTER  4=NIKITA
+-- ============================================================
 local function SendMuzzleFlash(pos, normal, presetID)
     net.Start("GekkoMuzzleFlash")
         net.WriteVector(pos)
         net.WriteVector(normal)
         net.WriteUInt(presetID, 3)
-    net.Broadcast()
-end
-
-local function SendImpactLight(hitPos, hitNormal, typeID)
-    net.Start("GekkoImpactLight")
-        net.WriteVector(hitPos)
-        net.WriteVector(hitNormal)
-        net.WriteUInt(typeID, 2)
     net.Broadcast()
 end
 
@@ -277,33 +281,6 @@ local function SendSonarLock( enemy )
     if not enemy:IsPlayer() then return end
     net.Start("GekkoSonarLock") ; net.Send(enemy)
 end
-
--- ============================================================
---  MG impact light (hitscan: trace per bullet, throttled)
--- ============================================================
-local _mgHitCount = {}
-
-hook.Add("EntityFireBullets", "GekkoMG_ImpactLight", function( ent, bulletData )
-    if not IsValid(ent) then return end
-    if ent:GetClass() ~= "npc_vj_gekko" then return end
-    local idx = ent:EntIndex()
-    _mgHitCount[idx] = (_mgHitCount[idx] or 0) + 1
-    if _mgHitCount[idx] < MG_LIGHT_EVERY then return end
-    _mgHitCount[idx] = 0
-    local tr = util.TraceLine({
-        start  = bulletData.Src,
-        endpos = bulletData.Src + bulletData.Dir * 32768,
-        filter = ent,
-    })
-    if not tr.Hit then return end
-    SendImpactLight(tr.HitPos, tr.HitNormal, 1)
-end)
-
-hook.Add("EntityRemoved", "GekkoMG_ImpactLight_Cleanup", function( ent )
-    if not IsValid(ent) then return end
-    if ent:GetClass() ~= "npc_vj_gekko" then return end
-    _mgHitCount[ent:EntIndex()] = nil
-end)
 
 -- ============================================================
 --  AnimApply / SetAnimationTranslations
@@ -590,6 +567,7 @@ local function FireMGBurst( ent, enemy )
                 Spread=Vector(mgSpread,mgSpread,mgSpread) })
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
+            -- Throttled projected flash: every MG_FLASH_EVERY rounds
             if (round % MG_FLASH_EVERY) == 0 then
                 SendMuzzleFlash(src, dir, 1)
             end
@@ -656,6 +634,7 @@ local function FireGrenadeLauncher( ent, enemy )
             local mf = EffectData()
             mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
             util.Effect("MuzzleFlash", mf)
+            -- NOTE: grenade launcher intentionally excluded from projected muzzle flash
             local gren = ents.Create(grenadeType)
             if IsValid(gren) then
                 gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
@@ -770,6 +749,7 @@ local function NikitaMuzzleSmoke( ent )
             util.Effect("SmokeEffect", ed)
         end)
     end
+    -- Projected flash on the first puff only
     SendMuzzleFlash(nozzle, nozzDir, 4)
 end
 
@@ -811,7 +791,6 @@ end
 
 -- ============================================================
 --  Weapon: Bushmaster 25mm cannon
---  Impact light fired from sent_gekko_bushmaster:Explode()
 -- ============================================================
 local function FireBushmaster( ent, enemy )
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
@@ -824,7 +803,9 @@ local function FireBushmaster( ent, enemy )
             local pelBone = ent.GekkoPelvisBone
             if pelBone and pelBone >= 0 then
                 local m = ent:GetBoneMatrix(pelBone)
-                if m then src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET) end
+                if m then
+                    src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET)
+                end
             end
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
             local curEnemy = GetActiveEnemy(ent)
@@ -832,8 +813,11 @@ local function FireBushmaster( ent, enemy )
             local dir      = (curAim - src):GetNormalized()
             local shell = ents.Create("sent_gekko_bushmaster")
             if IsValid(shell) then
-                shell:SetPos(src) ; shell:SetAngles(dir:Angle())
-                shell:SetOwner(ent) ; shell:Spawn() ; shell:Activate()
+                shell:SetPos(src)
+                shell:SetAngles(dir:Angle())
+                shell:SetOwner(ent)
+                shell:Spawn()
+                shell:Activate()
                 AttachBushmasterTrail(shell)
             end
             local eff = EffectData()
@@ -864,15 +848,15 @@ function ENT:OnRangeAttackExecute( status, enemy, projectile )
     self._lastWeaponChoice = choice
     self:EmitSound(RELOAD_SNDS[math.random(#RELOAD_SNDS)], RELOAD_SND_LEVEL, 100, 1)
     print("[GekkoWpn] Roll -> " .. choice)
-    if     choice == "MG"           then return FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"      then return FireMissile(self, enemy)
-    elseif choice == "SALVO"        then return FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"       then return FireNikita(self, enemy)
-    elseif choice == "BRUSHMASTER"  then return FireBushmaster(self, enemy)
-    else                                 return FireGrenadeLauncher(self, enemy)
+    if     choice == "MG"          then return FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"     then return FireMissile(self, enemy)
+    elseif choice == "SALVO"       then return FireDoubleSalvo(self, enemy)
+    elseif choice == "TOPMISSILE"  then return FireTopMissile(self, enemy)
+    elseif choice == "TRACKMISSILE"then return FireTrackMissile(self, enemy)
+    elseif choice == "ORBITRPG"    then return FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"      then return FireNikita(self, enemy)
+    elseif choice == "BRUSHMASTER" then return FireBushmaster(self, enemy)
+    else                                return FireGrenadeLauncher(self, enemy)
     end
 end
 
