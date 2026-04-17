@@ -182,14 +182,14 @@ end)
 
 -- ============================================================
 --  Per-entity think driver
---  Wired in via EntityThink hook below.
+--  Called directly from ENT:Think in cl_init.lua.
 -- ============================================================
 
 -- MG: time-gated per-entity next-flash timestamp table.
 -- Key = entity, value = CurTime() deadline.
 local _mgNextFlashT = {}
 
-local function GekkoMF_Think(ent)
+function GekkoMF_Think(ent)
     if not IsValid(ent) then return end
 
     -- --------------------------------------------------------
@@ -217,15 +217,6 @@ local function GekkoMF_Think(ent)
         TryFlash(ent)
     end
 end
-
--- ============================================================
---  EntityThink hook – runs GekkoMF_Think for every Gekko
--- ============================================================
-hook.Add("EntityThink", "GekkoMF_EntityThink", function(ent)
-    if not IsValid(ent) then return end
-    if ent:GetClass() ~= "npc_vj_gekko" then return end
-    GekkoMF_Think(ent)
-end)
 
 -- ============================================================
 --  USAGE NOTE (server side, init.lua)
