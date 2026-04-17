@@ -14,7 +14,6 @@
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
-AddCSLuaFile("muzzleflash_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -175,17 +174,6 @@ local function GetActiveEnemy( ent )
     e = ent:GetEnemy()
     if IsValid(e) then return e end
     return nil
-end
-
--- ============================================================
---  Muzzle flash pulse helper
---  Call after every weapon fires EXCEPT the grenade launcher.
---  The client muzzleflash_system.lua watches for delta on
---  "GekkoMFFire" and spawns a projected-texture flash.
--- ============================================================
-local function PulseMF( ent )
-    ent._mfFirePulse = (ent._mfFirePulse or 0) + 1
-    ent:SetNWInt("GekkoMFFire", ent._mfFirePulse)
 end
 
 local function RollWeapon()
@@ -414,13 +402,11 @@ function ENT:Init()
     self._glSparkCounter         = 0
     self._gekkoCurrentLocoSeq    = -1
     self._gekkoTargetRate        = 1.0
-    self._mfFirePulse            = 0
     self:SetNWBool("GekkoMGFiring",     false)
     self:SetNWInt("GekkoJumpDust",      0)
     self:SetNWInt("GekkoLandDust",      0)
     self:SetNWInt("GekkoFK360LandDust", 0)
     self:SetNWInt("GekkoBloodSplat",    0)
-    self:SetNWInt("GekkoMFFire",        0)
     SafeInitVJTables(self)
     self:GekkoJump_Init()
     self:GekkoTargetJump_Init()
@@ -544,7 +530,6 @@ local function FireMGBurst( ent, enemy )
     ent._mgBurstActive = true
     ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
     ent:SetNWBool("GekkoMGFiring", true)
-    -- MG flash is handled by muzzleflash_system.lua watching GekkoMGFiring
     for i = 0, mgRounds-1 do
         local round = i
         timer.Simple(round * MG_INTERVAL, function()
@@ -586,7 +571,6 @@ local function FireMissile( ent, enemy )
     local aimPos = enemy:GetPos() + Vector(0,0,40)
     ent._missileCount = (ent._missileCount or 0) + 1
     SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, nil)
-    PulseMF(ent)
     return true
 end
 
@@ -594,20 +578,17 @@ local function FireDoubleSalvo( ent, enemy )
     local aimPos = enemy:GetPos() + Vector(0,0,40)
     ent._missileCount = (ent._missileCount or 0) + 1
     SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, SalvoSpread())
-    PulseMF(ent)
     timer.Simple(SALVO_DELAY, function()
         if not IsValid(ent) then return end
         local curEnemy = GetActiveEnemy(ent)
         local curAim   = IsValid(curEnemy) and (curEnemy:GetPos()+Vector(0,0,40)) or aimPos
         ent._missileCount = (ent._missileCount or 0) + 1
         SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, curAim, SalvoSpread())
-        PulseMF(ent)
     end)
     return true
 end
 
 local function FireGrenadeLauncher( ent, enemy )
-    -- No muzzle flash pulse — grenade launcher is excluded by design.
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
     local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
     local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
@@ -670,7 +651,6 @@ local function FireOrbitRpg( ent, enemy )
     end
     rpg:SetPos(src) ; rpg:SetAngles(dir:Angle()) ; rpg:SetOwner(ent)
     rpg:Spawn() ; rpg:Activate()
-    PulseMF(ent)
     print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f", attIdx, ent:GetPos():Distance(enemy:GetPos())))
     return true
 end
@@ -696,7 +676,6 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    PulseMF(ent)
     print(string.format("[GekkoTM] Launched | dist=%.0f", dist))
     return true
 end
@@ -725,7 +704,6 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    PulseMF(ent)
     print(string.format("[GekkoTRK] Launched | dist=%.0f", dist))
     return true
 end
@@ -784,7 +762,6 @@ local function FireNikita( ent, enemy )
             nikita:SetEnemy(enemy)
         end
     end
-    PulseMF(ent)
     print(string.format("[GekkoNikita] Launched | dist=%.0f", dist))
     return true
 end
@@ -804,6 +781,7 @@ local function FireBushmaster( ent, enemy )
             if pelBone and pelBone >= 0 then
                 local m = ent:GetBoneMatrix(pelBone)
                 if m then
+                    -- Muzzle is BM_MUZZLE_Z_OFFSET units above the pelvis bone
                     src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET)
                 end
             end
@@ -825,7 +803,6 @@ local function FireBushmaster( ent, enemy )
             eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
             util.Effect("MuzzleFlash", eff)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-            PulseMF(ent)
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
