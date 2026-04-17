@@ -13,6 +13,13 @@
 --    FOV    : 110 – 160  (controls spread / "size" of the cone)
 --    FarZ   : 380 – 560  (how far the light reaches, ~4 m guaranteed)
 --    Brightness: 1.5 – 3.0
+--
+--  Fixes applied vs original port:
+--    1. SpawnFlash now stores the owner ent; a RenderScene hook updates
+--       pos/ang every frame so the flash tracks the moving Gekko.
+--       (Original static PT froze in world space the moment it spawned.)
+--    2. MG flash is time-gated at MG_FLASH_INTERVAL (0.15 s) instead of
+--       a frame counter, so it fires once per actual bullet not per frame.
 -- ============================================================
 if SERVER then return end
 
@@ -34,14 +41,15 @@ local MF_COLOR_R    = 255
 local MF_COLOR_G    = 180
 local MF_COLOR_B    = 80
 
--- MG: fire a flash once every N bullets so the table stays small
-local MG_FLASH_EVERY = 2
+-- MG: fire a flash at most once every MG_FLASH_INTERVAL seconds so it
+-- matches the actual bullet rate (MG_INTERVAL = 0.15 s in init.lua).
+local MG_FLASH_INTERVAL = 0.15
 
 -- Attachment candidates, in priority order
 local ATTACH_NAMES = { "muzzle", "muzzle_flash", "muzzleflash", "attach_muzzle", "muzzle1" }
 local ATTACH_SEARCH_MAX = 32
 
--- Fallback muzzle offset in entity-local space (matches l4d_mf_client.lua)
+-- Fallback muzzle offset in entity-local space
 local FALLBACK_OFFSET = Vector(14, 0, -2)
 
 -- ============================================================
@@ -54,7 +62,6 @@ local function FindBestAttachment(ent)
     local mdl = ent:GetModel() or ""
     if _attachCache[mdl] ~= nil then return _attachCache[mdl] end
 
-    -- try named candidates first
     for _, name in ipairs(ATTACH_NAMES) do
         local idx = ent:LookupAttachment(name)
         if tonumber(idx) and idx > 0 then
@@ -63,7 +70,6 @@ local function FindBestAttachment(ent)
         end
     end
 
-    -- fall back to the most-forward attachment
     local best, bestDot = nil, -1e9
     local entPos = ent:GetPos()
     local entFwd = ent:GetForward()
@@ -105,14 +111,15 @@ local function GetMuzzleTransform(ent)
 end
 
 -- ============================================================
---  Active flash table  { proj, dieTime }
+--  Active flash table  { proj, ent, dieTime }
 -- ============================================================
 local _flashes = {}
 
 -- ============================================================
 --  Create one projected-texture flash
+--  ent is stored so RenderScene can update the PT every frame.
 -- ============================================================
-local function SpawnFlash(pos, ang)
+local function SpawnFlash(pos, ang, ent)
     local proj = ProjectedTexture()
     if not proj then return end
 
@@ -129,6 +136,7 @@ local function SpawnFlash(pos, ang)
 
     table.insert(_flashes, {
         proj    = proj,
+        ent     = ent,
         dieTime = CurTime() + MF_LIFETIME,
     })
 end
@@ -136,7 +144,7 @@ end
 local function TryFlash(ent)
     if not IsValid(ent) then return end
     local pos, ang = GetMuzzleTransform(ent)
-    if pos and ang then SpawnFlash(pos, ang) end
+    if pos and ang then SpawnFlash(pos, ang, ent) end
 end
 
 -- ============================================================
@@ -154,27 +162,50 @@ hook.Add("Think", "GekkoMF_Lifetime", function()
 end)
 
 -- ============================================================
---  Per-entity think driver
---  Call this from the Gekko's ENT:Think / ENT:Draw tick
---  (wired in via EntityThink hook below).
+--  RenderScene update — tracks the muzzle every frame.
+--  Mirrors the original L4D addon's L4D_MuzzleFlash_RenderUpdate.
+--  Without this the PT freezes in world space while the Gekko moves.
 -- ============================================================
-local _mgBulletCounter = {}
+hook.Add("RenderScene", "GekkoMF_RenderUpdate", function()
+    for i = 1, #_flashes do
+        local d = _flashes[i]
+        if IsValid(d.proj) and IsValid(d.ent) then
+            local pos, ang = GetMuzzleTransform(d.ent)
+            if pos and ang then
+                d.proj:SetPos(pos)
+                d.proj:SetAngles(ang)
+                d.proj:Update()
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  Per-entity think driver
+--  Wired in via EntityThink hook below.
+-- ============================================================
+
+-- MG: time-gated per-entity next-flash timestamp table.
+-- Key = entity, value = CurTime() deadline.
+local _mgNextFlashT = {}
 
 local function GekkoMF_Think(ent)
     if not IsValid(ent) then return end
 
     -- --------------------------------------------------------
-    --  MG burst: fires a flash every MG_FLASH_EVERY bullets
+    --  MG burst: one flash per MG_FLASH_INTERVAL seconds
+    --  (matches MG_INTERVAL = 0.15 s in init.lua).
     -- --------------------------------------------------------
     local mgFiring = ent:GetNWBool("GekkoMGFiring", false)
     if mgFiring then
-        _mgBulletCounter[ent] = (_mgBulletCounter[ent] or 0) + 1
-        if _mgBulletCounter[ent] >= MG_FLASH_EVERY then
-            _mgBulletCounter[ent] = 0
+        local now   = CurTime()
+        local nextT = _mgNextFlashT[ent] or 0
+        if now >= nextT then
+            _mgNextFlashT[ent] = now + MG_FLASH_INTERVAL
             TryFlash(ent)
         end
     else
-        _mgBulletCounter[ent] = 0
+        _mgNextFlashT[ent] = nil
     end
 
     -- --------------------------------------------------------
@@ -199,11 +230,11 @@ end)
 -- ============================================================
 --  USAGE NOTE (server side, init.lua)
 --  In every weapon fire function EXCEPT FireGrenadeLauncher,
---  add one line after the shot to pulse GekkoMFFire:
+--  call PulseMF(ent) after the shot:
 --
 --    ent._mfFirePulse = (ent._mfFirePulse or 0) + 1
 --    ent:SetNWInt("GekkoMFFire", ent._mfFirePulse)
 --
---  GekkoMGFiring is already set by FireMGBurst, so the MG
---  is handled automatically by the Think loop above.
+--  GekkoMGFiring is set/cleared by FireMGBurst automatically.
+--  The Bushmaster calls PulseMF once per shell inside its timer loop.
 -- ============================================================
