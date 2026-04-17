@@ -48,6 +48,7 @@ local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 95
 local MG_FLASH_EVERY     = 3   -- projected flash every N rounds (throttle)
+local MG_IMPACT_LIGHT_EVERY = 4  -- impact light every N rounds
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -164,6 +165,36 @@ local HEAD_Z_FRACTION        = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
+
+-- ============================================================
+--  IMPACT LIGHT  (light_dynamic at bullet hit position)
+--  Spawned server-side; light_dynamic auto-replicates to clients.
+--  BM  : every shell — large orange flash, range 120, 0.12s
+--  MG  : every MG_IMPACT_LIGHT_EVERY rounds — small white-orange pop
+-- ============================================================
+local IL_PRESETS = {
+    MG = { range = 60,  r = 255, g = 200, b = 110, lifetime = 0.08 },
+    BM = { range = 120, r = 255, g = 170, b = 60,  lifetime = 0.12 },
+}
+local IL_TRACE_MAXDIST = 8192
+
+local function SpawnImpactLight( src, dir, presetName )
+    local p = IL_PRESETS[presetName]
+    if not p then return end
+    local tr = util.TraceLine({
+        start  = src,
+        endpos = src + dir * IL_TRACE_MAXDIST,
+        mask   = MASK_SHOT,
+    })
+    if not tr.Hit then return end
+    local light = ents.Create("light_dynamic")
+    if not IsValid(light) then return end
+    light:SetKeyValue("distance", p.range)
+    light:SetKeyValue("_light", p.r .. " " .. p.g .. " " .. p.b)
+    light:SetPos(tr.HitPos)
+    light:Spawn()
+    light:Fire("Kill", "", p.lifetime)
+end
 
 -- ============================================================
 --  Helpers
@@ -571,6 +602,10 @@ local function FireMGBurst( ent, enemy )
             if (round % MG_FLASH_EVERY) == 0 then
                 SendMuzzleFlash(src, dir, 1)
             end
+            -- Impact light: every MG_IMPACT_LIGHT_EVERY rounds
+            if (round % MG_IMPACT_LIGHT_EVERY) == 0 then
+                SpawnImpactLight(src, dir, "MG")
+            end
             ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
             if (round + 1) % MG_CHAIN_EVERY == 0 then
                 ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
@@ -825,6 +860,8 @@ local function FireBushmaster( ent, enemy )
             eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
+            -- Impact light on every Bushmaster shell
+            SpawnImpactLight(src, dir, "BM")
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
