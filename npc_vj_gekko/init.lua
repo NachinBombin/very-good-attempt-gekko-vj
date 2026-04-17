@@ -1,15 +1,5 @@
 -- ============================================================
 --  npc_vj_gekko / init.lua
---  Weapon list:
---  1. Machine-gun burst         (FireBullets)
---  2. Single accurate missile   (obj_vj_rocket)
---  3. Double inaccurate salvo   (obj_vj_rocket x2)
---  4. Grenade launcher barrage  (bombin_gas_grenade / stun / flash)
---  5. Top-attack terror missile (sent_npc_topmissile)
---  6. Active-track missile      (sent_npc_trackmissile)
---  7. Orbit RPG                 (sent_orbital_rpg)
---  8. Nikita cruise missile     (npc_vj_gekko_nikita)
---  9. Bushmaster 25mm cannon    (sent_gekko_bushmaster x7-13)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -192,9 +182,6 @@ local function RollWeapon()
     return "BRUSHMASTER"
 end
 
--- ============================================================
---  Net helpers
--- ============================================================
 local function SendMuzzleFlash(pos, normal, presetID)
     net.Start("GekkoMuzzleFlash")
         net.WriteVector(pos)
@@ -203,9 +190,10 @@ local function SendMuzzleFlash(pos, normal, presetID)
     net.Broadcast()
 end
 
-local function SendImpactLight(hitPos, typeID)
+local function SendImpactLight(hitPos, hitNormal, typeID)
     net.Start("GekkoImpactLight")
         net.WriteVector(hitPos)
+        net.WriteVector(hitNormal)
         net.WriteUInt(typeID, 2)
     net.Broadcast()
 end
@@ -291,7 +279,7 @@ local function SendSonarLock( enemy )
 end
 
 -- ============================================================
---  MG impact light hook (hitscan: throttled trace -> net)
+--  MG impact light (hitscan: trace per bullet, throttled)
 -- ============================================================
 local _mgHitCount = {}
 
@@ -308,7 +296,7 @@ hook.Add("EntityFireBullets", "GekkoMG_ImpactLight", function( ent, bulletData )
         filter = ent,
     })
     if not tr.Hit then return end
-    SendImpactLight(tr.HitPos, 1)
+    SendImpactLight(tr.HitPos, tr.HitNormal, 1)
 end)
 
 hook.Add("EntityRemoved", "GekkoMG_ImpactLight_Cleanup", function( ent )
@@ -823,8 +811,7 @@ end
 
 -- ============================================================
 --  Weapon: Bushmaster 25mm cannon
---  Impact light is sent from sent_gekko_bushmaster:Explode()
---  so timing and position are exact.
+--  Impact light fired from sent_gekko_bushmaster:Explode()
 -- ============================================================
 local function FireBushmaster( ent, enemy )
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)

@@ -4,55 +4,59 @@
 --
 -- Net message: "GekkoImpactLight"
 --   Vector  hitPos
+--   Vector  hitNormal  (surface normal, pointing AWAY from surface)
 --   UInt(2) typeID  (1 = MG,  2 = Bushmaster)
 --
--- light_dynamic is a no-op visually in GMod.
--- ProjectedTexture is the correct approach (same pattern as
--- muzzleflash_system.lua).
+-- ProjectedTexture points along its forward (angle) axis.
+-- We point it INTO the surface (inverse of hitNormal) so the
+-- cone illuminates the wall/floor/target that was struck.
+-- This is identical to how muzzleflash_system.lua works.
 -- ============================================================
 if SERVER then return end
 
--- ============================================================
--- PRESETS
--- ============================================================
 local PRESETS = {
-    [1] = { -- MG bullet impact: small warm flicker
-        fov        = 90,
+    [1] = { -- MG bullet impact: small warm flash
+        fov        = 120,
         nearz      = 2,
-        farz       = 160,
+        farz       = 200,
         brightness = 2.2,
         lifetime   = 0.055,
-        color      = Color(255, 200, 100),
+        color      = { r = 255, g = 200, b = 100 },
         texture    = "effects/muzzleflash_light",
     },
     [2] = { -- Bushmaster 25mm impact: larger, hotter
-        fov        = 110,
+        fov        = 140,
         nearz      = 2,
-        farz       = 300,
+        farz       = 340,
         brightness = 3.0,
         lifetime   = 0.10,
-        color      = Color(255, 140, 40),
+        color      = { r = 255, g = 140, b = 40 },
         texture    = "effects/muzzleflash_light",
     },
 }
 
 local ActiveLights = {}
 
-local function SpawnImpactLight( hitPos, typeID )
+local function SpawnImpactLight( hitPos, hitNormal, typeID )
     local p = PRESETS[typeID] or PRESETS[1]
     local proj = ProjectedTexture()
     if not proj then return end
 
-    -- Point straight down so the light pools on the struck surface.
+    -- Point INTO the surface: negate the surface normal,
+    -- then convert to angle exactly as muzzleflash_system does.
+    local intoSurface = -hitNormal
+    local ang = intoSurface:Angle()
+    ang.p = -ang.p
+
     proj:SetTexture(p.texture)
     proj:SetFOV(p.fov)
     proj:SetNearZ(p.nearz)
     proj:SetFarZ(p.farz)
     proj:SetBrightness(p.brightness)
-    proj:SetColor(p.color)
+    proj:SetColor(Color(p.color.r, p.color.g, p.color.b))
     if proj.SetEnableShadows then proj:SetEnableShadows(false) end
     proj:SetPos(hitPos)
-    proj:SetAngles(Angle(90, 0, 0))
+    proj:SetAngles(ang)
     proj:Update()
 
     table.insert(ActiveLights, {
@@ -61,9 +65,6 @@ local function SpawnImpactLight( hitPos, typeID )
     })
 end
 
--- ============================================================
--- LIFETIME CLEANUP
--- ============================================================
 hook.Add("Think", "GekkoImpactLight_Cleanup", function()
     local now = CurTime()
     for i = #ActiveLights, 1, -1 do
@@ -75,11 +76,9 @@ hook.Add("Think", "GekkoImpactLight_Cleanup", function()
     end
 end)
 
--- ============================================================
--- NET RECEIVER
--- ============================================================
 net.Receive("GekkoImpactLight", function()
-    local hitPos = net.ReadVector()
-    local typeID = net.ReadUInt(2)   -- 2 bits: 1=MG, 2=Bushmaster
-    SpawnImpactLight(hitPos, typeID)
+    local hitPos    = net.ReadVector()
+    local hitNormal = net.ReadVector()
+    local typeID    = net.ReadUInt(2)
+    SpawnImpactLight(hitPos, hitNormal, typeID)
 end)

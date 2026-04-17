@@ -1,15 +1,10 @@
 -- init.lua  (SERVER)
 -- M242 Bushmaster 25mm round.
--- Position is set entirely by the Gekko's FireBushmaster logic.
--- No position manipulation here.
 
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
--- =========================================================================
--- Configuration
--- =========================================================================
 local SPEED          = 3900
 local ORBIT_RADIUS_A = 4
 local ORBIT_RADIUS_B = 3
@@ -18,9 +13,6 @@ local LIFETIME       = 12
 local DAMAGE         = 40
 local BLAST_RADIUS   = 20
 
--- =========================================================================
--- Initialize
--- =========================================================================
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile.mdl")
     self:SetModelScale(0.10, 0)
@@ -56,9 +48,6 @@ function ENT:Initialize()
     end)
 end
 
--- =========================================================================
--- Think
--- =========================================================================
 function ENT:Think()
     local t     = CurTime() - self._birthTime
     local phase = t * ORBIT_SPEED
@@ -86,9 +75,6 @@ function ENT:Think()
     return true
 end
 
--- =========================================================================
--- Touch
--- =========================================================================
 function ENT:Touch( other )
     if other == self:GetOwner() then return end
     local tr = util.TraceLine({
@@ -100,17 +86,15 @@ function ENT:Touch( other )
     self:Explode(tr.HitPos, tr.HitNormal, other)
 end
 
--- =========================================================================
--- Explode
--- =========================================================================
 function ENT:Explode( hitPos, hitNormal, hitEnt )
     if self._exploded then return end
     self._exploded = true
 
-    -- Impact light: sent at true detonation position, perfect timing
+    -- Send impact light at true detonation pos+normal
     net.Start("GekkoImpactLight")
         net.WriteVector(hitPos)
-        net.WriteUInt(2, 2)   -- typeID 2 = Bushmaster
+        net.WriteVector(hitNormal)
+        net.WriteUInt(2, 2)  -- typeID 2 = Bushmaster
     net.Broadcast()
 
     local dmg = DamageInfo()
