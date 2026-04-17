@@ -14,6 +14,7 @@
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
+AddCSLuaFile("muzzleflash_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -23,6 +24,7 @@ include("leg_disable_system.lua")
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
+util.AddNetworkString("GekkoMuzzleFlash")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L  = 9
@@ -45,6 +47,7 @@ local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 95
+local MG_FLASH_EVERY     = 3   -- projected flash every N rounds (throttle)
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -68,16 +71,13 @@ local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
 local BM_SND_LEVEL    = 95
 local BM_MUZZLE_SCALE = 3.5
--- Muzzle offset: 120 units above the pelvis bone world position
 local BM_MUZZLE_Z_OFFSET = 120
--- Trail: tuned for a 3900 u/s round — long streak, narrow, semi-transparent
 local BM_TRAIL_MATERIAL  = "trails/smoke"
 local BM_TRAIL_LIFETIME  = 0.55
 local BM_TRAIL_STARTSIZE = 5
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
 
--- Weapon-select reload cue (plays once per attack cycle, before the weapon fires)
 local RELOAD_SNDS = {
     "gekko/reload/reloadbig_1.wav",
     "gekko/reload/reloadbig_2.wav",
@@ -190,6 +190,18 @@ local function RollWeapon()
     return "BRUSHMASTER"
 end
 
+-- ============================================================
+--  Muzzle flash net helper
+--  presetID: 1=MG  2=MISSILE  3=BUSHMASTER  4=NIKITA
+-- ============================================================
+local function SendMuzzleFlash(pos, normal, presetID)
+    net.Start("GekkoMuzzleFlash")
+        net.WriteVector(pos)
+        net.WriteVector(normal)
+        net.WriteUInt(presetID, 3)
+    net.Broadcast()
+end
+
 local function SpawnRocket( ent, attIdx, aimPos, spread )
     local misAtt = ent:GetAttachment(attIdx)
     local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0,0,160))
@@ -204,6 +216,7 @@ local function SpawnRocket( ent, attIdx, aimPos, spread )
     end
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
     util.Effect("MuzzleFlash", eff)
+    SendMuzzleFlash(src, dir, 2)
     ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, math.random(95, 110), 1)
 end
 
@@ -554,6 +567,10 @@ local function FireMGBurst( ent, enemy )
                 Spread=Vector(mgSpread,mgSpread,mgSpread) })
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
+            -- Throttled projected flash: every MG_FLASH_EVERY rounds
+            if (round % MG_FLASH_EVERY) == 0 then
+                SendMuzzleFlash(src, dir, 1)
+            end
             ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
             if (round + 1) % MG_CHAIN_EVERY == 0 then
                 ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
@@ -617,6 +634,7 @@ local function FireGrenadeLauncher( ent, enemy )
             local mf = EffectData()
             mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
             util.Effect("MuzzleFlash", mf)
+            -- NOTE: grenade launcher intentionally excluded from projected muzzle flash
             local gren = ents.Create(grenadeType)
             if IsValid(gren) then
                 gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
@@ -642,6 +660,7 @@ local function FireOrbitRpg( ent, enemy )
     local dir     = (aimPos - src):GetNormalized()
     local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir) ; eff:SetScale(0.6) ; eff:SetMagnitude(1)
     util.Effect("SmokeEffect", eff)
+    SendMuzzleFlash(src, dir, 2)
     ent:EmitSound(KORNET_SND_SHOTS[math.random(#KORNET_SND_SHOTS)], KORNET_SND_LEVEL, math.random(95, 105), 1)
     ent:EmitSound(KORNET_SND_LAUNCHES[math.random(#KORNET_SND_LAUNCHES)], KORNET_SND_LEVEL, 100, 1)
     local rpg = ents.Create("sent_orbital_rpg")
@@ -676,6 +695,7 @@ local function FireTopMissile( ent, enemy )
     missile.Owner  = ent
     missile.Target = enemy:GetPos() + Vector(0,0,40)
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
+    SendMuzzleFlash(launchPos, (enemy:GetPos() - launchPos):GetNormalized(), 2)
     print(string.format("[GekkoTM] Launched | dist=%.0f", dist))
     return true
 end
@@ -704,6 +724,7 @@ local function FireTrackMissile( ent, enemy )
     missile.Target   = enemy:GetPos() + Vector(0,0,40)
     missile.TrackEnt = enemy
     missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
+    SendMuzzleFlash(launchPos, (enemy:GetPos() - launchPos):GetNormalized(), 2)
     print(string.format("[GekkoTRK] Launched | dist=%.0f", dist))
     return true
 end
@@ -728,6 +749,8 @@ local function NikitaMuzzleSmoke( ent )
             util.Effect("SmokeEffect", ed)
         end)
     end
+    -- Projected flash on the first puff only
+    SendMuzzleFlash(nozzle, nozzDir, 4)
 end
 
 local function FireNikita( ent, enemy )
@@ -781,7 +804,6 @@ local function FireBushmaster( ent, enemy )
             if pelBone and pelBone >= 0 then
                 local m = ent:GetBoneMatrix(pelBone)
                 if m then
-                    -- Muzzle is BM_MUZZLE_Z_OFFSET units above the pelvis bone
                     src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET)
                 end
             end
@@ -802,6 +824,7 @@ local function FireBushmaster( ent, enemy )
             eff:SetOrigin(src) ; eff:SetNormal(dir)
             eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
             util.Effect("MuzzleFlash", eff)
+            SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
