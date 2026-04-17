@@ -15,17 +15,18 @@ include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
+AddCSLuaFile("impact_light_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
-include("impact_light_system.lua")  -- dynamic hit lights for MG and Bushmaster
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
 util.AddNetworkString("GekkoMuzzleFlash")
+util.AddNetworkString("GekkoImpactLight")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L  = 9
@@ -48,7 +49,8 @@ local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 95
-local MG_FLASH_EVERY     = 3   -- projected flash every N rounds (throttle)
+local MG_FLASH_EVERY     = 3
+local MG_LIGHT_EVERY     = 4   -- send impact light every N connected MG rounds
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -64,24 +66,20 @@ local TOPMISSILE_SND_FIRE = {
 }
 local TOPMISSILE_SND_LEVEL = 95
 
--- Bushmaster 25mm cannon
-local BM_ROUNDS_MIN   = 7
-local BM_ROUNDS_MAX   = 13
-local BM_INTERVAL     = 0.38
-local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
-local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
-local BM_SND_LEVEL    = 95
-local BM_MUZZLE_SCALE = 3.5
+local BM_ROUNDS_MIN      = 7
+local BM_ROUNDS_MAX      = 13
+local BM_INTERVAL        = 0.38
+local BM_SND_SHOOT       = "gekko/brushmaster_25mm/20mm_shoot.wav"
+local BM_SND_RELOAD      = "gekko/brushmaster_25mm/20mm_reload.wav"
+local BM_SND_LEVEL       = 95
+local BM_MUZZLE_SCALE    = 3.5
 local BM_MUZZLE_Z_OFFSET = 120
 local BM_TRAIL_MATERIAL  = "trails/smoke"
 local BM_TRAIL_LIFETIME  = 0.55
 local BM_TRAIL_STARTSIZE = 5
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
--- Travel time estimate used to delay the impact light so it
--- fires roughly when the shell actually reaches the target.
--- sent_gekko_bushmaster travels at ~2200 u/s; we cap at 1.5 s.
-local BM_SHELL_SPEED    = 2200
+local BM_SHELL_SPEED     = 2200
 local BM_IMPACT_DELAY_MAX = 1.5
 
 local RELOAD_SNDS = {
@@ -197,14 +195,20 @@ local function RollWeapon()
 end
 
 -- ============================================================
---  Muzzle flash net helper
---  presetID: 1=MG  2=MISSILE  3=BUSHMASTER  4=NIKITA
+--  Net helpers
 -- ============================================================
 local function SendMuzzleFlash(pos, normal, presetID)
     net.Start("GekkoMuzzleFlash")
         net.WriteVector(pos)
         net.WriteVector(normal)
         net.WriteUInt(presetID, 3)
+    net.Broadcast()
+end
+
+local function SendImpactLight(hitPos, typeID)
+    net.Start("GekkoImpactLight")
+        net.WriteVector(hitPos)
+        net.WriteUInt(typeID, 2)   -- 1=MG  2=Bushmaster
     net.Broadcast()
 end
 
@@ -287,6 +291,33 @@ local function SendSonarLock( enemy )
     if not enemy:IsPlayer() then return end
     net.Start("GekkoSonarLock") ; net.Send(enemy)
 end
+
+-- ============================================================
+--  MG impact light hook (throttled, server-side trace -> net)
+-- ============================================================
+local _mgHitCount = {}
+
+hook.Add("EntityFireBullets", "GekkoMG_ImpactLight", function( ent, bulletData )
+    if not IsValid(ent) then return end
+    if ent:GetClass() ~= "npc_vj_gekko" then return end
+    local idx = ent:EntIndex()
+    _mgHitCount[idx] = (_mgHitCount[idx] or 0) + 1
+    if _mgHitCount[idx] < MG_LIGHT_EVERY then return end
+    _mgHitCount[idx] = 0
+    local tr = util.TraceLine({
+        start  = bulletData.Src,
+        endpos = bulletData.Src + bulletData.Dir * 32768,
+        filter = ent,
+    })
+    if not tr.Hit then return end
+    SendImpactLight(tr.HitPos, 1)
+end)
+
+hook.Add("EntityRemoved", "GekkoMG_ImpactLight_Cleanup", function( ent )
+    if not IsValid(ent) then return end
+    if ent:GetClass() ~= "npc_vj_gekko" then return end
+    _mgHitCount[ent:EntIndex()] = nil
+end)
 
 -- ============================================================
 --  AnimApply / SetAnimationTranslations
@@ -573,7 +604,6 @@ local function FireMGBurst( ent, enemy )
                 Spread=Vector(mgSpread,mgSpread,mgSpread) })
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
-            -- Throttled projected flash: every MG_FLASH_EVERY rounds
             if (round % MG_FLASH_EVERY) == 0 then
                 SendMuzzleFlash(src, dir, 1)
             end
@@ -640,7 +670,6 @@ local function FireGrenadeLauncher( ent, enemy )
             local mf = EffectData()
             mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
             util.Effect("MuzzleFlash", mf)
-            -- NOTE: grenade launcher intentionally excluded from projected muzzle flash
             local gren = ents.Create(grenadeType)
             if IsValid(gren) then
                 gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
@@ -755,7 +784,6 @@ local function NikitaMuzzleSmoke( ent )
             util.Effect("SmokeEffect", ed)
         end)
     end
-    -- Projected flash on the first puff only
     SendMuzzleFlash(nozzle, nozzDir, 4)
 end
 
@@ -809,9 +837,7 @@ local function FireBushmaster( ent, enemy )
             local pelBone = ent.GekkoPelvisBone
             if pelBone and pelBone >= 0 then
                 local m = ent:GetBoneMatrix(pelBone)
-                if m then
-                    src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET)
-                end
+                if m then src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET) end
             end
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
             local curEnemy = GetActiveEnemy(ent)
@@ -819,11 +845,8 @@ local function FireBushmaster( ent, enemy )
             local dir      = (curAim - src):GetNormalized()
             local shell = ents.Create("sent_gekko_bushmaster")
             if IsValid(shell) then
-                shell:SetPos(src)
-                shell:SetAngles(dir:Angle())
-                shell:SetOwner(ent)
-                shell:Spawn()
-                shell:Activate()
+                shell:SetPos(src) ; shell:SetAngles(dir:Angle())
+                shell:SetOwner(ent) ; shell:Spawn() ; shell:Activate()
                 AttachBushmasterTrail(shell)
             end
             local eff = EffectData()
@@ -832,21 +855,13 @@ local function FireBushmaster( ent, enemy )
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-            -- ------------------------------------------------
-            -- Impact light: trace the shell path to find where
-            -- it will hit, then fire the light after the travel
-            -- time so it coincides with the actual impact.
-            -- ------------------------------------------------
-            local tr = util.TraceLine({
-                start  = src,
-                endpos = src + dir * 32768,
-                filter = ent,
-            })
+            -- Trace shell path -> schedule impact light timed to shell arrival
+            local tr = util.TraceLine({ start = src, endpos = src + dir * 32768, filter = ent })
             if tr.Hit then
                 local hitPos  = tr.HitPos
-                local travelT = math.min(tr.Fraction * 32768 / BM_SHELL_SPEED, BM_IMPACT_DELAY_MAX)
+                local travelT = math.min((tr.Fraction * 32768) / BM_SHELL_SPEED, BM_IMPACT_DELAY_MAX)
                 timer.Simple(travelT, function()
-                    GekkoImpactLight_Bushmaster(hitPos)
+                    SendImpactLight(hitPos, 2)
                 end)
             end
             if shot == rounds - 1 then
@@ -871,15 +886,15 @@ function ENT:OnRangeAttackExecute( status, enemy, projectile )
     self._lastWeaponChoice = choice
     self:EmitSound(RELOAD_SNDS[math.random(#RELOAD_SNDS)], RELOAD_SND_LEVEL, 100, 1)
     print("[GekkoWpn] Roll -> " .. choice)
-    if     choice == "MG"          then return FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"     then return FireMissile(self, enemy)
-    elseif choice == "SALVO"       then return FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"  then return FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE"then return FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"    then return FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"      then return FireNikita(self, enemy)
-    elseif choice == "BRUSHMASTER" then return FireBushmaster(self, enemy)
-    else                                return FireGrenadeLauncher(self, enemy)
+    if     choice == "MG"           then return FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"      then return FireMissile(self, enemy)
+    elseif choice == "SALVO"        then return FireDoubleSalvo(self, enemy)
+    elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
+    elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
+    elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"       then return FireNikita(self, enemy)
+    elseif choice == "BRUSHMASTER"  then return FireBushmaster(self, enemy)
+    else                                 return FireGrenadeLauncher(self, enemy)
     end
 end
 
