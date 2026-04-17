@@ -17,9 +17,9 @@ if SERVER then return end
 -- ============================================================
 local PRESETS = {
     [1] = { -- MG
-        fov        = 130,
-        nearz      = 4,
-        farz       = 200,
+        fov        = 150,
+        nearz      = 2,
+        farz       = 380,
         brightness = 2.8,
         lifetime   = 0.042,
         color      = { r = 255, g = 190, b = 90 },
@@ -29,8 +29,8 @@ local PRESETS = {
     },
     [2] = { -- MISSILE / SALVO / TOPMISSILE / TRACKMISSILE / ORBITRPG
         fov        = 145,
-        nearz      = 4,
-        farz       = 240,
+        nearz      = 2,
+        farz       = 440,
         brightness = 3.4,
         lifetime   = 0.060,
         color      = { r = 255, g = 160, b = 55 },
@@ -39,9 +39,9 @@ local PRESETS = {
         texture    = "effects/muzzleflash_light",
     },
     [3] = { -- BUSHMASTER 25mm
-        fov        = 140,
-        nearz      = 4,
-        farz       = 230,
+        fov        = 160,
+        nearz      = 2,
+        farz       = 500,
         brightness = 3.2,
         lifetime   = 0.055,
         color      = { r = 255, g = 175, b = 70 },
@@ -51,8 +51,8 @@ local PRESETS = {
     },
     [4] = { -- NIKITA launch
         fov        = 150,
-        nearz      = 4,
-        farz       = 240,
+        nearz      = 2,
+        farz       = 500,
         brightness = 3.6,
         lifetime   = 0.070,
         color      = { r = 255, g = 145, b = 40 },
