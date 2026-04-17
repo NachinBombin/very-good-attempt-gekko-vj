@@ -21,6 +21,7 @@ include("targeted_jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
+include("impact_light_system.lua")  -- dynamic hit lights for MG and Bushmaster
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -77,6 +78,11 @@ local BM_TRAIL_LIFETIME  = 0.55
 local BM_TRAIL_STARTSIZE = 5
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
+-- Travel time estimate used to delay the impact light so it
+-- fires roughly when the shell actually reaches the target.
+-- sent_gekko_bushmaster travels at ~2200 u/s; we cap at 1.5 s.
+local BM_SHELL_SPEED    = 2200
+local BM_IMPACT_DELAY_MAX = 1.5
 
 local RELOAD_SNDS = {
     "gekko/reload/reloadbig_1.wav",
@@ -826,6 +832,23 @@ local function FireBushmaster( ent, enemy )
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
+            -- ------------------------------------------------
+            -- Impact light: trace the shell path to find where
+            -- it will hit, then fire the light after the travel
+            -- time so it coincides with the actual impact.
+            -- ------------------------------------------------
+            local tr = util.TraceLine({
+                start  = src,
+                endpos = src + dir * 32768,
+                filter = ent,
+            })
+            if tr.Hit then
+                local hitPos  = tr.HitPos
+                local travelT = math.min(tr.Fraction * 32768 / BM_SHELL_SPEED, BM_IMPACT_DELAY_MAX)
+                timer.Simple(travelT, function()
+                    GekkoImpactLight_Bushmaster(hitPos)
+                end)
+            end
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
