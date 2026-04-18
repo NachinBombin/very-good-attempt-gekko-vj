@@ -6,24 +6,20 @@
 -- Net message: "GekkoBulletImpact"
 --   Vector pos
 --   Vector normal  (surface hit normal, pointing away from surface)
---   UInt2  preset  (1=MG tracer, 2=BUSHMASTER)
---
--- FOV is randomised per-spawn between 280-360 to simulate a
--- wide hemisphere of light blooming from the impact point.
+--   UInt3  preset  (1=MG tracer, 2=BUSHMASTER)
 -- ============================================================
 if SERVER then return end
 
 -- ============================================================
 -- PRESETS
--- Bushmaster: same illumination envelope as BM muzzle flash
---   (farz 500, brightness 3.2, scaleMin/Max 1.00-1.25).
--- MG tracer:  considerably smaller — short range, dim, fast.
+-- FOV is a fixed cone angle (degrees), same convention as
+-- muzzleflash_system.  Scale multiplier applied at spawn.
+-- Bushmaster: same illumination envelope as BM muzzle flash.
+-- MG tracer:  smaller — short range, dim, fast.
 -- ============================================================
-local IMPACT_FOV_MIN = 280
-local IMPACT_FOV_MAX = 360
-
 local PRESETS = {
     [1] = { -- MG tracer impact
+        fov        = 120,
         nearz      = 2,
         farz       = 180,
         brightness = 1.4,
@@ -34,6 +30,7 @@ local PRESETS = {
         texture    = "effects/muzzleflash_light",
     },
     [2] = { -- BUSHMASTER 25mm impact
+        fov        = 150,
         nearz      = 2,
         farz       = 500,
         brightness = 3.2,
@@ -58,20 +55,15 @@ local function SpawnGekkoImpact(pos, normal, presetID)
     local proj = ProjectedTexture()
     if not proj then return end
 
-    -- FOV randomised per impact between 280-360 degrees.
-    local fov = IMPACT_FOV_MIN + math.random() * (IMPACT_FOV_MAX - IMPACT_FOV_MIN)
-
-    -- ProjectedTexture points along its forward axis.
-    -- The impact normal points AWAY from the surface; we want the
-    -- light cone to point INTO the surface (toward the wall) so it
-    -- illuminates the area around the impact hole.
-    -- Negate the normal so the cone points inward, then derive angle.
-    local inward = -normal
-    local ang    = inward:Angle()
-    ang.p        = -ang.p   -- same left-handed pitch fix as muzzleflash_system
+    -- Point the light along the surface normal (away from surface,
+    -- back toward the shooter).  Identical convention to muzzleflash:
+    -- Vector:Angle() gives pitch/yaw, pitch sign negated for
+    -- ProjectedTexture's left-handed pitch convention.
+    local ang = normal:Angle()
+    ang.p = -ang.p
 
     proj:SetTexture(p.texture)
-    proj:SetFOV(fov * scale)
+    proj:SetFOV(p.fov * scale)
     proj:SetNearZ(p.nearz)
     proj:SetFarZ(p.farz * scale)
     proj:SetBrightness(p.brightness * scale)
@@ -108,6 +100,6 @@ end)
 net.Receive("GekkoBulletImpact", function()
     local pos      = net.ReadVector()
     local normal   = net.ReadVector()
-    local presetID = net.ReadUInt(2)   -- 2 bits covers 1-3
+    local presetID = net.ReadUInt(3)   -- 3 bits covers 1-7
     SpawnGekkoImpact(pos, normal, presetID)
 end)
