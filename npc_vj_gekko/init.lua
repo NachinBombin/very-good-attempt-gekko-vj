@@ -80,13 +80,13 @@ local BM_TRAIL_STARTSIZE = 7
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
 
-local SHELL_MODEL        = "models/shells/ rifleshell.mdl"
-local SHELL_LIFETIME     = 5
-local MG_SHELL_SCALE     = 1.8
-local BM_SHELL_SCALE     = 3.0
-local SHELL_RIGHT_OFFSET = 10
-local SHELL_UP_OFFSET    = 4
-local SHELL_FWD_OFFSET   = -2
+local SHELL_MODEL         = "models/shells/rifleshell.mdl"
+local SHELL_LIFETIME      = 5
+local MG_SHELL_SCALE      = 1.8
+local BM_SHELL_SCALE      = 3.0
+local SHELL_RIGHT_OFFSET  = 10
+local SHELL_UP_OFFSET     = 4
+local SHELL_FWD_OFFSET    = -2
 local SHELL_VEL_RIGHT_MIN = 120
 local SHELL_VEL_RIGHT_MAX = 220
 local SHELL_VEL_UP_MIN    = 40
@@ -95,6 +95,11 @@ local SHELL_VEL_FWD_MIN   = -35
 local SHELL_VEL_FWD_MAX   = 35
 local SHELL_ANGVEL_MIN    = -220
 local SHELL_ANGVEL_MAX    = 220
+local SHELL_MASS          = 2
+
+if SERVER then
+    util.PrecacheModel(SHELL_MODEL)
+end
 
 local RELOAD_SNDS = {
     "gekko/reload/reloadbig_1.wav",
@@ -302,7 +307,7 @@ end
 local function SpawnCartridge(pos, ang, scale)
     if not pos or not ang then return end
 
-    local shell = ents.Create("prop_physics_multiplayer")
+    local shell = ents.Create("prop_physics_override")
     if not IsValid(shell) then return end
 
     shell:SetModel(SHELL_MODEL)
@@ -313,31 +318,32 @@ local function SpawnCartridge(pos, ang, scale)
         + ang:Forward() * SHELL_FWD_OFFSET
     )
     shell:SetAngles(ang)
-    shell:SetModelScale(scale, 0)
     shell:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
     shell:Spawn()
     shell:Activate()
+    shell:SetModelScale(scale, 0)
     shell:DrawShadow(false)
 
     local phys = shell:GetPhysicsObject()
     if IsValid(phys) then
-        phys:SetMass(2)
-        phys:SetDamping(0.4, 1.2)
+        phys:SetMass(SHELL_MASS)
+        phys:EnableGravity(true)
+        phys:Wake()
         phys:SetVelocity(
             ang:Right()   * math.Rand(SHELL_VEL_RIGHT_MIN, SHELL_VEL_RIGHT_MAX)
           + ang:Up()      * math.Rand(SHELL_VEL_UP_MIN, SHELL_VEL_UP_MAX)
           + ang:Forward() * math.Rand(SHELL_VEL_FWD_MIN, SHELL_VEL_FWD_MAX)
         )
-        phys:AddAngleVelocity(Vector(
+        phys:SetAngleVelocity(Vector(
             math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX),
             math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX),
             math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX)
         ))
-        phys:EnableDrag(false)
-        phys:Wake()
     end
 
-    SafeRemoveEntityDelayed(shell, SHELL_LIFETIME)
+    timer.Simple(SHELL_LIFETIME, function()
+        if IsValid(shell) then shell:Remove() end
+    end)
 end
 
 local function RerollNotMissile(exclude)
