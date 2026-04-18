@@ -42,28 +42,28 @@ local MG_ROUNDS_MIN = 11
 local MG_ROUNDS_MAX = 36
 local MG_INTERVAL   = 0.15
 local MG_DAMAGE     = 25
-local MG_SPREAD_MIN = 0.08
-local MG_SPREAD_MAX = 0.8
+local MG_SPREAD_MIN = 0.06
+local MG_SPREAD_MAX = 0.6
 
 local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
-local MG_SND_LEVEL       = 95
-local MG_FLASH_EVERY     = 3   -- projected flash every N rounds (throttle)
+local MG_SND_LEVEL       = 100
+local MG_FLASH_EVERY     = 2   -- projected flash every N rounds (throttle)
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
     "gekko/wp0040_se_gun_fire_02.wav",
     "gekko/wp0040_se_gun_fire_03.wav",
 }
-local ROCKET_SND_LEVEL = 95
+local ROCKET_SND_LEVEL = 100
 
 local TOPMISSILE_SND_FIRE = {
     "gekko/wp10e0_se_stinger_pass_1.wav",
     "gekko/wp0302_se_missile_fire_1.wav",
     "gekko/wp0302_se_missile_pass_2.wav",
 }
-local TOPMISSILE_SND_LEVEL = 95
+local TOPMISSILE_SND_LEVEL =  100
 
 -- Bushmaster 25mm cannon
 local BM_ROUNDS_MIN   = 7
@@ -71,12 +71,12 @@ local BM_ROUNDS_MAX   = 13
 local BM_INTERVAL     = 0.38
 local BM_SND_SHOOT    = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BM_SND_RELOAD   = "gekko/brushmaster_25mm/20mm_reload.wav"
-local BM_SND_LEVEL    = 95
-local BM_MUZZLE_SCALE = 3.5
-local BM_MUZZLE_Z_OFFSET = 120
+local BM_SND_LEVEL    = 100
+local BM_MUZZLE_SCALE = 9.5
+local BM_MUZZLE_Z_OFFSET = 190
 local BM_TRAIL_MATERIAL  = "trails/smoke"
-local BM_TRAIL_LIFETIME  = 0.55
-local BM_TRAIL_STARTSIZE = 5
+local BM_TRAIL_LIFETIME  = 1.55
+local BM_TRAIL_STARTSIZE = 7
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
 
@@ -212,7 +212,7 @@ local function SendBulletImpact(pos, normal, presetID)
     net.Start("GekkoBulletImpact")
         net.WriteVector(pos)
         net.WriteVector(normal)
-        net.WriteUInt(presetID, 2)
+        net.WriteUInt(presetID, 3)
     net.Broadcast()
 end
 
