@@ -7,6 +7,8 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
+util.AddNetworkString("GekkoBulletImpact")
+
 -- =========================================================================
 -- Configuration
 -- =========================================================================
@@ -17,6 +19,17 @@ local ORBIT_SPEED    = 4.5
 local LIFETIME       = 12
 local DAMAGE         = 40
 local BLAST_RADIUS   = 20
+
+-- =========================================================================
+-- Helper: broadcast the bullet impact projected light
+-- =========================================================================
+local function SendBulletImpact(pos, normal, presetID)
+    net.Start("GekkoBulletImpact")
+        net.WriteVector(pos)
+        net.WriteVector(normal)
+        net.WriteUInt(presetID, 2)
+    net.Broadcast()
+end
 
 -- =========================================================================
 -- Initialize
@@ -36,7 +49,6 @@ function ENT:Initialize()
     self:SetSpawnDir(self:GetForward())
 
     self._birthTime  = now
-    -- Origin is exactly where the Gekko placed us — no offset here
     self._origin     = self:GetPos()
     self._forward    = self:GetForward()
 
@@ -90,7 +102,7 @@ end
 -- =========================================================================
 -- Touch
 -- =========================================================================
-function ENT:Touch( other )
+function ENT:Touch(other)
     if other == self:GetOwner() then return end
     local tr = util.TraceLine({
         start  = self:GetPos(),
@@ -104,9 +116,12 @@ end
 -- =========================================================================
 -- Explode
 -- =========================================================================
-function ENT:Explode( hitPos, hitNormal, hitEnt )
+function ENT:Explode(hitPos, hitNormal, hitEnt)
     if self._exploded then return end
     self._exploded = true
+
+    -- Bullet impact projected light — presetID 2 = BUSHMASTER
+    SendBulletImpact(hitPos, hitNormal, 2)
 
     local dmg = DamageInfo()
     dmg:SetDamage(DAMAGE)
