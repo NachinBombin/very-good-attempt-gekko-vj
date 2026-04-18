@@ -12,7 +12,6 @@ local SPRITE_COL  = Color(255, 240, 180, 255)
 -- =========================================================================
 function ENT:Initialize()
     if not IsValid(self) then return end
-    -- Large render bounds so Draw() is never culled at 2900 u/s
     self:SetRenderBounds(Vector(-64, -64, -64), Vector(64, 64, 64))
     self.Emitter = ParticleEmitter(self:GetPos(), false)
 end
@@ -21,15 +20,14 @@ end
 -- Think  (runs on client timeline, immune to Draw cull)
 -- =========================================================================
 function ENT:Think()
-    local pos     = self:GetRenderOrigin()
-    local backDir = -self:GetForward()
+    local pos = self:GetRenderOrigin() or self:GetPos()
+    if not pos then return end
+
+    local backDir    = -self:GetForward()
     local exhaustPos = pos + backDir * 14
 
     -- --------------------------------------------------------
     --  Dynamic light: bright warm nozzle glow
-    --  DieTime refreshed every Think so it stays alive regardless
-    --  of draw culling (same pattern as Nikita).
-    --  size=380: large enough to cast on nearby geometry in open space
     -- --------------------------------------------------------
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
@@ -97,7 +95,8 @@ end
 -- =========================================================================
 function ENT:Draw()
     self:DrawModel()
-    local pos = self:GetRenderOrigin()
+    local pos = self:GetRenderOrigin() or self:GetPos()
+    if not pos then return end
     render.SetMaterial(SPRITE_MAT)
     render.DrawSprite(pos, SPRITE_SIZE, SPRITE_SIZE, SPRITE_COL)
 end
