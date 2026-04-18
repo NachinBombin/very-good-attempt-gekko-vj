@@ -27,7 +27,7 @@ local function SendBulletImpact(pos, normal, presetID)
     net.Start("GekkoBulletImpact")
         net.WriteVector(pos)
         net.WriteVector(normal)
-        net.WriteUInt(presetID, 2)
+        net.WriteUInt(presetID, 3)   -- 3 bits: matches ReadUInt(3) in bullet_impact_system.lua
     net.Broadcast()
 end
 

@@ -63,7 +63,7 @@ local function SpawnGekkoImpact(pos, normal, presetID)
     ang.p = -ang.p
 
     proj:SetTexture(p.texture)
-    proj:SetFOV(p.fov * scale)
+    proj:SetFOV(math.min(p.fov * scale, 179))  -- clamp: ProjectedTexture hard-caps at 180°
     proj:SetNearZ(p.nearz)
     proj:SetFarZ(p.farz * scale)
     proj:SetBrightness(p.brightness * scale)
