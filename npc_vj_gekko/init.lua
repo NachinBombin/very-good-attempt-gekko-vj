@@ -15,6 +15,7 @@ include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
+AddCSLuaFile("bullet_impact_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -25,6 +26,7 @@ include("leg_disable_system.lua")
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
 util.AddNetworkString("GekkoMuzzleFlash")
+util.AddNetworkString("GekkoBulletImpact")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L  = 9
@@ -168,7 +170,7 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 -- ============================================================
 --  Helpers
 -- ============================================================
-local function GetActiveEnemy( ent )
+local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
     e = ent:GetEnemy()
@@ -202,7 +204,19 @@ local function SendMuzzleFlash(pos, normal, presetID)
     net.Broadcast()
 end
 
-local function SpawnRocket( ent, attIdx, aimPos, spread )
+-- ============================================================
+--  Bullet impact net helper
+--  presetID: 1=MG tracer  2=BUSHMASTER
+-- ============================================================
+local function SendBulletImpact(pos, normal, presetID)
+    net.Start("GekkoBulletImpact")
+        net.WriteVector(pos)
+        net.WriteVector(normal)
+        net.WriteUInt(presetID, 2)
+    net.Broadcast()
+end
+
+local function SpawnRocket(ent, attIdx, aimPos, spread)
     local misAtt = ent:GetAttachment(attIdx)
     local src    = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0,0,160))
     local target = aimPos + (spread or Vector(0,0,0))
@@ -228,7 +242,7 @@ local function SalvoSpread()
     )
 end
 
-local function GLSparkAtAttachment( ent, shotIndex )
+local function GLSparkAtAttachment(ent, shotIndex)
     local attIdx  = GL_SPARK_ATT_CYCLE[((shotIndex-1) % #GL_SPARK_ATT_CYCLE)+1]
     local attData = ent:GetAttachment(attIdx)
     if not attData then return end
@@ -239,7 +253,7 @@ local function GLSparkAtAttachment( ent, shotIndex )
     util.Effect("ManhackSparks", e)
 end
 
-local function GLVaporAtAttachment( ent, shotIndex )
+local function GLVaporAtAttachment(ent, shotIndex)
     local attIdx  = GL_SPARK_ATT_CYCLE[((shotIndex-1) % #GL_SPARK_ATT_CYCLE)+1]
     local attData = ent:GetAttachment(attIdx)
     if not attData then return end
@@ -255,13 +269,13 @@ local function GLVaporAtAttachment( ent, shotIndex )
     end
 end
 
-local function AttachGrenadeTrail( gren )
+local function AttachGrenadeTrail(gren)
     if not IsValid(gren) then return end
     util.SpriteTrail(gren,0,GL_TRAIL_COLOR,false,GL_TRAIL_STARTSIZE,GL_TRAIL_ENDSIZE,
         GL_TRAIL_LIFETIME,1/GL_TRAIL_STARTSIZE,GL_TRAIL_MATERIAL)
 end
 
-local function AttachBushmasterTrail( shell )
+local function AttachBushmasterTrail(shell)
     if not IsValid(shell) then return end
     util.SpriteTrail(shell, 0, BM_TRAIL_COLOR, false,
         BM_TRAIL_STARTSIZE, BM_TRAIL_ENDSIZE,
@@ -269,14 +283,14 @@ local function AttachBushmasterTrail( shell )
         BM_TRAIL_MATERIAL)
 end
 
-local function RerollNotMissile( exclude )
+local function RerollNotMissile(exclude)
     local reroll
     repeat reroll = RollWeapon() until reroll ~= exclude
     print("[GekkoMissile] Re-roll -> " .. reroll)
     return reroll
 end
 
-local function SendSonarLock( enemy )
+local function SendSonarLock(enemy)
     if not IsValid(enemy) then return end
     if not enemy:IsPlayer() then return end
     net.Start("GekkoSonarLock") ; net.Send(enemy)
@@ -379,7 +393,7 @@ end
 -- ============================================================
 --  Init
 -- ============================================================
-local function SafeInitVJTables( ent )
+local function SafeInitVJTables(ent)
     if not ent.VJ_AddOnDamage        then ent.VJ_AddOnDamage        = {} end
     if not ent.VJ_DamageInfos        then ent.VJ_DamageInfos        = {} end
     if not ent.VJ_DeathSounds        then ent.VJ_DeathSounds        = {} end
@@ -466,7 +480,7 @@ function ENT:Activate()
     SafeInitVJTables(self)
 end
 
-function ENT:OnTakeDamage( dmginfo )
+function ENT:OnTakeDamage(dmginfo)
     dmginfo:SetDamageForce(Vector(0,0,0))
     local hitPos = dmginfo:GetDamagePosition()
     if hitPos == vector_origin then
@@ -535,7 +549,7 @@ end
 -- ============================================================
 --  Weapons
 -- ============================================================
-local function FireMGBurst( ent, enemy )
+local function FireMGBurst(ent, enemy)
     if ent._mgBurstActive then return false end
     local aimPos   = enemy:GetPos() + Vector(0,0,40)
     local mgRounds = math.random(MG_ROUNDS_MIN, MG_ROUNDS_MAX)
@@ -562,12 +576,23 @@ local function FireMGBurst( ent, enemy )
                 src = src or (ent:GetPos()+Vector(0,0,200))
             end
             local dir = (curAim - src):GetNormalized()
-            ent:FireBullets({ Attacker=ent, Damage=MG_DAMAGE, Dir=dir, Src=src,
-                AmmoType="AR2", TracerName="Tracer", Num=1,
-                Spread=Vector(mgSpread,mgSpread,mgSpread) })
+            ent:FireBullets({
+                Attacker   = ent,
+                Damage     = MG_DAMAGE,
+                Dir        = dir,
+                Src        = src,
+                AmmoType   = "AR2",
+                TracerName = "Tracer",
+                Num        = 1,
+                Spread     = Vector(mgSpread,mgSpread,mgSpread),
+                Callback   = function(_, tr, _)
+                    if tr.Hit and tr.HitNormal then
+                        SendBulletImpact(tr.HitPos, tr.HitNormal, 1)
+                    end
+                end,
+            })
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
-            -- Throttled projected flash: every MG_FLASH_EVERY rounds
             if (round % MG_FLASH_EVERY) == 0 then
                 SendMuzzleFlash(src, dir, 1)
             end
@@ -584,14 +609,14 @@ local function FireMGBurst( ent, enemy )
     return true
 end
 
-local function FireMissile( ent, enemy )
+local function FireMissile(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0,0,40)
     ent._missileCount = (ent._missileCount or 0) + 1
     SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, nil)
     return true
 end
 
-local function FireDoubleSalvo( ent, enemy )
+local function FireDoubleSalvo(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0,0,40)
     ent._missileCount = (ent._missileCount or 0) + 1
     SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, SalvoSpread())
@@ -605,7 +630,7 @@ local function FireDoubleSalvo( ent, enemy )
     return true
 end
 
-local function FireGrenadeLauncher( ent, enemy )
+local function FireGrenadeLauncher(ent, enemy)
     local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
     local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
     local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
@@ -634,7 +659,6 @@ local function FireGrenadeLauncher( ent, enemy )
             local mf = EffectData()
             mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
             util.Effect("MuzzleFlash", mf)
-            -- NOTE: grenade launcher intentionally excluded from projected muzzle flash
             local gren = ents.Create(grenadeType)
             if IsValid(gren) then
                 gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
@@ -651,7 +675,7 @@ local function FireGrenadeLauncher( ent, enemy )
     return true
 end
 
-local function FireOrbitRpg( ent, enemy )
+local function FireOrbitRpg(ent, enemy)
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx  = (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R
     local attData = ent:GetAttachment(attIdx)
@@ -674,7 +698,7 @@ local function FireOrbitRpg( ent, enemy )
     return true
 end
 
-local function FireTopMissile( ent, enemy )
+local function FireTopMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
         print(string.format("[GekkoTM] Too close (%.0f) -- re-rolling", dist))
@@ -700,7 +724,7 @@ local function FireTopMissile( ent, enemy )
     return true
 end
 
-local function FireTrackMissile( ent, enemy )
+local function FireTrackMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
         print(string.format("[GekkoTRK] Too close (%.0f) -- re-rolling", dist))
@@ -729,7 +753,7 @@ local function FireTrackMissile( ent, enemy )
     return true
 end
 
-local function NikitaMuzzleSmoke( ent )
+local function NikitaMuzzleSmoke(ent)
     ent._missileCount = (ent._missileCount or 0) + 1
     local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
     local attData = ent:GetAttachment(attIdx)
@@ -749,11 +773,10 @@ local function NikitaMuzzleSmoke( ent )
             util.Effect("SmokeEffect", ed)
         end)
     end
-    -- Projected flash on the first puff only
     SendMuzzleFlash(nozzle, nozzDir, 4)
 end
 
-local function FireNikita( ent, enemy )
+local function FireNikita(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist < NIKITA_MIN_DIST then
         print(string.format("[GekkoNikita] Too close (%.0f) -- re-rolling", dist))
@@ -792,7 +815,7 @@ end
 -- ============================================================
 --  Weapon: Bushmaster 25mm cannon
 -- ============================================================
-local function FireBushmaster( ent, enemy )
+local function FireBushmaster(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
     for i = 0, rounds - 1 do
@@ -841,7 +864,7 @@ end
 -- ============================================================
 --  Range attack dispatch
 -- ============================================================
-function ENT:OnRangeAttackExecute( status, enemy, projectile )
+function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
     local choice = RollWeapon()
@@ -863,7 +886,7 @@ end
 -- ============================================================
 --  Death
 -- ============================================================
-function ENT:OnDeath( dmginfo, hitgroup, status )
+function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos      = self:GetPos()
