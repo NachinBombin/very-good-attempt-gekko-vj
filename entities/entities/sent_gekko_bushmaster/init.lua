@@ -20,6 +20,9 @@ local LIFETIME       = 12
 local DAMAGE         = 40
 local BLAST_RADIUS   = 10
 
+local FLAME_LOOP_SND  = "gekko/brushmaster_25mm/shellwhiz.wav"
+local FLAME_SND_LEVEL = 75   -- low; audible only when round passes close
+
 -- =========================================================================
 -- Helper: broadcast the bullet impact projected light
 -- =========================================================================
@@ -63,6 +66,9 @@ function ENT:Initialize()
     self._right      = right
     self._up         = up
     self._fixedAngle = self:GetAngles()
+
+    -- Shell whiz loop: bound to entity so it 3D-tracks position in flight
+    self:EmitSound(FLAME_LOOP_SND, FLAME_SND_LEVEL, 100, 1)
 
     timer.Simple(LIFETIME, function()
         if IsValid(self) then self:Remove() end
@@ -119,6 +125,9 @@ end
 function ENT:Explode(hitPos, hitNormal, hitEnt)
     if self._exploded then return end
     self._exploded = true
+
+    -- Stop the flight loop before removal
+    self:StopSound(FLAME_LOOP_SND)
 
     -- Bullet impact projected light — presetID 2 = BUSHMASTER
     SendBulletImpact(hitPos, hitNormal, 2)
