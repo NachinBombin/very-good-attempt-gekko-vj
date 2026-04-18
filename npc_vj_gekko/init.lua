@@ -94,7 +94,7 @@ local RELOAD_SNDS = {
 }
 local RELOAD_SND_LEVEL = 105
 
-local WWEIGHT_MG             = 35
+local WWEIGHT_MG             = 8
 local WWEIGHT_MISSILE_SINGLE = 20
 local WWEIGHT_MISSILE_DOUBLE = 5
 local WWEIGHT_GRENADE        = 10
@@ -102,7 +102,7 @@ local WWEIGHT_TOPMISSILE     = 10
 local WWEIGHT_TRACKMISSILE   = 2
 local WWEIGHT_ORBITRPG       = 10
 local WWEIGHT_NIKITA         = 8
-local WWEIGHT_BUSHMASTER     = 8
+local WWEIGHT_BUSHMASTER     = 35
 
 local SALVO_SPREAD_XY = 220
 local SALVO_SPREAD_Z  = 80
