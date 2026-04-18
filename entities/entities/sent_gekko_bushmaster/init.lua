@@ -12,13 +12,13 @@ util.AddNetworkString("GekkoBulletImpact")
 -- =========================================================================
 -- Configuration
 -- =========================================================================
-local SPEED          = 3900
+local SPEED          = 2900
 local ORBIT_RADIUS_A = 4
 local ORBIT_RADIUS_B = 3
 local ORBIT_SPEED    = 4.5
 local LIFETIME       = 12
 local DAMAGE         = 40
-local BLAST_RADIUS   = 20
+local BLAST_RADIUS   = 10
 
 -- =========================================================================
 -- Helper: broadcast the bullet impact projected light
@@ -36,7 +36,7 @@ end
 -- =========================================================================
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile.mdl")
-    self:SetModelScale(0.10, 0)
+    self:SetModelScale(0.40, 0)
     self:SetMoveType(MOVETYPE_NOCLIP)
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-4, -4, -4), Vector(4, 4, 4))

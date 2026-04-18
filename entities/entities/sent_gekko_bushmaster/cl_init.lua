@@ -43,6 +43,7 @@ end
 function ENT:Draw()
     -- Do NOT draw the model (0.10 scale = invisible anyway)
     -- Draw a bright additive sprite so the round is visible at any distance
+    self:DrawModel()
     local pos = self:GetPos()
     render.SetMaterial(SPRITE_MAT)
     render.DrawSprite(pos, SPRITE_SIZE, SPRITE_SIZE, SPRITE_COL)
