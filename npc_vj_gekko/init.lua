@@ -80,6 +80,22 @@ local BM_TRAIL_STARTSIZE = 7
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
 
+local SHELL_MODEL        = "models/shells/ rifleshell.mdl"
+local SHELL_LIFETIME     = 5
+local MG_SHELL_SCALE     = 1.8
+local BM_SHELL_SCALE     = 3.0
+local SHELL_RIGHT_OFFSET = 10
+local SHELL_UP_OFFSET    = 4
+local SHELL_FWD_OFFSET   = -2
+local SHELL_VEL_RIGHT_MIN = 120
+local SHELL_VEL_RIGHT_MAX = 220
+local SHELL_VEL_UP_MIN    = 40
+local SHELL_VEL_UP_MAX    = 90
+local SHELL_VEL_FWD_MIN   = -35
+local SHELL_VEL_FWD_MAX   = 35
+local SHELL_ANGVEL_MIN    = -220
+local SHELL_ANGVEL_MAX    = 220
+
 local RELOAD_SNDS = {
     "gekko/reload/reloadbig_1.wav",
     "gekko/reload/reloadbig_2.wav",
@@ -281,6 +297,47 @@ local function AttachBushmasterTrail(shell)
         BM_TRAIL_STARTSIZE, BM_TRAIL_ENDSIZE,
         BM_TRAIL_LIFETIME, 1 / BM_TRAIL_STARTSIZE,
         BM_TRAIL_MATERIAL)
+end
+
+local function SpawnCartridge(pos, ang, scale)
+    if not pos or not ang then return end
+
+    local shell = ents.Create("prop_physics_multiplayer")
+    if not IsValid(shell) then return end
+
+    shell:SetModel(SHELL_MODEL)
+    shell:SetPos(
+        pos
+        + ang:Right()   * SHELL_RIGHT_OFFSET
+        + ang:Up()      * SHELL_UP_OFFSET
+        + ang:Forward() * SHELL_FWD_OFFSET
+    )
+    shell:SetAngles(ang)
+    shell:SetModelScale(scale, 0)
+    shell:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+    shell:Spawn()
+    shell:Activate()
+    shell:DrawShadow(false)
+
+    local phys = shell:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:SetMass(2)
+        phys:SetDamping(0.4, 1.2)
+        phys:SetVelocity(
+            ang:Right()   * math.Rand(SHELL_VEL_RIGHT_MIN, SHELL_VEL_RIGHT_MAX)
+          + ang:Up()      * math.Rand(SHELL_VEL_UP_MIN, SHELL_VEL_UP_MAX)
+          + ang:Forward() * math.Rand(SHELL_VEL_FWD_MIN, SHELL_VEL_FWD_MAX)
+        )
+        phys:AddAngleVelocity(Vector(
+            math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX),
+            math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX),
+            math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX)
+        ))
+        phys:EnableDrag(false)
+        phys:Wake()
+    end
+
+    SafeRemoveEntityDelayed(shell, SHELL_LIFETIME)
 end
 
 local function RerollNotMissile(exclude)
@@ -564,16 +621,22 @@ local function FireMGBurst(ent, enemy)
             local curEnemy = GetActiveEnemy(ent)
             local curAim   = IsValid(curEnemy) and (curEnemy:GetPos()+Vector(0,0,40)) or aimPos
             local src
+            local ejectAng
             local mgAtt = ent:GetAttachment(ATT_MACHINEGUN)
             if mgAtt then
                 src = mgAtt.Pos
+                ejectAng = mgAtt.Ang
             else
                 local boneIdx = ent.GekkoLGunBone
                 if boneIdx and boneIdx >= 0 then
                     local m = ent:GetBoneMatrix(boneIdx)
-                    if m then src = m:GetTranslation() + m:GetForward()*28 end
+                    if m then
+                        src = m:GetTranslation() + m:GetForward()*28
+                        ejectAng = m:GetAngles()
+                    end
                 end
                 src = src or (ent:GetPos()+Vector(0,0,200))
+                ejectAng = ejectAng or ent:GetAngles()
             end
             local dir = (curAim - src):GetNormalized()
             ent:FireBullets({
@@ -591,6 +654,7 @@ local function FireMGBurst(ent, enemy)
                     end
                 end,
             })
+            SpawnCartridge(src, ejectAng, MG_SHELL_SCALE)
             local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
             util.Effect("MuzzleFlash", eff)
             if (round % MG_FLASH_EVERY) == 0 then
@@ -823,11 +887,13 @@ local function FireBushmaster(ent, enemy)
         timer.Simple(shot * BM_INTERVAL, function()
             if not IsValid(ent) then return end
             local src
+            local ejectAng = ent:GetAngles()
             local pelBone = ent.GekkoPelvisBone
             if pelBone and pelBone >= 0 then
                 local m = ent:GetBoneMatrix(pelBone)
                 if m then
                     src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET)
+                    ejectAng = m:GetAngles()
                 end
             end
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
@@ -843,6 +909,7 @@ local function FireBushmaster(ent, enemy)
                 shell:Activate()
                 AttachBushmasterTrail(shell)
             end
+            SpawnCartridge(src, ejectAng, BM_SHELL_SCALE)
             local eff = EffectData()
             eff:SetOrigin(src) ; eff:SetNormal(dir)
             eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
