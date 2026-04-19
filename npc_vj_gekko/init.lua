@@ -80,7 +80,7 @@ local BM_TRAIL_STARTSIZE = 7
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
 
-local SHELL_MODEL         = "models/shells/rifleshell.mdl"
+local SHELL_MODEL         = "models/weapons/phys_shells_add/rifleshell_py.mdl"
 local SHELL_LIFETIME      = 5
 local MG_SHELL_SCALE      = 1.8
 local BM_SHELL_SCALE      = 3.0
@@ -307,7 +307,7 @@ end
 local function SpawnCartridge(pos, ang, scale)
     if not pos or not ang then return end
 
-    local shell = ents.Create("prop_physics_override")
+    local shell = ents.Create("prop_physics")
     if not IsValid(shell) then return end
 
     shell:SetModel(SHELL_MODEL)
