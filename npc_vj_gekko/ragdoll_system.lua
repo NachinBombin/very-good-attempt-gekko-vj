@@ -1,30 +1,25 @@
 -- ============================================================
 --  npc_vj_gekko / ragdoll_system.lua
 --
---  Replaces the stiff death pose with a physically-simulated
---  heavy ragdoll.  Goals:
+--  Correct approach:
+--    VJ Base exposes VJ_CreateRagdoll(npc, dmginfo, options)
+--    which internally calls the engine's CreateRagdoll on the
+--    live NPC entity -- this is the ONLY way to get a ragdoll
+--    that inherits the NPC's current animated bone pose.  Any
+--    approach that manually creates a prop_ragdoll from scratch
+--    will spawn in the model bind/T-pose regardless.
 --
---    1. NO frozen pose / NO hip-piston gap.
---       All ManipulateBone* calls are wiped before the ragdoll
---       is created so every bone starts from the animation rest.
+--    After VJ_CreateRagdoll returns the ragdoll entity we:
+--      1. Override per-bone mass so the mech feels heavy.
+--      2. Apply safe-magnitude impulses for the hit direction,
+--         head whip, and hip splay.
+--      3. Register a timed alpha-fade for cleanup.
 --
---    2. Heavy weight.  The whole body is dense metal so it
---       falls fast and thuds into geometry rather than floating.
---
---    3. Head collides with the world and gets oriented by it.
---       b_spine4 (the head/neck chain root) is given a strong
---       forward impulse so it whips down and settles against
---       whatever surface it contacts.
---
---    4. Legs stay connected to the pelvis.  The piston bones
---       (b_l_hippiston1 / b_r_hippiston1, indices 52 / 32)
---       are the joint roots for both legs.  We apply a small
---       outward impulse to each leg cluster so they splay
---       naturally rather than snapping to rest.
---
---    5. Death-velocity inheritance.  The NPC's velocity at the
---       moment of death is transferred to every ragdoll bone so
---       the body "carries" the hit momentum.
+--  Impulse safety rule (Source/Havok hard limit):
+--    ApplyForceCenter takes kg*units/s^2 (force, not impulse).
+--    Anything above ~50 000 on a single bone per tick will
+--    cause a physics assertion / CTD.  All values here are
+--    deliberately kept under 40 000 per bone.
 --
 --  API
 --    ENT:GekkoRagdoll_OnDeath(dmginfo)   -- call from OnDeath
@@ -33,256 +28,200 @@
 -- ─────────────────────────────────────────────────────────────
 --  Tuning
 -- ─────────────────────────────────────────────────────────────
-local RAGDOLL_FADE_TIME   = 30      -- seconds until the ragdoll fades
-local RAGDOLL_FADE_START  = 26      -- seconds until fade animation begins
+local RAGDOLL_FADE_TIME  = 30   -- seconds until ragdoll is removed
+local RAGDOLL_FADE_START = 26   -- seconds until alpha-fade begins
 
--- Per-bone mass overrides (kg).  Everything not listed falls
--- back to BASE_MASS.  Heavier = more inertia, slower tumble.
-local BASE_MASS           = 180
+-- Base mass (kg) for bones not in BONE_MASS.
+local BASE_MASS = 120
 
 local BONE_MASS = {
-    -- torso stack
-    b_pedestal  = 380,
-    b_pelvis    = 320,
-    b_spine1    = 220,
-    b_spine2    = 200,
-    b_spine3    = 180,
-    b_spine4    = 160,   -- head/neck root
-    -- legs (piston + thigh carry most weight)
-    b_l_hippiston1      = 260,
-    b_r_hippiston1      = 260,
-    b_l_thigh           = 200,
-    b_r_thigh           = 200,
-    b_l_upperleg        = 160,
-    b_r_upperleg        = 160,
-    b_l_calf            = 120,
-    b_r_calf            = 120,
-    b_l_foot            = 80,
-    b_r_foot            = 80,
-    b_l_toe             = 30,
-    b_r_toe             = 30,
-    b_l_pinky_toe1      = 20,
-    b_r_pinky_toe1      = 20,
-    -- arms
-    b_l_shoulder        = 100,
-    b_r_shoulder        = 100,
-    b_l_upperarm        = 90,
-    b_r_upperarm        = 90,
-    b_l_forearm         = 70,
-    b_r_forearm         = 70,
-    b_l_hand            = 40,
-    b_r_hand            = 40,
+    b_pedestal         = 300,
+    b_pelvis           = 260,
+    b_spine1           = 180,
+    b_spine2           = 160,
+    b_spine3           = 140,
+    b_spine4           = 120,
+    b_l_hippiston1     = 200,
+    b_r_hippiston1     = 200,
+    b_l_thigh          = 160,
+    b_r_thigh          = 160,
+    b_l_upperleg       = 120,
+    b_r_upperleg       = 120,
+    b_l_calf           = 90,
+    b_r_calf           = 90,
+    b_l_foot           = 60,
+    b_r_foot           = 60,
+    b_l_toe            = 25,
+    b_r_toe            = 25,
+    b_l_pinky_toe1     = 15,
+    b_r_pinky_toe1     = 15,
+    b_l_shoulder       = 80,
+    b_r_shoulder       = 80,
+    b_l_upperarm       = 70,
+    b_r_upperarm       = 70,
+    b_l_forearm        = 55,
+    b_r_forearm        = 55,
+    b_l_hand           = 35,
+    b_r_hand           = 35,
 }
 
--- Impulse applied to the head bone cluster (forward + down)
--- to make it whip into the ground on death.
-local HEAD_BONE           = "b_spine4"
-local HEAD_FORWARD_FORCE  = 28000   -- units/s  forward
-local HEAD_DOWN_FORCE     = 18000   -- units/s  downward
+-- Physics feel
+local LINEAR_DAMPING   = 0.5
+local ANGULAR_DAMPING  = 2.5
 
--- Hip-piston bones — small outward splay so legs don't
--- collapse inward and create the gap artifact.
-local HIP_L_BONE          = "b_l_hippiston1"
-local HIP_R_BONE          = "b_r_hippiston1"
-local HIP_SPLAY_FORCE     = 9000    -- lateral outward
-local HIP_DOWN_FORCE      = 4000    -- slight downward
+-- Whole-body death push (kg*units/s, spread across all bones).
+-- Keep per-bone value well under 40 000.
+local DEATH_PUSH_TOTAL = 18000  -- divided by physBoneCount at runtime
 
--- Overall death impulse scale applied to the whole body
--- from the damage force direction.
-local DEATH_IMPULSE_SCALE = 1.4
+-- Head-whip: forward + downward kick on b_spine4
+local HEAD_BONE          = "b_spine4"
+local HEAD_FORCE_FWD     = 12000
+local HEAD_FORCE_DOWN    = 8000
 
--- Damping: ragdoll bones are made slightly sluggish so the
--- body doesn't bounce around like a balloon.
-local ANGULAR_DAMPING     = 2.8
-local LINEAR_DAMPING      = 0.6
+-- Hip splay: push each hip outward so legs don't fold inward
+local HIP_L_BONE         = "b_l_hippiston1"
+local HIP_R_BONE         = "b_r_hippiston1"
+local HIP_FORCE_LATERAL  = 6000
+local HIP_FORCE_DOWN     = 2500
 
 -- ─────────────────────────────────────────────────────────────
---  Internal helpers
+--  Helpers
 -- ─────────────────────────────────────────────────────────────
 
--- Strip every bone manipulation on the NPC before we hand the
--- pose to CreateRagdoll().  Without this the ragdoll inherits
--- whatever ManipulateBoneAngles / ManipulateBonePosition offsets
--- were active (e.g. the grounded-pose pelvis drop of -125 units)
--- which is exactly what causes the hip-piston gap.
--- NOTE: InvalidateBoneCache() is a clientside-only method and
--- must NOT be called on a serverside NPC.  WipeAllBoneManips
--- alone is sufficient; the engine re-evaluates bone transforms
--- when CreateRagdoll reads the pose on the next frame.
-local function WipeAllBoneManips(ent)
-    local count = ent:GetBoneCount()
-    if not count then return end
+local function ConfigurePhysics(ragdoll)
+    local count = ragdoll:GetPhysicsObjectCount()
     for i = 0, count - 1 do
-        ent:ManipulateBoneAngles(i,   Angle(0,0,0),    false)
-        ent:ManipulateBonePosition(i, Vector(0,0,0),   false)
-        ent:ManipulateBoneScale(i,    Vector(1,1,1),   false)
-    end
-end
-
--- Apply per-bone mass and damping to every physics object inside
--- the ragdoll entity.
-local function ConfigureRagdollPhysics(ragdoll)
-    local boneCount = ragdoll:GetPhysicsObjectCount()
-    for i = 0, boneCount - 1 do
         local phys = ragdoll:GetPhysicsObjectNum(i)
         if not IsValid(phys) then continue end
-
-        -- Resolve bone name for this physics index
-        local boneName = ragdoll:GetBoneName(i) or ""
-        local mass     = BONE_MASS[boneName] or BASE_MASS
-
-        phys:SetMass(mass)
+        local name = ragdoll:GetBoneName(i) or ""
+        phys:SetMass(BONE_MASS[name] or BASE_MASS)
         phys:SetDamping(LINEAR_DAMPING, ANGULAR_DAMPING)
         phys:EnableGravity(true)
-        phys:EnableDrag(false)   -- no air resistance; we want a heavy thud
+        phys:EnableDrag(false)
         phys:Wake()
     end
 end
 
--- Translate a bone name to its physics object index inside a
--- ragdoll.  Ragdoll physics objects are numbered 0..N-1 and
--- their order matches the bone index sequence but only for
--- bones that have a $collisionmodel entry -- we search by name.
-local function FindRagdollPhysByBone(ragdoll, boneName)
+local function FindPhysByBone(ragdoll, boneName)
     local count = ragdoll:GetPhysicsObjectCount()
     for i = 0, count - 1 do
         if (ragdoll:GetBoneName(i) or "") == boneName then
             return ragdoll:GetPhysicsObjectNum(i)
         end
     end
-    return nil
 end
 
--- Apply an impulse to a named bone's physics object.
--- impulseVec is in world-space kg*units/s.
-local function ApplyBoneImpulse(ragdoll, boneName, impulseVec)
-    local phys = FindRagdollPhysByBone(ragdoll, boneName)
+local function SafeImpulse(ragdoll, boneName, vec)
+    local phys = FindPhysByBone(ragdoll, boneName)
     if IsValid(phys) then
-        phys:ApplyForceCenter(impulseVec)
+        phys:ApplyForceCenter(vec)
     end
 end
 
+local function RegisterFade(ragdoll)
+    local key = "GekkoRagdollFade_" .. ragdoll:EntIndex()
+    timer.Simple(RAGDOLL_FADE_START, function()
+        if not IsValid(ragdoll) then return end
+        local fadeLen = RAGDOLL_FADE_TIME - RAGDOLL_FADE_START
+        local startT  = CurTime()
+        hook.Add("Think", key, function()
+            if not IsValid(ragdoll) then hook.Remove("Think", key) return end
+            local t = math.Clamp((CurTime() - startT) / fadeLen, 0, 1)
+            ragdoll:SetColor(Color(255, 255, 255, math.floor(255 * (1 - t))))
+            ragdoll:SetRenderMode(RENDERMODE_TRANSALPHA)
+            if t >= 1 then ragdoll:Remove() hook.Remove("Think", key) end
+        end)
+    end)
+    timer.Simple(RAGDOLL_FADE_TIME, function()
+        if IsValid(ragdoll) then ragdoll:Remove() end
+    end)
+end
+
 -- ─────────────────────────────────────────────────────────────
---  ENT:GekkoRagdoll_OnDeath
+--  ENT:GekkoRagdoll_OnDeath(dmginfo)
 -- ─────────────────────────────────────────────────────────────
 function ENT:GekkoRagdoll_OnDeath(dmginfo)
 
-    -- ── 1. Capture live state before we touch anything ────────
-    local deathPos = self:GetPos()
-    local deathAng = self:GetAngles()
-    local deathVel = self:GetVelocity()
+    -- Capture orientation before anything mutates state
+    local deathAng  = self:GetAngles()
+    local fwd       = deathAng:Forward()
+    local right     = deathAng:Right()
+    local deathVel  = self:GetVelocity()
 
-    -- Damage force direction (used for the whole-body push)
-    local dmgForce   = dmginfo and dmginfo:GetDamageForce() or Vector(0,0,0)
-    local dmgForceN  = (dmgForce:Length() > 1) and dmgForce:GetNormalized() or Vector(0,0,1)
+    local dmgForce  = dmginfo and dmginfo:GetDamageForce() or Vector(0, 0, 0)
+    local pushDir   = (dmgForce:LengthSqr() > 1) and dmgForce:GetNormalized()
+                      or (fwd * -1)  -- fallback: push backward
 
-    -- Forward direction of the NPC at death
-    local fwd        = deathAng:Forward()
-    local right      = deathAng:Right()
+    -- ── Use VJ_CreateRagdoll ──────────────────────────────────
+    -- This is the VJ Base function that calls the engine's own
+    -- CreateRagdoll on the live NPC, transferring the current
+    -- animated bone pose into the ragdoll.  It is the only
+    -- correct way to avoid the bind-pose / T-pose problem.
+    --
+    -- Signature (VJ Base source, npc_vj_creature_base/init.lua):
+    --   VJ_CreateRagdoll(npc, dmginfo, extraVelocity, dontSetPos)
+    --   returns the ragdoll entity
+    --
+    -- We pass Vector(0,0,0) for extraVelocity and let VJ handle
+    -- the initial velocity copy; we'll add our own impulses after.
+    local ragdoll = nil
+    if VJ_CreateRagdoll then
+        ragdoll = VJ_CreateRagdoll(self, dmginfo, Vector(0, 0, 0), false)
+    end
 
-    -- ── 2. Wipe all bone overrides ────────────────────────────
-    -- This is the critical fix for the hip-piston gap.  Any
-    -- ManipulateBone* state (pelvis Z offset, piston angles from
-    -- attacks, grounded pose) must be zeroed BEFORE CreateRagdoll
-    -- so the ragdoll spawns from the model's neutral bind pose.
-    WipeAllBoneManips(self)
+    -- Fallback: if VJ_CreateRagdoll is unavailable (shouldn't
+    -- happen but defensive) try the engine method directly.
+    if not IsValid(ragdoll) then
+        ragdoll = self:BecomeRagdollOnClient()
+    end
 
-    -- NOTE: Do NOT call self:InvalidateBoneCache() here.
-    -- That method only exists on clientside entities.  The bone
-    -- wipe above is sufficient; the engine re-reads poses when
-    -- prop_ragdoll initialises on the next frame (timer 0).
+    if not IsValid(ragdoll) then
+        print("[GekkoRagdoll] ERROR: could not create ragdoll")
+        return
+    end
 
-    local selfRef    = self
-    local deathPosCp = deathPos
-    local deathAngCp = deathAng
-    local deathVelCp = deathVel
-    local dmgForceNCp= dmgForceN
-    local fwdCp      = fwd
-    local rightCp    = right
+    -- ── Configure physics ─────────────────────────────────────
+    ConfigurePhysics(ragdoll)
 
-    timer.Simple(0, function()
-        if not IsValid(selfRef) then return end
+    local physCount = ragdoll:GetPhysicsObjectCount()
+    if physCount < 1 then
+        print("[GekkoRagdoll] WARNING: ragdoll has no physics bones")
+        RegisterFade(ragdoll)
+        return
+    end
 
-        -- ── 3. Create the ragdoll ─────────────────────────────
-        local ragdoll = ents.Create("prop_ragdoll")
-        if not IsValid(ragdoll) then
-            print("[GekkoRagdoll] ERROR: prop_ragdoll create failed")
-            return
+    -- ── Per-bone death push (safe magnitude) ──────────────────
+    -- Divide total desired push across all bones so no single
+    -- bone exceeds the Havok safety threshold.
+    local perBoneForce = math.min(DEATH_PUSH_TOTAL / physCount, 35000)
+    for i = 0, physCount - 1 do
+        local phys = ragdoll:GetPhysicsObjectNum(i)
+        if IsValid(phys) then
+            -- Inherit NPC velocity
+            phys:SetVelocity(deathVel)
+            -- Death direction push
+            phys:ApplyForceCenter(pushDir * perBoneForce)
         end
+    end
 
-        ragdoll:SetModel(selfRef:GetModel())
-        ragdoll:SetPos(deathPosCp)
-        ragdoll:SetAngles(deathAngCp)
-        ragdoll:SetSkin(selfRef:GetSkin())
+    -- ── Head whip ─────────────────────────────────────────────
+    SafeImpulse(ragdoll, HEAD_BONE,
+        fwd * HEAD_FORCE_FWD + Vector(0, 0, -HEAD_FORCE_DOWN)
+    )
 
-        -- Copy bodygroups
-        for bg = 0, selfRef:GetNumBodyGroups() - 1 do
-            ragdoll:SetBodygroup(bg, selfRef:GetBodygroup(bg))
-        end
+    -- ── Hip splay ─────────────────────────────────────────────
+    SafeImpulse(ragdoll, HIP_L_BONE,
+         right * HIP_FORCE_LATERAL + Vector(0, 0, -HIP_FORCE_DOWN)
+    )
+    SafeImpulse(ragdoll, HIP_R_BONE,
+        -right * HIP_FORCE_LATERAL + Vector(0, 0, -HIP_FORCE_DOWN)
+    )
 
-        ragdoll:Spawn()
-        ragdoll:Activate()
+    -- ── Fade & cleanup ────────────────────────────────────────
+    RegisterFade(ragdoll)
 
-        -- ── 4. Configure physics ─────────────────────────────
-        ConfigureRagdollPhysics(ragdoll)
-
-        -- ── 5. Inherit NPC velocity on every bone ────────────
-        local physCount  = ragdoll:GetPhysicsObjectCount()
-        for i = 0, physCount - 1 do
-            local phys = ragdoll:GetPhysicsObjectNum(i)
-            if IsValid(phys) then
-                phys:SetVelocity(deathVelCp)
-                phys:ApplyForceCenter(
-                    dmgForceNCp * (BASE_MASS * 12000 * DEATH_IMPULSE_SCALE)
-                )
-            end
-        end
-
-        -- ── 6. Head whip impulse ──────────────────────────────
-        ApplyBoneImpulse(ragdoll, HEAD_BONE,
-            fwdCp  * HEAD_FORWARD_FORCE * BASE_MASS
-          + Vector(0, 0, -1) * HEAD_DOWN_FORCE * BASE_MASS
-        )
-
-        -- ── 7. Hip splay impulse ──────────────────────────────
-        ApplyBoneImpulse(ragdoll, HIP_L_BONE,
-             rightCp * HIP_SPLAY_FORCE * BASE_MASS
-           + Vector(0, 0, -1) * HIP_DOWN_FORCE * BASE_MASS
-        )
-        ApplyBoneImpulse(ragdoll, HIP_R_BONE,
-            -rightCp * HIP_SPLAY_FORCE * BASE_MASS
-           + Vector(0, 0, -1) * HIP_DOWN_FORCE * BASE_MASS
-        )
-
-        -- ── 8. Fade & cleanup ────────────────────────────────
-        timer.Simple(RAGDOLL_FADE_START, function()
-            if not IsValid(ragdoll) then return end
-            local fadeLen = RAGDOLL_FADE_TIME - RAGDOLL_FADE_START
-            local startT  = CurTime()
-            local hookKey = "GekkoRagdollFade_" .. ragdoll:EntIndex()
-            hook.Add("Think", hookKey, function()
-                if not IsValid(ragdoll) then
-                    hook.Remove("Think", hookKey)
-                    return
-                end
-                local t = math.Clamp((CurTime() - startT) / fadeLen, 0, 1)
-                local a = math.floor(255 * (1 - t))
-                ragdoll:SetColor(Color(255, 255, 255, a))
-                ragdoll:SetRenderMode(RENDERMODE_TRANSALPHA)
-                if t >= 1 then
-                    ragdoll:Remove()
-                    hook.Remove("Think", hookKey)
-                end
-            end)
-        end)
-
-        timer.Simple(RAGDOLL_FADE_TIME, function()
-            if IsValid(ragdoll) then ragdoll:Remove() end
-        end)
-
-        print(string.format(
-            "[GekkoRagdoll] Spawned | physBones=%d vel=%.1f",
-            physCount, deathVelCp:Length()
-        ))
-    end)
+    print(string.format(
+        "[GekkoRagdoll] Spawned | physBones=%d pushPerBone=%.0f",
+        physCount, perBoneForce
+    ))
 end
