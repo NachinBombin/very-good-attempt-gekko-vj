@@ -105,6 +105,10 @@ local LINEAR_DAMPING      = 0.6
 -- whatever ManipulateBoneAngles / ManipulateBonePosition offsets
 -- were active (e.g. the grounded-pose pelvis drop of -125 units)
 -- which is exactly what causes the hip-piston gap.
+-- NOTE: InvalidateBoneCache() is a clientside-only method and
+-- must NOT be called on a serverside NPC.  WipeAllBoneManips
+-- alone is sufficient; the engine re-evaluates bone transforms
+-- when CreateRagdoll reads the pose on the next frame.
 local function WipeAllBoneManips(ent)
     local count = ent:GetBoneCount()
     if not count then return end
@@ -183,12 +187,11 @@ function ENT:GekkoRagdoll_OnDeath(dmginfo)
     -- so the ragdoll spawns from the model's neutral bind pose.
     WipeAllBoneManips(self)
 
-    -- Force an InvalidateBoneCache so the engine re-evaluates
-    -- bone positions from the clean animation state.
-    self:InvalidateBoneCache()
+    -- NOTE: Do NOT call self:InvalidateBoneCache() here.
+    -- That method only exists on clientside entities.  The bone
+    -- wipe above is sufficient; the engine re-reads poses when
+    -- prop_ragdoll initialises on the next frame (timer 0).
 
-    -- One frame later (timer 0) is still synchronous enough for
-    -- CreateRagdoll to read the updated pose.
     local selfRef    = self
     local deathPosCp = deathPos
     local deathAngCp = deathAng
@@ -224,15 +227,11 @@ function ENT:GekkoRagdoll_OnDeath(dmginfo)
         ConfigureRagdollPhysics(ragdoll)
 
         -- ── 5. Inherit NPC velocity on every bone ────────────
-        -- Gives the ragdoll the "carry" from whatever speed the
-        -- NPC was moving at when it died.
-        local velImpulse = deathVelCp * BASE_MASS * 0.5
         local physCount  = ragdoll:GetPhysicsObjectCount()
         for i = 0, physCount - 1 do
             local phys = ragdoll:GetPhysicsObjectNum(i)
             if IsValid(phys) then
                 phys:SetVelocity(deathVelCp)
-                -- also push in the damage direction
                 phys:ApplyForceCenter(
                     dmgForceNCp * (BASE_MASS * 12000 * DEATH_IMPULSE_SCALE)
                 )
@@ -240,19 +239,12 @@ function ENT:GekkoRagdoll_OnDeath(dmginfo)
         end
 
         -- ── 6. Head whip impulse ──────────────────────────────
-        -- The head cluster gets a strong forward+down push so it
-        -- arcs into the world and gets oriented by the surface.
         ApplyBoneImpulse(ragdoll, HEAD_BONE,
             fwdCp  * HEAD_FORWARD_FORCE * BASE_MASS
           + Vector(0, 0, -1) * HEAD_DOWN_FORCE * BASE_MASS
         )
 
         -- ── 7. Hip splay impulse ──────────────────────────────
-        -- Push each hip-piston cluster outward so the legs don't
-        -- fold inward (the typical gap artifact).
-        --
-        --  b_l_hippiston1 (idx 52) is left  → push along  right
-        --  b_r_hippiston1 (idx 32) is right → push along -right
         ApplyBoneImpulse(ragdoll, HIP_L_BONE,
              rightCp * HIP_SPLAY_FORCE * BASE_MASS
            + Vector(0, 0, -1) * HIP_DOWN_FORCE * BASE_MASS
@@ -263,14 +255,14 @@ function ENT:GekkoRagdoll_OnDeath(dmginfo)
         )
 
         -- ── 8. Fade & cleanup ────────────────────────────────
-        -- Graceful alpha fade so the ragdoll doesn't just pop.
         timer.Simple(RAGDOLL_FADE_START, function()
             if not IsValid(ragdoll) then return end
             local fadeLen = RAGDOLL_FADE_TIME - RAGDOLL_FADE_START
             local startT  = CurTime()
-            hook.Add("Think", "GekkoRagdollFade_" .. ragdoll:EntIndex(), function()
+            local hookKey = "GekkoRagdollFade_" .. ragdoll:EntIndex()
+            hook.Add("Think", hookKey, function()
                 if not IsValid(ragdoll) then
-                    hook.Remove("Think", "GekkoRagdollFade_" .. tostring(ragdoll))
+                    hook.Remove("Think", hookKey)
                     return
                 end
                 local t = math.Clamp((CurTime() - startT) / fadeLen, 0, 1)
@@ -279,7 +271,7 @@ function ENT:GekkoRagdoll_OnDeath(dmginfo)
                 ragdoll:SetRenderMode(RENDERMODE_TRANSALPHA)
                 if t >= 1 then
                     ragdoll:Remove()
-                    hook.Remove("Think", "GekkoRagdollFade_" .. ragdoll:EntIndex())
+                    hook.Remove("Think", hookKey)
                 end
             end)
         end)
