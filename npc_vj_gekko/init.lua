@@ -23,8 +23,3 @@ include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
-
-util.AddNetworkString("GekkoSonarLock")
-util.AddNetworkString("GekkoFK360LandDust")
-util.AddNetworkString("GekkoMuzzleFlash")
-util.AddNetworkString("GekkoBulletImpact")
