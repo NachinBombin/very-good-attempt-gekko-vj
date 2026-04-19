@@ -1,3 +1,16 @@
+-- ============================================================
+--  npc_vj_gekko / init.lua
+--  Weapon list:
+--  1. Machine-gun burst         (FireBullets)
+--  2. Single accurate missile   (obj_vj_rocket)
+--  3. Double inaccurate salvo   (obj_vj_rocket x2)
+--  4. Grenade launcher barrage  (bombin_gas_grenade / stun / flash)
+--  5. Top-attack terror missile (sent_npc_topmissile)
+--  6. Active-track missile      (sent_npc_trackmissile)
+--  7. Orbit RPG                 (sent_orbital_rpg)
+--  8. Nikita cruise missile     (npc_vj_gekko_nikita)
+--  9. Bushmaster 25mm cannon    (sent_gekko_bushmaster x7-13)
+-- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
