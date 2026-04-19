@@ -12,16 +12,16 @@ util.AddNetworkString("GekkoBulletImpact")
 -- =========================================================================
 -- Configuration
 -- =========================================================================
-local SPEED          = 2900
+local SPEED          = 3450
 local ORBIT_RADIUS_A = 4
 local ORBIT_RADIUS_B = 3
 local ORBIT_SPEED    = 4.5
 local LIFETIME       = 12
-local DAMAGE         = 40
-local BLAST_RADIUS   = 10
+local DAMAGE         = 35
+local BLAST_RADIUS   = 9
 
 local FLAME_LOOP_SND  = "gekko/brushmaster_25mm/shellwhiz.wav"
-local FLAME_SND_LEVEL = 75   -- low; audible only when round passes close
+local FLAME_SND_LEVEL = 90   -- low; audible only when round passes close
 
 -- =========================================================================
 -- Helper: broadcast the bullet impact projected light
@@ -39,7 +39,7 @@ end
 -- =========================================================================
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile.mdl")
-    self:SetModelScale(0.40, 0)
+    self:SetModelScale(0.30, 0)
     self:SetMoveType(MOVETYPE_NOCLIP)
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-4, -4, -4), Vector(4, 4, 4))
