@@ -79,6 +79,12 @@ local BM_TRAIL_LIFETIME  = 1.55
 local BM_TRAIL_STARTSIZE = 7
 local BM_TRAIL_ENDSIZE   = 0.5
 local BM_TRAIL_COLOR     = Color(235, 235, 235, 90)
+local BM_SPARK_SCALE     = 0.32
+local BM_SPARK_MAGNITUDE = 2.2
+local BM_SPARK_RADIUS    = 6
+local BM_SMOKE_SCALE     = 0.9
+local BM_SMOKE_FORWARD   = 12
+local BM_SMOKE_UP        = 2
 
 local SHELL_MODEL         = "models/props_debris/shellcasing_09.mdl"
 local SHELL_LIFETIME      = 5
@@ -302,6 +308,26 @@ local function AttachBushmasterTrail(shell)
         BM_TRAIL_STARTSIZE, BM_TRAIL_ENDSIZE,
         BM_TRAIL_LIFETIME, 1 / BM_TRAIL_STARTSIZE,
         BM_TRAIL_MATERIAL)
+end
+
+local function BushmasterSparks(pos, dir, ent)
+    local e = EffectData()
+    e:SetOrigin(pos + dir * 4)
+    e:SetNormal(dir)
+    e:SetEntity(ent)
+    e:SetMagnitude(BM_SPARK_MAGNITUDE)
+    e:SetScale(BM_SPARK_SCALE)
+    e:SetRadius(BM_SPARK_RADIUS)
+    util.Effect("ManhackSparks", e)
+end
+
+local function BushmasterSmoke(pos, dir)
+    local ed = EffectData()
+    ed:SetOrigin(pos + dir * BM_SMOKE_FORWARD + Vector(0, 0, BM_SMOKE_UP))
+    ed:SetNormal(dir)
+    ed:SetScale(BM_SMOKE_SCALE)
+    ed:SetMagnitude(1)
+    util.Effect("SmokeEffect", ed)
 end
 
 local function SpawnCartridge(pos, ang, scale)
@@ -916,6 +942,8 @@ local function FireBushmaster(ent, enemy)
                 AttachBushmasterTrail(shell)
             end
             SpawnCartridge(src, ejectAng, BM_SHELL_SCALE)
+            BushmasterSparks(src, dir, ent)
+            BushmasterSmoke(src, dir)
             local eff = EffectData()
             eff:SetOrigin(src) ; eff:SetNormal(dir)
             eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
