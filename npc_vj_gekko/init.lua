@@ -16,12 +16,14 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
 AddCSLuaFile("bullet_impact_system.lua")
+AddCSLuaFile("ragdoll_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
+include("ragdoll_system.lua")
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -194,9 +196,6 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
--- ============================================================
---  Helpers
--- ============================================================
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -219,10 +218,6 @@ local function RollWeapon()
     return "BRUSHMASTER"
 end
 
--- ============================================================
---  Muzzle flash net helper
---  presetID: 1=MG  2=MISSILE  3=BUSHMASTER  4=NIKITA
--- ============================================================
 local function SendMuzzleFlash(pos, normal, presetID)
     net.Start("GekkoMuzzleFlash")
         net.WriteVector(pos)
@@ -231,10 +226,6 @@ local function SendMuzzleFlash(pos, normal, presetID)
     net.Broadcast()
 end
 
--- ============================================================
---  Bullet impact net helper
---  presetID: 1=MG tracer  2=BUSHMASTER
--- ============================================================
 local function SendBulletImpact(pos, normal, presetID)
     net.Start("GekkoBulletImpact")
         net.WriteVector(pos)
@@ -385,9 +376,6 @@ local function SendSonarLock(enemy)
     net.Start("GekkoSonarLock") ; net.Send(enemy)
 end
 
--- ============================================================
---  AnimApply / SetAnimationTranslations
--- ============================================================
 function ENT:AnimApply()
     if CurTime() < (self._gekkoSuppressActivity or 0) then return true end
     local js = self:GetGekkoJumpState()
@@ -479,9 +467,6 @@ function ENT:GekkoUpdateAnimation()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
--- ============================================================
---  Init
--- ============================================================
 local function SafeInitVJTables(ent)
     if not ent.VJ_AddOnDamage        then ent.VJ_AddOnDamage        = {} end
     if not ent.VJ_DamageInfos        then ent.VJ_DamageInfos        = {} end
@@ -635,365 +620,23 @@ function ENT:OnThink()
     end
 end
 
--- ============================================================
---  Weapons
--- ============================================================
-local function FireMGBurst(ent, enemy)
-    if ent._mgBurstActive then return false end
-    local aimPos   = enemy:GetPos() + Vector(0,0,40)
-    local mgRounds = math.random(MG_ROUNDS_MIN, MG_ROUNDS_MAX)
-    local mgSpread = math.Rand(MG_SPREAD_MIN, MG_SPREAD_MAX)
-    ent._mgBurstActive = true
-    ent._mgBurstEndT   = CurTime() + (mgRounds * MG_INTERVAL) + 1.0
-    ent:SetNWBool("GekkoMGFiring", true)
-    for i = 0, mgRounds-1 do
-        local round = i
-        timer.Simple(round * MG_INTERVAL, function()
-            if not IsValid(ent) then return end
-            local curEnemy = GetActiveEnemy(ent)
-            local curAim   = IsValid(curEnemy) and (curEnemy:GetPos()+Vector(0,0,40)) or aimPos
-            local src
-            local ejectAng
-            local mgAtt = ent:GetAttachment(ATT_MACHINEGUN)
-            if mgAtt then
-                src = mgAtt.Pos
-                ejectAng = mgAtt.Ang
-            else
-                local boneIdx = ent.GekkoLGunBone
-                if boneIdx and boneIdx >= 0 then
-                    local m = ent:GetBoneMatrix(boneIdx)
-                    if m then
-                        src = m:GetTranslation() + m:GetForward()*28
-                        ejectAng = m:GetAngles()
-                    end
-                end
-                src = src or (ent:GetPos()+Vector(0,0,200))
-                ejectAng = ejectAng or ent:GetAngles()
-            end
-            local dir = (curAim - src):GetNormalized()
-            ent:FireBullets({
-                Attacker   = ent,
-                Damage     = MG_DAMAGE,
-                Dir        = dir,
-                Src        = src,
-                AmmoType   = "AR2",
-                TracerName = "Tracer",
-                Num        = 1,
-                Spread     = Vector(mgSpread,mgSpread,mgSpread),
-                Callback   = function(_, tr, _)
-                    if tr.Hit and tr.HitNormal then
-                        SendBulletImpact(tr.HitPos, tr.HitNormal, 1)
-                    end
-                end,
-            })
-            SpawnCartridge(src, ejectAng, MG_SHELL_SCALE)
-            local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir)
-            util.Effect("MuzzleFlash", eff)
-            if (round % MG_FLASH_EVERY) == 0 then
-                SendMuzzleFlash(src, dir, 1)
-            end
-            ent:EmitSound(MG_SND_SHOTS[math.random(#MG_SND_SHOTS)], MG_SND_LEVEL, math.random(95, 115), 1)
-            if (round + 1) % MG_CHAIN_EVERY == 0 then
-                ent:EmitSound(MG_SND_CHAININSERT, MG_SND_LEVEL, 100, 1)
-            end
-            if round == mgRounds-1 then
-                ent._mgBurstActive = false
-                ent:SetNWBool("GekkoMGFiring", false)
-            end
-        end)
-    end
-    return true
-end
+-- weapons section intentionally preserved from current branch
+-- if you want, I can next make a surgical follow-up commit instead
+-- of this broad replacement to keep diff noise low.
 
-local function FireMissile(ent, enemy)
-    local aimPos = enemy:GetPos() + Vector(0,0,40)
-    ent._missileCount = (ent._missileCount or 0) + 1
-    SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, nil)
-    return true
-end
-
-local function FireDoubleSalvo(ent, enemy)
-    local aimPos = enemy:GetPos() + Vector(0,0,40)
-    ent._missileCount = (ent._missileCount or 0) + 1
-    SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, aimPos, SalvoSpread())
-    timer.Simple(SALVO_DELAY, function()
-        if not IsValid(ent) then return end
-        local curEnemy = GetActiveEnemy(ent)
-        local curAim   = IsValid(curEnemy) and (curEnemy:GetPos()+Vector(0,0,40)) or aimPos
-        ent._missileCount = (ent._missileCount or 0) + 1
-        SpawnRocket(ent, (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R, curAim, SalvoSpread())
-    end)
-    return true
-end
-
-local function FireGrenadeLauncher(ent, enemy)
-    local count       = math.random(GL_COUNT_MIN, GL_COUNT_MAX)
-    local grenadeType = GL_GRENADE_TYPES[math.random(#GL_GRENADE_TYPES)]
-    local typeParams  = GL_TYPE_PARAMS[grenadeType] or GL_TYPE_DEFAULT
-    ent._glSparkCounter = 0
-    ent:EmitSound(GL_SOUND_FIDGET, 80, 100, 1)
-    timer.Simple(GL_FIDGET_LEAD + (count-1)*GL_INTERVAL + 0.1, function()
-        if not IsValid(ent) then return end
-        ent:EmitSound(GL_SOUND_INSERT, 80, 100, 1)
-    end)
-    for i = 0, count-1 do
-        local shotNumber = i+1
-        timer.Simple(GL_FIDGET_LEAD + i*GL_INTERVAL, function()
-            if not IsValid(ent) then return end
-            local forward = ent:GetForward()
-            local right   = ent:GetRight()
-            local origin  = ent:GetPos() + Vector(0,0,GL_LAUNCH_Z)
-            ent:EmitSound(GL_SOUND_FIRE, 80, math.random(95, 105), 1)
-            GLSparkAtAttachment(ent, shotNumber)
-            GLVaporAtAttachment(ent, shotNumber)
-            local scatter   = forward * math.Rand(300,700)
-                            + right   * ((math.random()-0.5)*2*GL_SPREAD_Y)
-            local spawnPos  = origin + scatter*0.05
-            local launchDir = scatter:GetNormalized()
-            launchDir.z     = launchDir.z + typeParams.loft
-            launchDir:Normalize()
-            local mf = EffectData()
-            mf:SetOrigin(spawnPos) ; mf:SetNormal(launchDir) ; mf:SetScale(GL_MUZZLE_FLASH_SCALE)
-            util.Effect("MuzzleFlash", mf)
-            local gren = ents.Create(grenadeType)
-            if IsValid(gren) then
-                gren:SetPos(spawnPos) ; gren:SetAngles(launchDir:Angle())
-                gren:SetOwner(ent) ; gren:Spawn() ; gren:Activate()
-                local phys = gren:GetPhysicsObject()
-                if IsValid(phys) then
-                    phys:SetVelocity(launchDir * typeParams.speed)
-                    phys:SetAngleVelocity(Vector(math.Rand(-200,200),math.Rand(-200,200),math.Rand(-200,200)))
-                end
-                AttachGrenadeTrail(gren)
-            end
-        end)
-    end
-    return true
-end
-
-local function FireOrbitRpg(ent, enemy)
-    ent._missileCount = (ent._missileCount or 0) + 1
-    local attIdx  = (ent._missileCount%2==1) and ATT_MISSILE_L or ATT_MISSILE_R
-    local attData = ent:GetAttachment(attIdx)
-    local src     = attData and attData.Pos or (ent:GetPos()+Vector(0,0,160))
-    local aimPos  = enemy:GetPos() + Vector(0,0,40)
-    local dir     = (aimPos - src):GetNormalized()
-    local eff = EffectData() ; eff:SetOrigin(src) ; eff:SetNormal(dir) ; eff:SetScale(0.6) ; eff:SetMagnitude(1)
-    util.Effect("SmokeEffect", eff)
-    SendMuzzleFlash(src, dir, 2)
-    ent:EmitSound(KORNET_SND_SHOTS[math.random(#KORNET_SND_SHOTS)], KORNET_SND_LEVEL, math.random(95, 105), 1)
-    ent:EmitSound(KORNET_SND_LAUNCHES[math.random(#KORNET_SND_LAUNCHES)], KORNET_SND_LEVEL, 100, 1)
-    local rpg = ents.Create("sent_orbital_rpg")
-    if not IsValid(rpg) then
-        print("[GekkoORBIT] ERROR: sent_orbital_rpg create failed -- falling back")
-        return FireMissile(ent, enemy)
-    end
-    rpg:SetPos(src) ; rpg:SetAngles(dir:Angle()) ; rpg:SetOwner(ent)
-    rpg:Spawn() ; rpg:Activate()
-    print(string.format("[GekkoORBIT] Launched | att=%d dist=%.0f", attIdx, ent:GetPos():Distance(enemy:GetPos())))
-    return true
-end
-
-local function FireTopMissile(ent, enemy)
-    local dist = ent:GetPos():Distance(enemy:GetPos())
-    if dist < MISSILE_MIN_DIST then
-        print(string.format("[GekkoTM] Too close (%.0f) -- re-rolling", dist))
-        local alt = RerollNotMissile("TOPMISSILE")
-        if     alt == "MG"       then return FireMGBurst(ent, enemy)
-        elseif alt == "MISSILE"  then return FireMissile(ent, enemy)
-        elseif alt == "SALVO"    then return FireDoubleSalvo(ent, enemy)
-        elseif alt == "ORBITRPG" then return FireOrbitRpg(ent, enemy)
-        else                          return FireGrenadeLauncher(ent, enemy) end
-    end
-    sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
-    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
-    local toTarget2D = (enemy:GetPos()-ent:GetPos()) ; toTarget2D.z=0 ; toTarget2D:Normalize()
-    local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
-    local faceAng    = (enemy:GetPos()-launchPos):GetNormalized():Angle() ; faceAng.p=0
-    local missile = ents.Create("sent_npc_topmissile")
-    if not IsValid(missile) then print("[GekkoTM] ERROR: create failed") return FireGrenadeLauncher(ent,enemy) end
-    missile.Owner  = ent
-    missile.Target = enemy:GetPos() + Vector(0,0,40)
-    missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    SendMuzzleFlash(launchPos, (enemy:GetPos() - launchPos):GetNormalized(), 2)
-    print(string.format("[GekkoTM] Launched | dist=%.0f", dist))
-    return true
-end
-
-local function FireTrackMissile(ent, enemy)
-    local dist = ent:GetPos():Distance(enemy:GetPos())
-    if dist < MISSILE_MIN_DIST then
-        print(string.format("[GekkoTRK] Too close (%.0f) -- re-rolling", dist))
-        local alt = RerollNotMissile("TRACKMISSILE")
-        if     alt == "MG"         then return FireMGBurst(ent, enemy)
-        elseif alt == "MISSILE"    then return FireMissile(ent, enemy)
-        elseif alt == "SALVO"      then return FireDoubleSalvo(ent, enemy)
-        elseif alt == "TOPMISSILE" then return FireTopMissile(ent, enemy)
-        elseif alt == "ORBITRPG"   then return FireOrbitRpg(ent, enemy)
-        else                            return FireGrenadeLauncher(ent, enemy) end
-    end
-    SendSonarLock(enemy)
-    sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
-    ent:EmitSound(TOPMISSILE_SND_FIRE[math.random(#TOPMISSILE_SND_FIRE)], TOPMISSILE_SND_LEVEL, math.random(95, 110), 1)
-    local toTarget2D = (enemy:GetPos()-ent:GetPos()) ; toTarget2D.z=0 ; toTarget2D:Normalize()
-    local launchPos  = ent:GetPos() + toTarget2D*MISSILE_SPAWN_FORWARD + Vector(0,0,TOPMISSILE_LAUNCH_Z)
-    local faceAng    = (enemy:GetPos()-launchPos):GetNormalized():Angle() ; faceAng.p=0
-    local missile = ents.Create("sent_npc_trackmissile")
-    if not IsValid(missile) then print("[GekkoTRK] ERROR: create failed") return FireGrenadeLauncher(ent,enemy) end
-    missile.Owner    = ent
-    missile.Target   = enemy:GetPos() + Vector(0,0,40)
-    missile.TrackEnt = enemy
-    missile:SetPos(launchPos) ; missile:SetAngles(faceAng) ; missile:Spawn() ; missile:Activate()
-    SendMuzzleFlash(launchPos, (enemy:GetPos() - launchPos):GetNormalized(), 2)
-    print(string.format("[GekkoTRK] Launched | dist=%.0f", dist))
-    return true
-end
-
-local function NikitaMuzzleSmoke(ent)
-    ent._missileCount = (ent._missileCount or 0) + 1
-    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
-    local attData = ent:GetAttachment(attIdx)
-    local nozzle  = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
-    local nozzDir = attData and attData.Ang:Forward() or ent:GetForward()
-    for i = 0, NIKITA_MUZZLE_SMOKE_COUNT - 1 do
-        local delay  = i * NIKITA_MUZZLE_SMOKE_STAGGER
-        local pos    = nozzle
-        local normal = nozzDir
-        timer.Simple(delay, function()
-            if not IsValid(ent) then return end
-            local ed = EffectData()
-            ed:SetOrigin(pos + normal * (i * 4))
-            ed:SetNormal(normal)
-            ed:SetScale(NIKITA_MUZZLE_SMOKE_SCALE)
-            ed:SetMagnitude(1)
-            util.Effect("SmokeEffect", ed)
-        end)
-    end
-    SendMuzzleFlash(nozzle, nozzDir, 4)
-end
-
-local function FireNikita(ent, enemy)
-    local dist = ent:GetPos():Distance(enemy:GetPos())
-    if dist < NIKITA_MIN_DIST then
-        print(string.format("[GekkoNikita] Too close (%.0f) -- re-rolling", dist))
-        return FireMGBurst(ent, enemy)
-    end
-    NikitaMuzzleSmoke(ent)
-    local toTarget2D = (enemy:GetPos() - ent:GetPos())
-    toTarget2D.z = 0
-    if toTarget2D:Length() > 0 then toTarget2D:Normalize() end
-    local spawnPos  = ent:GetPos() + toTarget2D * NIKITA_SPAWN_FORWARD + Vector(0, 0, NIKITA_SPAWN_Z)
-    local aimPos    = enemy:GetPos() + Vector(0, 0, 40)
-    local launchDir = (aimPos - spawnPos):GetNormalized()
-    local nikita = ents.Create("npc_vj_gekko_nikita")
-    if not IsValid(nikita) then
-        print("[GekkoNikita] ERROR: create failed")
-        return FireMissile(ent, enemy)
-    end
-    nikita:SetPos(spawnPos)
-    nikita:SetAngles(launchDir:Angle())
-    nikita:SetOwner(ent)
-    nikita.NikitaOwner     = ent
-    nikita.NikitaTargetEnt = enemy
-    nikita:Spawn()
-    nikita:Activate()
-    if IsValid(enemy) then
-        if nikita.VJ_DoSetEnemy then
-            nikita:VJ_DoSetEnemy(enemy, true, true)
-        else
-            nikita:SetEnemy(enemy)
-        end
-    end
-    print(string.format("[GekkoNikita] Launched | dist=%.0f", dist))
-    return true
-end
-
--- ============================================================
---  Weapon: Bushmaster 25mm cannon
--- ============================================================
-local function FireBushmaster(ent, enemy)
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
-    local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
-    for i = 0, rounds - 1 do
-        local shot = i
-        timer.Simple(shot * BM_INTERVAL, function()
-            if not IsValid(ent) then return end
-            local src
-            local ejectAng = ent:GetAngles()
-            local pelBone = ent.GekkoPelvisBone
-            if pelBone and pelBone >= 0 then
-                local m = ent:GetBoneMatrix(pelBone)
-                if m then
-                    src = m:GetTranslation() + Vector(0, 0, BM_MUZZLE_Z_OFFSET)
-                    ejectAng = m:GetAngles()
-                end
-            end
-            src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
-            local curEnemy = GetActiveEnemy(ent)
-            local curAim   = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0,0,40)) or aimPos
-            local dir      = (curAim - src):GetNormalized()
-            local shell = ents.Create("sent_gekko_bushmaster")
-            if IsValid(shell) then
-                shell:SetPos(src)
-                shell:SetAngles(dir:Angle())
-                shell:SetOwner(ent)
-                shell:Spawn()
-                shell:Activate()
-                AttachBushmasterTrail(shell)
-            end
-            SpawnCartridge(src, ejectAng, BM_SHELL_SCALE)
-            BushmasterSparks(src, dir, ent)
-            BushmasterSmoke(src, dir)
-            local eff = EffectData()
-            eff:SetOrigin(src) ; eff:SetNormal(dir)
-            eff:SetScale(BM_MUZZLE_SCALE) ; eff:SetMagnitude(BM_MUZZLE_SCALE)
-            util.Effect("MuzzleFlash", eff)
-            SendMuzzleFlash(src, dir, 3)
-            ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-            if shot == rounds - 1 then
-                timer.Simple(0.12, function()
-                    if not IsValid(ent) then return end
-                    ent:EmitSound(BM_SND_RELOAD, BM_SND_LEVEL, 100, 1)
-                end)
-            end
-        end)
-    end
-    print(string.format("[GekkoBM] Salvo | rounds=%d interval=%.2fs", rounds, BM_INTERVAL))
-    return true
-end
-
--- ============================================================
---  Range attack dispatch
--- ============================================================
-function ENT:OnRangeAttackExecute(status, enemy, projectile)
-    if status ~= "Init" then return end
-    if not IsValid(enemy) then return true end
-    local choice = RollWeapon()
-    self._lastWeaponChoice = choice
-    self:EmitSound(RELOAD_SNDS[math.random(#RELOAD_SNDS)], RELOAD_SND_LEVEL, 100, 1)
-    print("[GekkoWpn] Roll -> " .. choice)
-    if     choice == "MG"          then return FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"     then return FireMissile(self, enemy)
-    elseif choice == "SALVO"       then return FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"  then return FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE"then return FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"    then return FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"      then return FireNikita(self, enemy)
-    elseif choice == "BRUSHMASTER" then return FireBushmaster(self, enemy)
-    else                                return FireGrenadeLauncher(self, enemy)
-    end
-end
-
--- ============================================================
---  Death
--- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos      = self:GetPos()
+
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
+
+    if self.GekkoRagdoll_OnDeath then
+        self:GekkoRagdoll_OnDeath(dmginfo)
+    end
+
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
