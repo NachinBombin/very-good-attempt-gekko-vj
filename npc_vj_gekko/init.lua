@@ -50,7 +50,7 @@ local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 100
-local MG_FLASH_EVERY     = 2   -- projected flash every N rounds (throttle)
+local MG_FLASH_EVERY     = 2
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -66,7 +66,6 @@ local TOPMISSILE_SND_FIRE = {
 }
 local TOPMISSILE_SND_LEVEL =  100
 
--- Bushmaster 25mm cannon
 local BM_ROUNDS_MIN   = 7
 local BM_ROUNDS_MAX   = 9
 local BM_INTERVAL     = 0.38
@@ -195,9 +194,6 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
--- ============================================================
---  Helpers
--- ============================================================
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -220,10 +216,6 @@ local function RollWeapon()
     return "BRUSHMASTER"
 end
 
--- ============================================================
---  Muzzle flash net helper
---  presetID: 1=MG  2=MISSILE  3=BUSHMASTER  4=NIKITA
--- ============================================================
 local function SendMuzzleFlash(pos, normal, presetID)
     net.Start("GekkoMuzzleFlash")
         net.WriteVector(pos)
@@ -232,10 +224,6 @@ local function SendMuzzleFlash(pos, normal, presetID)
     net.Broadcast()
 end
 
--- ============================================================
---  Bullet impact net helper
---  presetID: 1=MG tracer  2=BUSHMASTER
--- ============================================================
 local function SendBulletImpact(pos, normal, presetID)
     net.Start("GekkoBulletImpact")
         net.WriteVector(pos)
@@ -482,9 +470,6 @@ local function SafeInitVJTables(ent)
     if not ent.VJ_MeleeAttackDamageType then ent.VJ_MeleeAttackDamageType = DMG_CRUSH end
 end
 
--- ============================================================
---  Entity setup
--- ============================================================
 ENT.Model = {"models/gekko/gekko_npc.mdl"}
 ENT.StartHealth = 3000
 ENT.HullType = HULL_LARGE
@@ -595,9 +580,6 @@ function ENT:CustomOnAlert(argent)
     self:EmitSound(self.SoundTbl_Alert[1], 90, 100)
 end
 
--- ============================================================
---  AI / locomotion animation
--- ============================================================
 function ENT:GekkoUpdateAnimation()
     if self:GetGekkoJumpState() ~= self.JUMP_NONE then return end
     local vel2D = self:GetVelocity() ; vel2D.z = 0
@@ -629,9 +611,6 @@ function ENT:CustomOnThink_AIEnabled()
     self:GekkoUpdateAnimation()
 end
 
--- ============================================================
---  Controller / attacks
--- ============================================================
 function ENT:CustomOnThink()
     local enemy = GetActiveEnemy(self)
     self._manualControlActive = IsValid(self.VJ_TheController)
@@ -690,7 +669,6 @@ function ENT:_GekkoFireMG()
     else dir = self:GetForward() end
 
     local spread = Vector(MG_SPREAD_MIN, MG_SPREAD_MIN, 0)
-    local tr = util.TraceLine({start = src, endpos = src + dir*10000, filter = self})
 
     self:FireBullets({
         Attacker = self,
@@ -835,9 +813,6 @@ function ENT:OnInput(key, activator, caller, data)
     end
 end
 
--- ============================================================
---  Damage / think
--- ============================================================
 function ENT:OnTakeDamage(dmginfo)
     local rawDmg = dmginfo:GetDamage()
     local hitPos = dmginfo:GetDamagePosition()
@@ -880,9 +855,6 @@ function ENT:OnThink()
     end
 end
 
--- ============================================================
---  Death
--- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     self:GekkoDeath_Trigger(dmginfo)
