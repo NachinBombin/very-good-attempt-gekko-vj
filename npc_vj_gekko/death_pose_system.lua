@@ -2,26 +2,34 @@
 --  npc_vj_gekko / death_pose_system.lua
 --
 --  VJ Base spawns a prop_physics corpse automatically.
---  We just wait for it to appear and set its mass very high
---  so it sinks/settles naturally without getting knocked around.
---  No freezing, no motion disable -- full physics, just heavy.
+--  We fix its collision (VJ leaves it as DEBRIS/SOLID_NONE)
+--  and set a high mass so it settles without being knocked away.
 -- ============================================================
 
-local CORPSE_MASS   = 50000   -- kg, heavy enough to resist explosions
+local CORPSE_MASS   = 50000
 local FIND_RETRIES  = 40
 local FIND_INTERVAL = 0.05
 
-local function MakeHeavy(corpse)
+local function SetupCorpse(corpse)
     if not IsValid(corpse) then return end
+
+    -- Restore full world + player collision
+    corpse:SetCollisionGroup(COLLISION_GROUP_NONE)
+    corpse:SetSolid(SOLID_VPHYSICS)
+    corpse:PhysicsInit(SOLID_VPHYSICS)
+    corpse:SetMoveType(MOVETYPE_VPHYSICS)
+
     for i = 0, corpse:GetPhysicsObjectCount() - 1 do
         local phys = corpse:GetPhysicsObjectNum(i)
         if IsValid(phys) then
             phys:SetMass(CORPSE_MASS)
             phys:EnableGravity(true)
+            phys:EnableCollisions(true)
             phys:Wake()
         end
     end
-    print("[GekkoDeath] corpse mass set to " .. CORPSE_MASS)
+
+    print("[GekkoDeath] corpse collision restored, mass=" .. CORPSE_MASS)
 end
 
 -- ============================================================
@@ -43,22 +51,22 @@ function ENT:GekkoDeath_Trigger()
     local selfRef  = self
     local attempts = 0
 
-    local function TryMakeHeavy()
+    local function TrySetup()
         attempts = attempts + 1
         local corpse = selfRef.Corpse
         if IsValid(corpse) then
-            MakeHeavy(corpse)
+            SetupCorpse(corpse)
             return
         end
         if attempts < FIND_RETRIES then
-            timer.Simple(FIND_INTERVAL, TryMakeHeavy)
+            timer.Simple(FIND_INTERVAL, TrySetup)
         else
             print("[GekkoDeath] WARNING: gave up finding Corpse after "
                 .. attempts .. " attempts")
         end
     end
 
-    timer.Simple(0, TryMakeHeavy)
+    timer.Simple(0, TrySetup)
 end
 
 function ENT:GekkoDeath_Think()
