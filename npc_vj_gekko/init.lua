@@ -22,6 +22,7 @@ include("targeted_jump_system.lua")
 include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
+include("death_pose_system.lua")
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -528,6 +529,7 @@ function ENT:Init()
     self:GekkoTargetJump_Init()
     self:GeckoCrouch_Init()
     self:GekkoLegs_Init()
+    self:GekkoDeath_Init()
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -604,6 +606,7 @@ end
 
 function ENT:OnThink()
     if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
+    if self._deathPoseActive then self:GekkoDeath_Think() end
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
         self:SetNWBool("GekkoMGFiring", false)
@@ -994,6 +997,7 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
+    self:GekkoDeath_Trigger()
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
