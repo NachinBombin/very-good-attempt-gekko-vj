@@ -16,6 +16,7 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
 AddCSLuaFile("bullet_impact_system.lua")
+AddCSLuaFile("flinch_system.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -23,6 +24,7 @@ include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
+include("flinch_system.lua")
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -393,7 +395,7 @@ function ENT:AnimApply()
     if CurTime() < (self._gekkoSuppressActivity or 0) then return true end
     local js = self:GetGekkoJumpState()
     if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then return true end
-    return false
+    return true
 end
 
 function ENT:SetAnimationTranslations()
@@ -572,6 +574,7 @@ function ENT:Activate()
 end
 
 function ENT:OnTakeDamage(dmginfo)
+    GekkoFlinch_OnDamage(self, dmginfo)
     dmginfo:SetDamageForce(Vector(0,0,0))
     local hitPos = dmginfo:GetDamagePosition()
     if hitPos == vector_origin then
@@ -605,6 +608,7 @@ function ENT:OnTakeDamage(dmginfo)
 end
 
 function ENT:OnThink()
+    GekkoFlinch_Think(self)
     if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
     if self._deathPoseActive then self:GekkoDeath_Think() end
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
