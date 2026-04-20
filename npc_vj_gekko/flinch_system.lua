@@ -89,14 +89,6 @@ local function Smoothstep(t)
     return t * t * (3 - 2 * t)
 end
 
-local function LerpAngleSafe(t, a, b)
-    return Angle(
-        Lerp(t, a.p, b.p),
-        Lerp(t, math.AngleDifference(b.y, a.y) + a.y, a.y + math.AngleDifference(b.y, a.y)),
-        Lerp(t, b.r, a.r) + (a.r - b.r) * (1 - t)
-    )
-end
-
 local function LerpAngleLinear(t, a, b)
     return Angle(
         Lerp(t, a.p, b.p),
@@ -114,35 +106,37 @@ local function EnsureFlinchCache(ent)
 
     ent._gekkoFlinchCache = {
         pelvis = ent:LookupBone("b_pelvis") or -1,
-        spine = ent:LookupBone("b_spine3") or -1,
-        neck = ent:LookupBone("b_spine4") or -1,
-        lhip = ent:LookupBone("b_l_hippiston1") or -1,
-        rhip = ent:LookupBone("b_r_hippiston1") or -1,
+        spine  = ent:LookupBone("b_spine3") or -1,
+        neck   = ent:LookupBone("b_spine4") or -1,
+        lhip   = ent:LookupBone("b_l_hippiston1") or -1,
+        rhip   = ent:LookupBone("b_r_hippiston1") or -1,
     }
 
     return ent._gekkoFlinchCache
 end
 
 local function GetHitgroupFromDamage(ent, dmginfo)
-    local hg = ent.LastHitGroup and ent:LastHitGroup() or HITGROUP_GENERIC
-    if hg and hg ~= HITGROUP_GENERIC then return hg end
+    -- LastHitGroup is a plain number field on NPCs, NOT a method.
+    local hg = ent.LastHitGroup
+    if type(hg) == "number" and hg ~= HITGROUP_GENERIC then return hg end
 
+    -- Fallback: estimate hitgroup from damage position.
     local hitPos = dmginfo:GetDamagePosition()
     if not hitPos or hitPos == vector_origin then return HITGROUP_GENERIC end
 
-    local mins, maxs = ent:GetCollisionBounds()
+    local _, maxs = ent:GetCollisionBounds()
     local localPos = ent:WorldToLocal(hitPos)
     local z = localPos.z
     local centerX = localPos.x
 
-    local headLine = maxs.z * 0.72
-    local chestLine = maxs.z * 0.45
+    local headLine    = maxs.z * 0.72
+    local chestLine   = maxs.z * 0.45
     local stomachLine = maxs.z * 0.24
 
     if z >= headLine then return HITGROUP_HEAD end
     if z >= chestLine then
-        if centerX > 22 then return HITGROUP_RIGHTARM end
-        if centerX < -22 then return HITGROUP_LEFTARM end
+        if centerX > 22  then return HITGROUP_RIGHTARM end
+        if centerX < -22 then return HITGROUP_LEFTARM  end
         return HITGROUP_CHEST
     end
     if z >= stomachLine then return HITGROUP_STOMACH end
@@ -153,10 +147,10 @@ end
 local function BuildPose(profile)
     return {
         pelvis = profile.pelvis or angle_zero,
-        spine = profile.spine or angle_zero,
-        neck = profile.neck or angle_zero,
-        lhip = profile.lhip or angle_zero,
-        rhip = profile.rhip or angle_zero,
+        spine  = profile.spine  or angle_zero,
+        neck   = profile.neck   or angle_zero,
+        lhip   = profile.lhip   or angle_zero,
+        rhip   = profile.rhip   or angle_zero,
     }
 end
 
@@ -178,15 +172,15 @@ function GekkoFlinch_OnDamage(ent, dmginfo)
     if now < (ent._gekkoNextFlinchTime or 0) then return end
 
     local hitgroup = GetHitgroupFromDamage(ent, dmginfo)
-    local profile = HITGROUP_TO_PROFILE[hitgroup] or HITGROUP_TO_PROFILE.default
+    local profile  = HITGROUP_TO_PROFILE[hitgroup] or HITGROUP_TO_PROFILE.default
 
     ent._gekkoFlinch = {
         startTime = now,
-        duration = profile.duration or FLINCH_DEFAULT_DURATION,
-        fadeIn = profile.fadeIn or FLINCH_FADEIN,
-        fadeOut = profile.fadeOut or FLINCH_FADEOUT,
-        pose = BuildPose(profile),
-        hitgroup = hitgroup,
+        duration  = profile.duration or FLINCH_DEFAULT_DURATION,
+        fadeIn    = profile.fadeIn   or FLINCH_FADEIN,
+        fadeOut   = profile.fadeOut  or FLINCH_FADEOUT,
+        pose      = BuildPose(profile),
+        hitgroup  = hitgroup,
     }
 
     ent._gekkoNextFlinchTime = now + math.max(profile.duration or FLINCH_DEFAULT_DURATION, FLINCH_COOLDOWN)
@@ -202,16 +196,16 @@ function GekkoFlinch_Think(ent)
         return
     end
 
-    local cache = EnsureFlinchCache(ent)
-    local elapsed = CurTime() - fl.startTime
+    local cache    = EnsureFlinchCache(ent)
+    local elapsed  = CurTime() - fl.startTime
     local duration = math.max(fl.duration or FLINCH_DEFAULT_DURATION, 0.001)
 
     if elapsed >= duration then
         ApplyBoneAngle(ent, cache.pelvis, angle_zero)
-        ApplyBoneAngle(ent, cache.spine, angle_zero)
-        ApplyBoneAngle(ent, cache.neck, angle_zero)
-        ApplyBoneAngle(ent, cache.lhip, angle_zero)
-        ApplyBoneAngle(ent, cache.rhip, angle_zero)
+        ApplyBoneAngle(ent, cache.spine,  angle_zero)
+        ApplyBoneAngle(ent, cache.neck,   angle_zero)
+        ApplyBoneAngle(ent, cache.lhip,   angle_zero)
+        ApplyBoneAngle(ent, cache.rhip,   angle_zero)
         ent._gekkoFlinch = nil
         ent.Flinching = false
         return
@@ -228,9 +222,9 @@ function GekkoFlinch_Think(ent)
 
     local pose = fl.pose
     ApplyBoneAngle(ent, cache.pelvis, LerpAngleLinear(weight, angle_zero, pose.pelvis))
-    ApplyBoneAngle(ent, cache.spine, LerpAngleLinear(weight, angle_zero, pose.spine))
-    ApplyBoneAngle(ent, cache.neck, LerpAngleLinear(weight, angle_zero, pose.neck))
-    ApplyBoneAngle(ent, cache.lhip, LerpAngleLinear(weight, angle_zero, pose.lhip))
-    ApplyBoneAngle(ent, cache.rhip, LerpAngleLinear(weight, angle_zero, pose.rhip))
+    ApplyBoneAngle(ent, cache.spine,  LerpAngleLinear(weight, angle_zero, pose.spine))
+    ApplyBoneAngle(ent, cache.neck,   LerpAngleLinear(weight, angle_zero, pose.neck))
+    ApplyBoneAngle(ent, cache.lhip,   LerpAngleLinear(weight, angle_zero, pose.lhip))
+    ApplyBoneAngle(ent, cache.rhip,   LerpAngleLinear(weight, angle_zero, pose.rhip))
     ent.Flinching = true
 end
