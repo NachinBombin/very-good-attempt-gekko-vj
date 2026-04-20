@@ -1,129 +1,36 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
---  Gekko VJ NPC — 2-step death fall pose (bone-driven)
+--  Applies a 2-step collapse pose to the ragdoll CORPSE entity.
 --
---  Step 1 (~0.35s after death): L thigh swings out, pelvis dips
---  Step 2 (~1.1s after death):  R thigh swings out, pelvis fully
---                                drops to ground — gravity-paced
---
---  Designed to mirror the leg_disable_system pattern:
---  ManipulateBoneAngles / ManipulateBonePosition held every Think.
+--  Root cause fix: VJ Base removes the living NPC immediately
+--  after OnDeath("Finish") and replaces it with a prop_ragdoll
+--  stored in self.Corpse. ENT:OnThink stops running at that point,
+--  so all bone manipulation must target self.Corpse instead,
+--  driven by a repeating timer.
 -- ============================================================
 
--- ----------------------------------------------------------------
---  Keyframe definitions (your exact values)
--- ----------------------------------------------------------------
+local TIMER_INTERVAL = 0.016   -- ~60 Hz bone updates on the corpse
+local FIND_RETRIES   = 20
+local FIND_INTERVAL  = 0.05
+
+-- Keyframes: pelvis Z offset + thigh angles
 local KF = {
-    -- Step 1: L leg swings to side, body starts to tip
     [1] = {
         pelvisZ  = -12,
         lThigh   = Angle(-15, 67, -12),
-        rThigh   = nil,               -- not yet moved
-        duration = 0.38,              -- seconds to lerp into this kf
+        rThigh   = nil,
+        duration = 0.38,
     },
-    -- Step 2: both legs splayed (death-frog), pelvis hits deck
     [2] = {
         pelvisZ  = -114,
-        lThigh   = Angle(-15, 67, -12),  -- held from step 1
+        lThigh   = Angle(-15, 67, -12),
         rThigh   = Angle(0, -77, -22),
-        duration = 0.82,              -- slower — he is FALLING, not crouching
+        duration = 0.82,
     },
 }
 
 -- ----------------------------------------------------------------
---  Init  (called from ENT:Init)
--- ----------------------------------------------------------------
-function ENT:GekkoDeath_Init()
-    self._deathPoseActive = false
-    self._deathPoseStep   = 0        -- 0 = not started, 1, 2
-    self._deathPoseLerpT  = 0        -- lerp start time for current step
-    self._deathPoseAlpha  = 0        -- 0→1 within current step
-
-    -- Previous keyframe (lerp FROM)
-    self._deathPosePrev = {
-        pelvisZ = 0,
-        lThigh  = Angle(0,0,0),
-        rThigh  = Angle(0,0,0),
-    }
-    -- Current target keyframe (lerp TO)
-    self._deathPoseCur = {
-        pelvisZ = 0,
-        lThigh  = Angle(0,0,0),
-        rThigh  = Angle(0,0,0),
-    }
-end
-
--- ----------------------------------------------------------------
---  Trigger  (called from ENT:OnDeath at status=="Finish")
--- ----------------------------------------------------------------
-function ENT:GekkoDeath_Trigger()
-    if self._deathPoseActive then return end
-    self._deathPoseActive = true
-    self._deathPoseStep   = 0
-
-    -- Cache bone indices (may already exist from GekkoLegs_Init,
-    -- but be safe in case death fires before that path ran)
-    if not self.GekkoPelvisBone or self.GekkoPelvisBone < 0 then
-        self.GekkoPelvisBone = self:LookupBone("b_pelvis") or -1
-    end
-    if not self.GekkoLThighBone or self.GekkoLThighBone < 0 then
-        self.GekkoLThighBone = self:LookupBone("b_l_thigh") or -1
-    end
-    if not self.GekkoRThighBone or self.GekkoRThighBone < 0 then
-        self.GekkoRThighBone = self:LookupBone("b_r_thigh") or -1
-    end
-
-    -- Kick off step 1 after a tiny settling delay
-    timer.Simple(0.30, function()
-        if not IsValid(self) then return end
-        self:GekkoDeath_BeginStep(1)
-    end)
-end
-
--- ----------------------------------------------------------------
---  Begin a keyframe step
--- ----------------------------------------------------------------
-function ENT:GekkoDeath_BeginStep(stepIdx)
-    local kf = KF[stepIdx]
-    if not kf then return end  -- no more steps, hold final pose
-
-    -- Store what we were at as the FROM pose
-    self._deathPosePrev = {
-        pelvisZ = self._deathPoseCur.pelvisZ,
-        lThigh  = Angle(
-            self._deathPoseCur.lThigh.p,
-            self._deathPoseCur.lThigh.y,
-            self._deathPoseCur.lThigh.r
-        ),
-        rThigh  = Angle(
-            self._deathPoseCur.rThigh.p,
-            self._deathPoseCur.rThigh.y,
-            self._deathPoseCur.rThigh.r
-        ),
-    }
-
-    -- Set the TO pose from the keyframe
-    self._deathPoseCur = {
-        pelvisZ = kf.pelvisZ,
-        lThigh  = kf.lThigh  and Angle(kf.lThigh.p,  kf.lThigh.y,  kf.lThigh.r)  or Angle(self._deathPosePrev.lThigh.p, self._deathPosePrev.lThigh.y, self._deathPosePrev.lThigh.r),
-        rThigh  = kf.rThigh  and Angle(kf.rThigh.p,  kf.rThigh.y,  kf.rThigh.r)  or Angle(self._deathPosePrev.rThigh.p, self._deathPosePrev.rThigh.y, self._deathPosePrev.rThigh.r),
-    }
-
-    self._deathPoseStep  = stepIdx
-    self._deathPoseLerpT = CurTime()
-    self._deathPoseAlpha = 0
-
-    -- Schedule next step at end of this one's duration
-    if KF[stepIdx + 1] then
-        timer.Simple(kf.duration, function()
-            if not IsValid(self) then return end
-            self:GekkoDeath_BeginStep(stepIdx + 1)
-        end)
-    end
-end
-
--- ----------------------------------------------------------------
---  Helper: lerp between two Angle values component-wise
+--  Helpers
 -- ----------------------------------------------------------------
 local function LerpAngle(t, a, b)
     return Angle(
@@ -133,44 +40,148 @@ local function LerpAngle(t, a, b)
     )
 end
 
+local function Smoothstep(t)
+    t = math.Clamp(t, 0, 1)
+    return t * t * (3 - 2 * t)
+end
+
 -- ----------------------------------------------------------------
---  Per-tick update  (called from ENT:OnThink)
+--  Init  (called from ENT:Init on the living NPC)
+-- ----------------------------------------------------------------
+function ENT:GekkoDeath_Init()
+    self._deathPoseActive = false
+end
+
+-- ----------------------------------------------------------------
+--  Internal: start a keyframe step on the corpse
+-- ----------------------------------------------------------------
+local function BeginStep(state, stepIdx)
+    local kf = KF[stepIdx]
+    if not kf then return end
+
+    state.prev = {
+        pelvisZ = state.cur.pelvisZ,
+        lThigh  = Angle(state.cur.lThigh.p, state.cur.lThigh.y, state.cur.lThigh.r),
+        rThigh  = Angle(state.cur.rThigh.p, state.cur.rThigh.y, state.cur.rThigh.r),
+    }
+    state.cur = {
+        pelvisZ = kf.pelvisZ,
+        lThigh  = kf.lThigh and Angle(kf.lThigh.p, kf.lThigh.y, kf.lThigh.r)
+                            or  Angle(state.prev.lThigh.p, state.prev.lThigh.y, state.prev.lThigh.r),
+        rThigh  = kf.rThigh and Angle(kf.rThigh.p, kf.rThigh.y, kf.rThigh.r)
+                            or  Angle(state.prev.rThigh.p, state.prev.rThigh.y, state.prev.rThigh.r),
+    }
+    state.stepIdx  = stepIdx
+    state.stepT    = CurTime()
+    state.duration = kf.duration
+
+    if KF[stepIdx + 1] then
+        timer.Simple(kf.duration, function()
+            if not IsValid(state.corpse) then return end
+            BeginStep(state, stepIdx + 1)
+        end)
+    end
+end
+
+-- ----------------------------------------------------------------
+--  Internal: per-tick apply loop running on the corpse
+-- ----------------------------------------------------------------
+local function StartCorpseLoop(corpse)
+    local timerName = "GekkoDeath_" .. corpse:EntIndex()
+
+    -- Cache bone indices on the corpse
+    local pelvisBone = corpse:LookupBone("b_pelvis")
+    local lThighBone = corpse:LookupBone("b_l_thigh")
+    local rThighBone = corpse:LookupBone("b_r_thigh")
+
+    pelvisBone = (pelvisBone and pelvisBone >= 0) and pelvisBone or nil
+    lThighBone = (lThighBone and lThighBone >= 0) and lThighBone or nil
+    rThighBone = (rThighBone and rThighBone >= 0) and rThighBone or nil
+
+    -- Shared state table for this corpse
+    local state = {
+        corpse   = corpse,
+        stepIdx  = 0,
+        stepT    = CurTime(),
+        duration = 0,
+        prev = { pelvisZ = 0, lThigh = Angle(0,0,0), rThigh = Angle(0,0,0) },
+        cur  = { pelvisZ = 0, lThigh = Angle(0,0,0), rThigh = Angle(0,0,0) },
+    }
+
+    -- Start step 1 after a short settling delay
+    timer.Simple(0.30, function()
+        if not IsValid(corpse) then return end
+        BeginStep(state, 1)
+    end)
+
+    -- Repeating apply loop
+    timer.Create(timerName, TIMER_INTERVAL, 0, function()
+        if not IsValid(corpse) then
+            timer.Remove(timerName)
+            return
+        end
+
+        if state.stepIdx == 0 then return end  -- waiting for first step
+
+        local alpha = Smoothstep(math.Clamp(
+            (CurTime() - state.stepT) / math.max(state.duration, 0.001),
+            0, 1
+        ))
+
+        if pelvisBone then
+            corpse:ManipulateBonePosition(
+                pelvisBone,
+                Vector(0, 0, Lerp(alpha, state.prev.pelvisZ, state.cur.pelvisZ))
+            )
+        end
+        if lThighBone then
+            corpse:ManipulateBoneAngles(
+                lThighBone,
+                LerpAngle(alpha, state.prev.lThigh, state.cur.lThigh)
+            )
+        end
+        if rThighBone then
+            corpse:ManipulateBoneAngles(
+                rThighBone,
+                LerpAngle(alpha, state.prev.rThigh, state.cur.rThigh)
+            )
+        end
+    end)
+
+    print("[GekkoDeath] Corpse loop started: " .. tostring(corpse))
+end
+
+-- ----------------------------------------------------------------
+--  Trigger  (called from ENT:OnDeath at status=="Finish")
+--  Retries finding self.Corpse since VJ Base creates it async.
+-- ----------------------------------------------------------------
+function ENT:GekkoDeath_Trigger()
+    if self._deathPoseActive then return end
+    self._deathPoseActive = true
+
+    local selfRef  = self
+    local attempts = 0
+
+    local function TryFind()
+        attempts = attempts + 1
+        local corpse = selfRef.Corpse
+        if IsValid(corpse) then
+            StartCorpseLoop(corpse)
+            return
+        end
+        if attempts < FIND_RETRIES then
+            timer.Simple(FIND_INTERVAL, TryFind)
+        else
+            print("[GekkoDeath] WARNING: gave up finding Corpse after "
+                .. attempts .. " attempts")
+        end
+    end
+
+    timer.Simple(0, TryFind)
+end
+
+-- ----------------------------------------------------------------
+--  GekkoDeath_Think is kept as a no-op so OnThink calls don't error
 -- ----------------------------------------------------------------
 function ENT:GekkoDeath_Think()
-    if not self._deathPoseActive then return end
-    if self._deathPoseStep == 0  then return end  -- waiting for first timer
-
-    local kf = KF[self._deathPoseStep]
-    local now = CurTime()
-
-    -- Advance alpha within this step
-    if kf then
-        local elapsed = now - self._deathPoseLerpT
-        -- Use a smooth-step curve so the motion feels like gravity, not linear slide
-        local t = math.Clamp(elapsed / kf.duration, 0, 1)
-        -- Smoothstep: t = t*t*(3-2*t)
-        self._deathPoseAlpha = t * t * (3 - 2 * t)
-    else
-        self._deathPoseAlpha = 1  -- final step complete, hold
-    end
-
-    local alpha   = self._deathPoseAlpha
-    local prev    = self._deathPosePrev
-    local cur     = self._deathPoseCur
-
-    -- Pelvis Z drop
-    local pelvisZ = Lerp(alpha, prev.pelvisZ, cur.pelvisZ)
-    if self.GekkoPelvisBone and self.GekkoPelvisBone >= 0 then
-        self:ManipulateBonePosition(self.GekkoPelvisBone, Vector(0, 0, pelvisZ))
-    end
-
-    -- L thigh
-    if self.GekkoLThighBone and self.GekkoLThighBone >= 0 then
-        self:ManipulateBoneAngles(self.GekkoLThighBone, LerpAngle(alpha, prev.lThigh, cur.lThigh))
-    end
-
-    -- R thigh
-    if self.GekkoRThighBone and self.GekkoRThighBone >= 0 then
-        self:ManipulateBoneAngles(self.GekkoRThighBone, LerpAngle(alpha, prev.rThigh, cur.rThigh))
-    end
 end
