@@ -1,70 +1,37 @@
--- ============================================================
---  npc_vj_gekko / death_pose_system.lua  -- DIAGNOSTIC BUILD
---  Check console output after death to see:
---    - How many physics objects the ragdoll has
---    - Each ragdoll bone name and whether it matched an NPC bone
---    - Whether each physics object was asleep when we reached it
---    - Whether SetPos actually moved it (compare before/after)
--- ============================================================
+-- DIAGNOSTIC BUILD - read console after killing Gekko
 
 local FIND_RETRIES  = 60
 local FIND_INTERVAL = 0.02
 
 local function DiagnosePoseRagdoll(ragdoll, npc)
-    print("[GekkoDeath DIAG] === RAGDOLL BONE DIAGNOSTIC ===")
-    print("[GekkoDeath DIAG] ragdoll:GetPhysicsObjectCount() = " .. tostring(ragdoll:GetPhysicsObjectCount()))
-    print("[GekkoDeath DIAG] ragdoll:GetBoneCount()          = " .. tostring(ragdoll:GetBoneCount()))
-    print("[GekkoDeath DIAG] npc:GetBoneCount()              = " .. tostring(npc:GetBoneCount()))
-    print("[GekkoDeath DIAG] ---")
+    print("[GekkoDeath DIAG] physCount=" .. tostring(ragdoll:GetPhysicsObjectCount())
+        .. " ragdollBones=" .. tostring(ragdoll:GetBoneCount())
+        .. " npcBones=" .. tostring(npc:GetBoneCount()))
 
-    -- Build NPC bone name -> world matrix
-    local npcBones = {}
+    -- Dump all NPC bone names
+    print("[GekkoDeath DIAG] --- NPC BONES ---")
     for i = 0, npc:GetBoneCount() - 1 do
-        local name = npc:GetBoneName(i)
-        local m    = npc:GetBoneMatrix(i)
-        if name and m then
-            npcBones[name] = { pos = m:GetTranslation(), ang = m:GetAngles() }
-        end
+        print(string.format("  npc[%d] = '%s'", i, tostring(npc:GetBoneName(i))))
     end
 
-    -- Dump every ragdoll physics bone
-    local count = ragdoll:GetPhysicsObjectCount()
-    for i = 0, count - 1 do
-        local phys     = ragdoll:GetPhysicsObjectNum(i)
-        local boneName = ragdoll:GetBoneName(i)
-        local matched  = boneName and npcBones[boneName] and "YES" or "NO MATCH"
-        local asleep   = IsValid(phys) and (not phys:IsMoving()) and "asleep" or "AWAKE/invalid"
-        local posBefore = IsValid(phys) and tostring(phys:GetPos()) or "N/A"
-
-        if IsValid(phys) and npcBones[boneName] then
-            phys:SetPos(npcBones[boneName].pos)
-            phys:SetAngles(npcBones[boneName].ang)
-        end
-
-        local posAfter = IsValid(phys) and tostring(phys:GetPos()) or "N/A"
-
-        print(string.format(
-            "[GekkoDeath DIAG] physObj[%d] bone='%s' match=%s state=%s posBefore=%s posAfter=%s",
-            i, tostring(boneName), matched, asleep, posBefore, posAfter
-        ))
+    -- Dump all ragdoll bone names
+    print("[GekkoDeath DIAG] --- RAGDOLL BONES ---")
+    for i = 0, ragdoll:GetBoneCount() - 1 do
+        print(string.format("  rag[%d] = '%s'", i, tostring(ragdoll:GetBoneName(i))))
     end
 
-    -- Wake after all positions set
-    for i = 0, count - 1 do
+    -- Dump ragdoll physics objects and their positions
+    print("[GekkoDeath DIAG] --- RAGDOLL PHYSICS OBJECTS ---")
+    for i = 0, ragdoll:GetPhysicsObjectCount() - 1 do
         local phys = ragdoll:GetPhysicsObjectNum(i)
-        if IsValid(phys) then
-            phys:EnableGravity(true)
-            phys:EnableCollisions(true)
-            phys:Wake()
-        end
+        local valid = IsValid(phys) and "valid" or "INVALID"
+        local pos   = IsValid(phys) and tostring(phys:GetPos()) or "N/A"
+        print(string.format("  phys[%d] bone='%s' valid=%s pos=%s",
+            i, tostring(ragdoll:GetBoneName(i)), valid, pos))
     end
 
-    print("[GekkoDeath DIAG] === END DIAGNOSTIC ===")
+    print("[GekkoDeath DIAG] === END ===")
 end
-
--- ============================================================
---  Public API
--- ============================================================
 
 function ENT:GekkoDeath_Init()
     self._deathPoseActive = false
