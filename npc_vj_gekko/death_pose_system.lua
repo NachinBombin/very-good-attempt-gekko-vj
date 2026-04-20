@@ -1,73 +1,65 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
 --
---  THE ACTUAL PROBLEM:
---  The ragdoll is a separate entity from the NPC. Its physics
---  objects spawn at positions defined by the .phy file, which
---  do NOT match the rendered mesh for this model -- legs end up
---  30+ units away from the pelvis.
+--  PROBLEM:
+--  The ragdoll physics objects spawn displaced from the mesh
+--  (legs 30+ units from pelvis). Calling phys:SetPos on already-
+--  awake physics objects causes violent spinning.
 --
---  THE FIX:
---  1. Before death: snapshot every bone's world pos+ang from
---     the live NPC (this is the correct rendered pose).
---  2. After the ragdoll spawns: for each ragdoll physics object,
---     find the matching bone by name, then call
---     phys:SetPos / phys:SetAngles to snap it to the snapshot.
---     This physically relocates the bone collider to where the
---     mesh already visually is.
+--  CORRECT GMod API:
+--  prop_ragdoll exposes a network message "BuildFromEntity" which
+--  tells the ragdoll to re-read bone positions from a source
+--  entity. We replicate the same thing in Lua by:
+--    1. Freezing all physics objects immediately after spawn
+--    2. Using entity:SetBoneAngles / SetBonePosition to push the
+--       NPC's current bone pose onto the ragdoll entity
+--    3. Calling RebuildBonePositions so the physics colliders
+--       re-anchor to the (now correct) bone pose
+--    4. Thawing physics so it falls normally
 -- ============================================================
 
 local FIND_RETRIES  = 60
-local FIND_INTERVAL = 0.05
+local FIND_INTERVAL = 0.02
 
--- ============================================================
---  Snapshot NPC bone world transforms
--- ============================================================
-local function SnapshotBones(npc)
-    local snapshot = {}
-    local count = npc:GetBoneCount()
-    if not count then return snapshot end
-    for i = 0, count - 1 do
-        local m = npc:GetBoneMatrix(i)
-        if m then
-            snapshot[i] = {
-                pos = m:GetTranslation(),
-                ang = m:GetAngles(),
-                name = npc:GetBoneName(i),
-            }
-        end
+-- Freeze every physics object on the ragdoll
+local function FreezeRagdoll(ragdoll)
+    for i = 0, ragdoll:GetPhysicsObjectCount() - 1 do
+        local phys = ragdoll:GetPhysicsObjectNum(i)
+        if IsValid(phys) then phys:EnableMotion(false) end
     end
-    return snapshot
 end
 
--- ============================================================
---  Snap ragdoll physics objects to snapshot
--- ============================================================
-local function SnapRagdollToSnapshot(ragdoll, snapshot)
-    -- Build a name->data lookup from the snapshot
-    local byName = {}
-    for _, data in pairs(snapshot) do
-        if data.name then
-            byName[data.name] = data
-        end
-    end
-
-    local count = ragdoll:GetPhysicsObjectCount()
-    for i = 0, count - 1 do
+-- Thaw every physics object and wake them
+local function ThawRagdoll(ragdoll)
+    for i = 0, ragdoll:GetPhysicsObjectCount() - 1 do
         local phys = ragdoll:GetPhysicsObjectNum(i)
         if IsValid(phys) then
-            -- GetPhysicsObjectNum maps 1:1 with bone index on prop_ragdoll
-            local boneName = ragdoll:GetBoneName(i)
-            local data = boneName and byName[boneName]
-            if data then
-                phys:SetPos(data.pos)
-                phys:SetAngles(data.ang)
-            end
-            -- Always make sure it collides and falls
+            phys:EnableMotion(true)
             phys:EnableGravity(true)
             phys:EnableCollisions(true)
             phys:Wake()
         end
+    end
+end
+
+-- Copy NPC bone pose onto the ragdoll then rebuild physics positions
+local function PoseRagdollFromNPC(ragdoll, npc)
+    -- Use the ragdoll's own bone count; both share the same skeleton
+    local count = ragdoll:GetBoneCount()
+    if not count then return end
+
+    for i = 0, count - 1 do
+        local m = npc:GetBoneMatrix(i)
+        if m then
+            ragdoll:SetBoneAngles(i, m:GetAngles())
+            ragdoll:SetBonePosition(i, m:GetTranslation())
+        end
+    end
+
+    -- RebuildBonePositions re-anchors physics colliders to the
+    -- bone data we just wrote, while motion is still disabled
+    if ragdoll.RebuildBonePositions then
+        ragdoll:RebuildBonePositions()
     end
 end
 
@@ -76,9 +68,8 @@ end
 -- ============================================================
 
 function ENT:GekkoDeath_Init()
-    self._deathPoseActive  = false
-    self._deathBoneSnapshot = nil
-    self.HasDeathCorpse    = true
+    self._deathPoseActive = false
+    self.HasDeathCorpse   = true
     self.DeathCorpseCollisionType = COLLISION_GROUP_NONE
 end
 
@@ -86,29 +77,32 @@ function ENT:GekkoDeath_Trigger()
     if self._deathPoseActive then return end
     self._deathPoseActive = true
 
-    -- Snapshot bones NOW while the NPC is still alive and posed
-    self._deathBoneSnapshot = SnapshotBones(self)
-
-    local selfRef  = self
-    local snapshot = self._deathBoneSnapshot
+    local npcRef   = self
     local attempts = 0
 
-    local function TrySnap()
+    local function TryPose()
         attempts = attempts + 1
-        local corpse = selfRef.Corpse
+        local corpse = npcRef.Corpse
         if IsValid(corpse) then
-            SnapRagdollToSnapshot(corpse, snapshot)
-            print("[GekkoDeath] Ragdoll snapped to NPC bone snapshot (attempt " .. attempts .. ")")
+            -- 1. Freeze so pose writes don't create impulses
+            FreezeRagdoll(corpse)
+            -- 2. Write NPC bone pose onto ragdoll
+            PoseRagdollFromNPC(corpse, npcRef)
+            -- 3. Thaw one frame later so engine settles first
+            timer.Simple(0.05, function()
+                if IsValid(corpse) then ThawRagdoll(corpse) end
+            end)
+            print("[GekkoDeath] Ragdoll posed from NPC bones (attempt " .. attempts .. ")")
             return
         end
         if attempts < FIND_RETRIES then
-            timer.Simple(FIND_INTERVAL, TrySnap)
+            timer.Simple(FIND_INTERVAL, TryPose)
         else
-            print("[GekkoDeath] WARNING: corpse never found, giving up")
+            print("[GekkoDeath] WARNING: corpse never found")
         end
     end
 
-    timer.Simple(0, TrySnap)
+    timer.Simple(0, TryPose)
 end
 
 function ENT:GekkoDeath_Think()
