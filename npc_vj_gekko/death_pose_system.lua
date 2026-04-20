@@ -1,85 +1,80 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
 --
---  Suppresses VJ Base's default ragdoll entirely.
---  On death, spawns a prop_physics with the Gekko model,
---  copies over the NPC's current position/angle, and
---  freezes ALL physics objects immediately so it never moves.
+--  Instead of suppressing VJ Base's corpse (which causes the
+--  NPC to instantly disappear), we let VJ spawn it normally
+--  but configure it to use prop_physics instead of prop_ragdoll.
+--
+--  VJ Base reads these vars at death time:
+--    self.HasDeathCorpse          = true   (keep VJ's flow intact)
+--    self.DeathCorpseEntityClass  = "prop_physics" (not a ragdoll)
+--    self.DeathCorpseSetBoneAngles = false  (no bone angle copy)
+--    self.DeathCorpseApplyForce   = false   (don't throw it)
+--
+--  Then in GekkoDeath_Trigger we find self.Corpse (which VJ
+--  already spawned as a prop_physics) and freeze it.
 -- ============================================================
 
--- How long to wait after death before spawning the frozen prop.
--- A tiny delay ensures the NPC's death animation pose has
--- had one frame to settle before we read its position/angle.
-local SPAWN_DELAY = 0.05
+local FIND_RETRIES  = 40
+local FIND_INTERVAL = 0.05
 
--- ────────────────────────────────────────────────────────────
---  Internal helper: create and freeze the static death prop
--- ────────────────────────────────────────────────────────────
-local function SpawnFrozenCorpse(npc)
-    if not IsValid(npc) then return end
-
-    local mdl = npc:GetModel()
-    local pos = npc:GetPos()
-    local ang = npc:GetAngles()
-
-    local prop = ents.Create("prop_physics")
-    if not IsValid(prop) then
-        print("[GekkoDeath] ERROR: failed to create prop_physics")
-        return
-    end
-
-    prop:SetModel(mdl)
-    prop:SetPos(pos)
-    prop:SetAngles(ang)
-    prop:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
-    prop:Spawn()
-    prop:Activate()
-
-    -- Copy skin/bodygroups so the corpse matches the NPC
-    prop:SetSkin(npc:GetSkin())
-    for bg = 0, npc:GetNumBodyGroups() - 1 do
-        prop:SetBodygroup(bg, npc:GetBodygroup(bg))
-    end
-
-    -- Freeze every physics bone immediately
-    for i = 0, prop:GetPhysicsObjectCount() - 1 do
-        local phys = prop:GetPhysicsObjectNum(i)
+-- Freeze every physics bone on a prop_physics (works reliably,
+-- unlike prop_ragdoll where EnableMotion(false) is ignored).
+local function FreezeCorpse(corpse)
+    if not IsValid(corpse) then return end
+    for i = 0, corpse:GetPhysicsObjectCount() - 1 do
+        local phys = corpse:GetPhysicsObjectNum(i)
         if IsValid(phys) then
             phys:SetVelocity(Vector(0, 0, 0))
             phys:SetAngleVelocity(Vector(0, 0, 0))
-            phys:EnableMotion(false)  -- works on prop_physics (not ragdolls)
+            phys:EnableMotion(false)  -- works on prop_physics
             phys:Sleep()
         end
     end
-
-    -- Keep a reference on the NPC table for external systems
-    npc.GekkoFrozenCorpse = prop
-
-    print("[GekkoDeath] Frozen prop_physics corpse spawned.")
+    print("[GekkoDeath] prop_physics corpse frozen.")
 end
 
--- ────────────────────────────────────────────────────────────
---  Public API called from init.lua
--- ────────────────────────────────────────────────────────────
+-- ============================================================
+--  Public API
+-- ============================================================
 
 function ENT:GekkoDeath_Init()
     self._deathPoseActive = false
 
-    -- Tell VJ Base NOT to spawn its own ragdoll/corpse.
-    -- This is the documented way to suppress corpse creation.
-    self.HasDeathCorpse = false
+    -- Tell VJ Base to spawn a prop_physics corpse instead of
+    -- a prop_ragdoll. VJ will still handle timing, blood pools,
+    -- etc. -- we just freeze it immediately after it appears.
+    self.HasDeathCorpse         = true          -- keep VJ's corpse flow
+    self.DeathCorpseEntityClass = "prop_physics" -- spawn as static prop
+    self.DeathCorpseSetBoneAngles = false        -- no ragdoll bone copy
+    self.DeathCorpseApplyForce  = false          -- don't throw the prop
 end
 
 function ENT:GekkoDeath_Trigger()
     if self._deathPoseActive then return end
     self._deathPoseActive = true
 
-    local selfRef = self
-    timer.Simple(SPAWN_DELAY, function()
-        SpawnFrozenCorpse(selfRef)
-    end)
+    local selfRef  = self
+    local attempts = 0
+
+    local function TryFreeze()
+        attempts = attempts + 1
+        local corpse = selfRef.Corpse
+        if IsValid(corpse) then
+            FreezeCorpse(corpse)
+            return
+        end
+        if attempts < FIND_RETRIES then
+            timer.Simple(FIND_INTERVAL, TryFreeze)
+        else
+            print("[GekkoDeath] WARNING: gave up finding Corpse after "
+                .. attempts .. " attempts")
+        end
+    end
+
+    timer.Simple(0, TryFreeze)
 end
 
 function ENT:GekkoDeath_Think()
-    -- Nothing needed; prop_physics holds itself frozen.
+    -- Nothing needed; prop_physics holds itself once frozen.
 end
