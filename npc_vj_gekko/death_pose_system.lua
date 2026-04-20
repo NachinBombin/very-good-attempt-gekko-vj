@@ -1,21 +1,21 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
 --
---  VJ Base's DeathCorpseEntityClass is only honoured by the
---  human/creature bases -- the NPC base ignores it and always
---  spawns a prop_ragdoll with no collision.
+--  prop_physics only gets one convex hull -- legs/head have no
+--  collision. prop_ragdoll uses the full compound .phy mesh.
 --
---  Solution: suppress VJ's corpse entirely (HasDeathCorpse=false)
---  and spawn our own prop_physics manually inside OnDeath so we
---  control every physics parameter from the start.
+--  We spawn a prop_ragdoll manually (so we control everything),
+--  copy every bone matrix from the live NPC so limbs stay
+--  connected, then set very high mass on every bone so the
+--  ragdoll sinks naturally and resists being thrown.
 -- ============================================================
 
-local CORPSE_MASS = 50000
+local BONE_MASS = 50000  -- per bone; ragdoll sinks fast, won't fly from explosions
 
 local function SpawnCorpse(npc)
     if not IsValid(npc) then return end
 
-    local corpse = ents.Create("prop_physics")
+    local corpse = ents.Create("prop_ragdoll")
     if not IsValid(corpse) then return end
 
     corpse:SetModel(npc:GetModel())
@@ -25,23 +25,31 @@ local function SpawnCorpse(npc)
     corpse:Spawn()
     corpse:Activate()
 
-    -- Full world collision from birth
-    corpse:SetCollisionGroup(COLLISION_GROUP_NONE)
-    corpse:SetSolid(SOLID_VPHYSICS)
-    corpse:SetMoveType(MOVETYPE_VPHYSICS)
-
-    local phys = corpse:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:SetMass(CORPSE_MASS)
-        phys:EnableGravity(true)
-        phys:EnableCollisions(true)
-        phys:Wake()
+    -- Copy every bone matrix from the live NPC so limbs are
+    -- in the right pose and not flying apart
+    for i = 0, npc:GetBoneCount() - 1 do
+        local matrix = npc:GetBoneMatrix(i)
+        if matrix then
+            corpse:SetBoneMatrix(i, matrix)
+        end
     end
 
-    -- Store reference so other systems can find it
-    npc.Corpse = corpse
+    -- Full world collision
+    corpse:SetCollisionGroup(COLLISION_GROUP_NONE)
 
-    print("[GekkoDeath] manual prop_physics corpse spawned, mass=" .. CORPSE_MASS)
+    -- High mass on every ragdoll bone
+    for i = 0, corpse:GetPhysicsObjectCount() - 1 do
+        local phys = corpse:GetPhysicsObjectNum(i)
+        if IsValid(phys) then
+            phys:SetMass(BONE_MASS)
+            phys:EnableGravity(true)
+            phys:EnableCollisions(true)
+            phys:Wake()
+        end
+    end
+
+    npc.Corpse = corpse
+    print("[GekkoDeath] prop_ragdoll spawned, bone_mass=" .. BONE_MASS)
     return corpse
 end
 
@@ -51,8 +59,7 @@ end
 
 function ENT:GekkoDeath_Init()
     self._deathPoseActive = false
-    -- Tell VJ NOT to spawn its own corpse; we handle it
-    self.HasDeathCorpse = false
+    self.HasDeathCorpse   = false  -- we handle it
 end
 
 function ENT:GekkoDeath_Trigger()
