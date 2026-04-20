@@ -72,17 +72,28 @@ local HITGROUP_TO_PROFILE = {
     }
 }
 
-local BANNED_DAMAGE_TYPES = {
-    [DMG_BURN] = true,
-    [DMG_SLOWBURN] = true,
-    [DMG_FALL] = true,
-    [DMG_RADIATION] = true,
-    [DMG_PARALYZE] = true,
-    [DMG_POISON] = true,
-    [DMG_DROWN] = true,
-    [DMG_DROWNRECOVER] = true,
-    [DMG_NERVEGAS] = true,
+-- These flags always suppress flinch, checked with bitmask (bit.band).
+-- DMG_BULLET, DMG_CRUSH (physical bullets), DMG_CLUB, DMG_SLASH etc. are
+-- intentionally NOT here so physical bullet addons work correctly.
+local BANNED_DMG_FLAGS = {
+    DMG_BURN,
+    DMG_SLOWBURN,
+    DMG_FALL,
+    DMG_RADIATION,
+    DMG_PARALYZE,
+    DMG_POISON,
+    DMG_DROWN,
+    DMG_DROWNRECOVER,
+    DMG_NERVEGAS,
 }
+
+local function IsTargetDmgType(dmginfo)
+    local dmgBits = dmginfo:GetDamageType()
+    for _, flag in ipairs(BANNED_DMG_FLAGS) do
+        if bit.band(dmgBits, flag) ~= 0 then return false end
+    end
+    return true
+end
 
 local function Smoothstep(t)
     t = math.Clamp(t, 0, 1)
@@ -97,19 +108,15 @@ local function LerpAngleLinear(t, a, b)
     )
 end
 
-local function IsTargetDmgType(dmginfo)
-    return not BANNED_DAMAGE_TYPES[dmginfo:GetDamageType()]
-end
-
 local function EnsureFlinchCache(ent)
     if ent._gekkoFlinchCache then return ent._gekkoFlinchCache end
 
     ent._gekkoFlinchCache = {
-        pelvis = ent:LookupBone("b_pelvis") or -1,
-        spine  = ent:LookupBone("b_spine3") or -1,
-        neck   = ent:LookupBone("b_spine4") or -1,
-        lhip   = ent:LookupBone("b_l_hippiston1") or -1,
-        rhip   = ent:LookupBone("b_r_hippiston1") or -1,
+        pelvis = ent:LookupBone("b_pelvis")        or -1,
+        spine  = ent:LookupBone("b_spine3")        or -1,
+        neck   = ent:LookupBone("b_spine4")        or -1,
+        lhip   = ent:LookupBone("b_l_hippiston1")  or -1,
+        rhip   = ent:LookupBone("b_r_hippiston1")  or -1,
     }
 
     return ent._gekkoFlinchCache
@@ -126,8 +133,8 @@ local function GetHitgroupFromDamage(ent, dmginfo)
 
     local _, maxs = ent:GetCollisionBounds()
     local localPos = ent:WorldToLocal(hitPos)
-    local z = localPos.z
-    local centerX = localPos.x
+    local z        = localPos.z
+    local centerX  = localPos.x
 
     local headLine    = maxs.z * 0.72
     local chestLine   = maxs.z * 0.45
