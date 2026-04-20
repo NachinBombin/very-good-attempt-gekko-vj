@@ -1,14 +1,12 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
---  Freezes the Gekko ragdoll corpse in place the moment
---  VJ Base creates it after death.
---
---  Approach: EnableMotion(false) + Sleep() on every physics
---  bone of self.Corpse, locking it in the death pose.
+--  Lets the ragdoll corpse settle under gravity, then freezes
+--  it in place so it doesn't slide or despawn awkwardly.
 -- ============================================================
 
-local FIND_RETRIES  = 20
-local FIND_INTERVAL = 0.05
+local FIND_RETRIES   = 20
+local FIND_INTERVAL  = 0.05
+local SETTLE_TIME    = 1.8   -- seconds to let the ragdoll fall and land
 
 local function FreezeCorpse(corpse)
     if not IsValid(corpse) then return end
@@ -19,7 +17,7 @@ local function FreezeCorpse(corpse)
             phys:Sleep()
         end
     end
-    print("[GekkoDeath] Corpse frozen: " .. tostring(corpse))
+    print("[GekkoDeath] Corpse frozen after settle.")
 end
 
 function ENT:GekkoDeath_Init()
@@ -37,7 +35,10 @@ function ENT:GekkoDeath_Trigger()
         attempts = attempts + 1
         local corpse = selfRef.Corpse
         if IsValid(corpse) then
-            FreezeCorpse(corpse)
+            -- Let it fall and settle first, then freeze
+            timer.Simple(SETTLE_TIME, function()
+                FreezeCorpse(corpse)
+            end)
             return
         end
         if attempts < FIND_RETRIES then
