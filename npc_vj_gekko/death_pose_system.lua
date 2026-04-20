@@ -1,12 +1,14 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
 --
---  VJ Base's own ragdoll spawning is the only thing that
---  correctly sets bone poses. We must not suppress it.
+--  VJ calls ent:SetCollisionGroup(self.DeathCorpseCollisionType)
+--  on every corpse it spawns (core.lua CreateExtraDeathCorpse).
+--  The default value causes the ragdoll to phase through ground.
 --
---  All we do: wait for self.Corpse to appear (VJ sets it),
---  then crank up the mass on every bone so the ragdoll
---  sinks to the ground and resists explosions.
+--  Fix: set DeathCorpseCollisionType = COLLISION_GROUP_NONE
+--  before death so VJ's own corpse spawner uses full collision.
+--  Then in GekkoDeath_Trigger we also crank up mass on every
+--  bone so the ragdoll sinks and isn't thrown by explosions.
 -- ============================================================
 
 local BONE_MASS     = 50000
@@ -24,7 +26,7 @@ local function MakeHeavy(corpse)
             phys:Wake()
         end
     end
-    print("[GekkoDeath] VJ ragdoll mass set to " .. BONE_MASS .. " per bone")
+    print("[GekkoDeath] ragdoll mass set, bone_mass=" .. BONE_MASS)
 end
 
 -- ============================================================
@@ -33,8 +35,10 @@ end
 
 function ENT:GekkoDeath_Init()
     self._deathPoseActive = false
-    -- Let VJ spawn its own ragdoll corpse normally
-    self.HasDeathCorpse = true
+    self.HasDeathCorpse   = true  -- let VJ spawn the ragdoll
+    -- This is the variable VJ reads when setting collision on
+    -- the corpse entity (see core.lua:CreateExtraDeathCorpse)
+    self.DeathCorpseCollisionType = COLLISION_GROUP_NONE
 end
 
 function ENT:GekkoDeath_Trigger()
