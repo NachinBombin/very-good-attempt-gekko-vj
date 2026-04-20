@@ -1,29 +1,53 @@
 -- ============================================================
 --  npc_vj_gekko / death_pose_system.lua
 --
---  Correct GMod API for ragdoll posing:
---    ragdoll:SetRagdollPos(boneIndex, worldPos)
---    ragdoll:SetRagdollAngles(boneIndex, worldAng)
---  These write directly into the ragdoll bone table that
---  the physics system reads on the NEXT tick, so calling them
---  in timer.Simple(0) -- one frame after spawn -- repositions
---  the colliders without creating impulses or freezing.
+--  CORRECT APPROACH:
+--  prop_ragdoll physics objects spawn ASLEEP. Calling
+--  phys:SetPos / phys:SetAngles while they are asleep moves
+--  the collider with zero impulse -- no spinning.
+--  We must call them BEFORE phys:Wake().
+--
+--  Mapping: GetPhysicsObjectNum(i) on a prop_ragdoll corresponds
+--  to bone index i. We match NPC bone -> ragdoll bone by name.
 -- ============================================================
 
 local FIND_RETRIES  = 60
 local FIND_INTERVAL = 0.02
 
 local function PoseRagdollFromNPC(ragdoll, npc)
+    -- Build name -> world matrix lookup from the NPC
+    local npcBones = {}
+    for i = 0, npc:GetBoneCount() - 1 do
+        local name = npc:GetBoneName(i)
+        local m    = npc:GetBoneMatrix(i)
+        if name and m then
+            npcBones[name] = { pos = m:GetTranslation(), ang = m:GetAngles() }
+        end
+    end
+
+    -- For each ragdoll physics object (asleep at this point),
+    -- find its matching bone name and teleport it there
     local count = ragdoll:GetPhysicsObjectCount()
     for i = 0, count - 1 do
         local phys = ragdoll:GetPhysicsObjectNum(i)
         if IsValid(phys) then
-            -- GetPhysicsObjectNum(i) maps to bone i on prop_ragdoll
-            local m = npc:GetBoneMatrix(i)
-            if m then
-                ragdoll:SetRagdollPos(i, m:GetTranslation())
-                ragdoll:SetRagdollAngles(i, m:GetAngles())
+            local boneName = ragdoll:GetBoneName(i)
+            local data     = boneName and npcBones[boneName]
+            if data then
+                -- Asleep = no impulse, pure teleport
+                phys:SetPos(data.pos)
+                phys:SetAngles(data.ang)
             end
+        end
+    end
+
+    -- NOW wake everything so it falls naturally
+    for i = 0, count - 1 do
+        local phys = ragdoll:GetPhysicsObjectNum(i)
+        if IsValid(phys) then
+            phys:EnableGravity(true)
+            phys:EnableCollisions(true)
+            phys:Wake()
         end
     end
 end
@@ -50,7 +74,7 @@ function ENT:GekkoDeath_Trigger()
         local corpse = npcRef.Corpse
         if IsValid(corpse) then
             PoseRagdollFromNPC(corpse, npcRef)
-            print("[GekkoDeath] Ragdoll posed via SetRagdollPos/Angles (attempt " .. attempts .. ")")
+            print("[GekkoDeath] posed ragdoll from NPC bones, attempt=" .. attempts)
             return
         end
         if attempts < FIND_RETRIES then
@@ -60,6 +84,7 @@ function ENT:GekkoDeath_Trigger()
         end
     end
 
+    -- timer.Simple(0) = end of this frame, ragdoll just spawned, physics still asleep
     timer.Simple(0, TryPose)
 end
 
