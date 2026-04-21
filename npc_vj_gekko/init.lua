@@ -220,10 +220,6 @@ local function RollWeapon()
     return "BRUSHMASTER"
 end
 
--- ============================================================
---  Muzzle flash net helper
---  presetID: 1=MG  2=MISSILE  3=BUSHMASTER  4=NIKITA
--- ============================================================
 local function SendMuzzleFlash(pos, normal, presetID)
     net.Start("GekkoMuzzleFlash")
         net.WriteVector(pos)
@@ -232,10 +228,6 @@ local function SendMuzzleFlash(pos, normal, presetID)
     net.Broadcast()
 end
 
--- ============================================================
---  Bullet impact net helper
---  presetID: 1=MG tracer  2=BUSHMASTER
--- ============================================================
 local function SendBulletImpact(pos, normal, presetID)
     net.Start("GekkoBulletImpact")
         net.WriteVector(pos)
@@ -386,9 +378,6 @@ local function SendSonarLock(enemy)
     net.Start("GekkoSonarLock") ; net.Send(enemy)
 end
 
--- ============================================================
---  AnimApply / SetAnimationTranslations
--- ============================================================
 function ENT:AnimApply()
     if CurTime() < (self._gekkoSuppressActivity or 0) then return true end
     local js = self:GetGekkoJumpState()
@@ -480,9 +469,6 @@ function ENT:GekkoUpdateAnimation()
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
--- ============================================================
---  Init
--- ============================================================
 local function SafeInitVJTables(ent)
     if not ent.VJ_AddOnDamage        then ent.VJ_AddOnDamage        = {} end
     if not ent.VJ_DamageInfos        then ent.VJ_DamageInfos        = {} end
@@ -572,6 +558,11 @@ function ENT:Activate()
 end
 
 function ENT:OnTakeDamage(dmginfo)
+    if self._deathPoseActive then
+        dmginfo:SetDamage(0)
+        return
+    end
+
     dmginfo:SetDamageForce(Vector(0,0,0))
     local hitPos = dmginfo:GetDamagePosition()
     if hitPos == vector_origin then
@@ -598,6 +589,21 @@ function ENT:OnTakeDamage(dmginfo)
         local variant = math.random(1,5)
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse*8 + (variant-1))
     end
+
+    local predictedHP = self:Health() - rawDmg
+    if predictedHP <= 0 and not self._deathPoseActive then
+        dmginfo:SetDamage(0)
+        dmginfo:SetDamagePosition(self:GetPos())
+        self:SetHealth(1)
+        self:SetGekkoJumpState(self.JUMP_NONE)
+        self:SetMoveType(MOVETYPE_STEP)
+        self:SetNWBool("GekkoMGFiring", false)
+        self:GekkoGib_OnDamage(rawDmg, dmginfo)
+        self:GekkoDeath_Trigger()
+        print("[GekkoDeath] Killing blow intercepted in OnTakeDamage, fake death engaged")
+        return
+    end
+
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
@@ -638,9 +644,6 @@ function ENT:OnThink()
     end
 end
 
--- ============================================================
---  Weapons
--- ============================================================
 local function FireMGBurst(ent, enemy)
     if ent._mgBurstActive then return false end
     local aimPos   = enemy:GetPos() + Vector(0,0,40)
@@ -911,9 +914,6 @@ local function FireNikita(ent, enemy)
     return true
 end
 
--- ============================================================
---  Weapon: Bushmaster 25mm cannon
--- ============================================================
 local function FireBushmaster(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
@@ -965,9 +965,6 @@ local function FireBushmaster(ent, enemy)
     return true
 end
 
--- ============================================================
---  Range attack dispatch
--- ============================================================
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
@@ -987,9 +984,6 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     end
 end
 
--- ============================================================
---  Death
--- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
@@ -997,7 +991,6 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
-    self:GekkoDeath_Trigger()
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
