@@ -14,6 +14,7 @@ ENT.AutomaticFrameAdvance = true
 ENT.IsVJBaseSNPC          = true
 
 ENT.Model = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
+ENT.HasDeathCorpse = false
 
 ENT.VJ_NPC_Class = {"CLASS_COMBINE"}
 ENT.HullType     = HULL_LARGE
