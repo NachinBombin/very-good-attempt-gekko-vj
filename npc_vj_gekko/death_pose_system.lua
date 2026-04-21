@@ -9,12 +9,15 @@ local RAGDOLL_MODEL = "models/mgr/gekko.mdl"
 local FIRE_DURATION = 12
 local FIRE_SCALE    = 1.2
 
+-- Dark brown, ~40% opacity (102/255 = 0.4)
+local RAGDOLL_TINT  = Color(101, 67, 33, 102)
+
 if SERVER then
     util.PrecacheModel(RAGDOLL_MODEL)
 end
 
 function ENT:GekkoDeath_Init()
-    -- no runtime init needed anymore
+    -- no runtime init needed
 end
 
 function ENT:GekkoDeath_SpawnRagdoll()
@@ -34,6 +37,8 @@ function ENT:GekkoDeath_SpawnRagdoll()
     rag:Spawn()
     rag:Activate()
 
+    rag:SetColor(RAGDOLL_TINT)
+
     for i = 0, rag:GetPhysicsObjectCount() - 1 do
         local phys = rag:GetPhysicsObjectNum(i)
         if IsValid(phys) then
@@ -43,6 +48,6 @@ function ENT:GekkoDeath_SpawnRagdoll()
     end
 
     rag:Ignite(FIRE_DURATION, FIRE_SCALE)
-    print("[GekkoDeath] Ragdoll spawned + ignited at " .. tostring(pos))
+    print("[GekkoDeath] Ragdoll spawned + tinted + ignited at " .. tostring(pos))
     return rag
 end
