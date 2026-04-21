@@ -50,7 +50,7 @@ local MG_SND_SHOTS       = { "gekko/shot.wav", "gekko/shot2.wav" }
 local MG_SND_CHAININSERT = "gekko/chaininsert.wav"
 local MG_CHAIN_EVERY     = 6
 local MG_SND_LEVEL       = 100
-local MG_FLASH_EVERY     = 2   -- projected flash every N rounds (throttle)
+local MG_FLASH_EVERY     = 2
 
 local ROCKET_SND_FIRE = {
     "gekko/wp0040_se_gun_fire_01.wav",
@@ -64,9 +64,8 @@ local TOPMISSILE_SND_FIRE = {
     "gekko/wp0302_se_missile_fire_1.wav",
     "gekko/wp0302_se_missile_pass_2.wav",
 }
-local TOPMISSILE_SND_LEVEL =  100
+local TOPMISSILE_SND_LEVEL = 100
 
--- Bushmaster 25mm cannon
 local BM_ROUNDS_MIN   = 7
 local BM_ROUNDS_MAX   = 9
 local BM_INTERVAL     = 0.38
@@ -195,9 +194,6 @@ local BLOOD_DAMAGE_THRESHOLD = 900
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
--- ============================================================
---  Helpers
--- ============================================================
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -325,10 +321,8 @@ end
 
 local function SpawnCartridge(pos, ang, scale)
     if not pos or not ang then return end
-
     local shell = ents.Create("prop_physics")
     if not IsValid(shell) then return end
-
     shell:SetModel(SHELL_MODEL)
     shell:SetPos(
         pos
@@ -505,6 +499,7 @@ function ENT:Init()
     self._glSparkCounter         = 0
     self._gekkoCurrentLocoSeq    = -1
     self._gekkoTargetRate        = 1.0
+    self._gekkoDead              = false
     self:SetNWBool("GekkoMGFiring",     false)
     self:SetNWInt("GekkoJumpDust",      0)
     self:SetNWInt("GekkoLandDust",      0)
@@ -558,7 +553,7 @@ function ENT:Activate()
 end
 
 function ENT:OnTakeDamage(dmginfo)
-    if self._deathPoseActive then
+    if self._gekkoDead then
         dmginfo:SetDamage(0)
         return
     end
@@ -571,12 +566,15 @@ function ENT:OnTakeDamage(dmginfo)
             hitPos = inflictor:GetPos()
         else
             dmginfo:SetDamagePosition(self:GetPos())
-            self.BaseClass.OnTakeDamage(self, dmginfo) ; return
+            self.BaseClass.OnTakeDamage(self, dmginfo)
+            return
         end
     end
+
     local _, maxs = self:GetCollisionBounds()
     local headZ   = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
     if hitPos.z > headZ then dmginfo:ScaleDamage(1/3) end
+
     local rawDmg = dmginfo:GetDamage()
     local doSplat
     if self._gekkoLegsDisabled then
@@ -591,7 +589,9 @@ function ENT:OnTakeDamage(dmginfo)
     end
 
     local predictedHP = self:Health() - rawDmg
-    if predictedHP <= 0 and not self._deathPoseActive then
+    if predictedHP <= 0 and not self._gekkoDead then
+        local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
+        self._gekkoDead = true
         dmginfo:SetDamage(0)
         dmginfo:SetDamagePosition(self:GetPos())
         self:SetHealth(1)
@@ -599,8 +599,9 @@ function ENT:OnTakeDamage(dmginfo)
         self:SetMoveType(MOVETYPE_STEP)
         self:SetNWBool("GekkoMGFiring", false)
         self:GekkoGib_OnDamage(rawDmg, dmginfo)
-        self:GekkoDeath_Trigger()
-        print("[GekkoDeath] Killing blow intercepted in OnTakeDamage, fake death engaged")
+        self:GekkoDeath_Trigger(attacker, dmginfo)
+        self:TakeDamage(999999, attacker, IsValid(dmginfo:GetInflictor()) and dmginfo:GetInflictor() or attacker)
+        print("[GekkoDeath] Killing blow intercepted in OnTakeDamage, ragdoll fire swap engaged")
         return
     end
 
@@ -612,7 +613,6 @@ end
 
 function ENT:OnThink()
     if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
-    if self._deathPoseActive then self:GekkoDeath_Think() end
     if self._mgBurstActive and CurTime() > self._mgBurstEndT then
         self._mgBurstActive = false
         self:SetNWBool("GekkoMGFiring", false)
@@ -633,12 +633,12 @@ function ENT:OnThink()
             dist = -1 ; src = "none"
         end
         print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s",
+            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s dead=%s",
             self:GetNWFloat("GekkoSpeed",0), tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
-            tostring(self._lastWeaponChoice)
+            tostring(self._lastWeaponChoice), tostring(self._gekkoDead)
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
@@ -972,20 +972,21 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     self._lastWeaponChoice = choice
     self:EmitSound(RELOAD_SNDS[math.random(#RELOAD_SNDS)], RELOAD_SND_LEVEL, 100, 1)
     print("[GekkoWpn] Roll -> " .. choice)
-    if     choice == "MG"          then return FireMGBurst(self, enemy)
-    elseif choice == "MISSILE"     then return FireMissile(self, enemy)
-    elseif choice == "SALVO"       then return FireDoubleSalvo(self, enemy)
-    elseif choice == "TOPMISSILE"  then return FireTopMissile(self, enemy)
-    elseif choice == "TRACKMISSILE"then return FireTrackMissile(self, enemy)
-    elseif choice == "ORBITRPG"    then return FireOrbitRpg(self, enemy)
-    elseif choice == "NIKITA"      then return FireNikita(self, enemy)
-    elseif choice == "BRUSHMASTER" then return FireBushmaster(self, enemy)
-    else                                return FireGrenadeLauncher(self, enemy)
+    if     choice == "MG"           then return FireMGBurst(self, enemy)
+    elseif choice == "MISSILE"      then return FireMissile(self, enemy)
+    elseif choice == "SALVO"        then return FireDoubleSalvo(self, enemy)
+    elseif choice == "TOPMISSILE"   then return FireTopMissile(self, enemy)
+    elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
+    elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
+    elseif choice == "NIKITA"       then return FireNikita(self, enemy)
+    elseif choice == "BRUSHMASTER"  then return FireBushmaster(self, enemy)
+    else                                 return FireGrenadeLauncher(self, enemy)
     end
 end
 
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
+    if not self._gekkoDead then return end
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos      = self:GetPos()
     self:SetGekkoJumpState(self.JUMP_NONE)
