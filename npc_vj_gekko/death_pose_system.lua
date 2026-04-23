@@ -9,8 +9,8 @@ local RAGDOLL_MODEL = "models/mgr/gekko.mdl"
 local FIRE_DURATION = 12
 local FIRE_SCALE    = 1.2
 
--- Warm tan, ~55% opacity — matched to the light brown corpse in-game
-local RAGDOLL_TINT  = Color(139, 115, 85, 140)
+-- Dark brown, ~40% opacity (102/255 = 0.4)
+local RAGDOLL_TINT  = Color(101, 67, 33, 102)
 
 if SERVER then
     util.PrecacheModel(RAGDOLL_MODEL)
