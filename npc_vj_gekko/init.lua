@@ -10,6 +10,7 @@
 --  7. Orbit RPG                 (sent_orbital_rpg)
 --  8. Nikita cruise missile     (npc_vj_gekko_nikita)
 --  9. Bushmaster 25mm cannon    (sent_gekko_bushmaster x7-13)
+-- 10. Elastic tether            (elastic_system.lua — 0-900 u)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -23,6 +24,7 @@ include("crouch_system.lua")
 include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
+include("elastic_system.lua")
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -130,6 +132,7 @@ local WWEIGHT_TRACKMISSILE   = 2
 local WWEIGHT_ORBITRPG       = 10
 local WWEIGHT_NIKITA         = 8
 local WWEIGHT_BUSHMASTER     = 35
+local WWEIGHT_ELASTIC        = 12
 
 local SALVO_SPREAD_XY = 220
 local SALVO_SPREAD_Z  = 80
@@ -203,7 +206,7 @@ local function GetActiveEnemy(ent)
 end
 
 local function RollWeapon()
-    local r   = math.random(1, 108)
+    local r   = math.random(1, 120)   -- 108 + WWEIGHT_ELASTIC(12)
     local cum = 0
     cum = cum + WWEIGHT_MG;             if r <= cum then return "MG"           end
     cum = cum + WWEIGHT_MISSILE_SINGLE; if r <= cum then return "MISSILE"      end
@@ -213,6 +216,7 @@ local function RollWeapon()
     cum = cum + WWEIGHT_TRACKMISSILE;   if r <= cum then return "TRACKMISSILE" end
     cum = cum + WWEIGHT_ORBITRPG;       if r <= cum then return "ORBITRPG"     end
     cum = cum + WWEIGHT_NIKITA;         if r <= cum then return "NIKITA"       end
+    cum = cum + WWEIGHT_ELASTIC;        if r <= cum then return "ELASTIC"      end
     return "BRUSHMASTER"
 end
 
@@ -511,6 +515,7 @@ function ENT:Init()
     self:GeckoCrouch_Init()
     self:GekkoLegs_Init()
     self:GekkoDeath_Init()
+    self:GekkoElastic_Init()
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -602,6 +607,7 @@ function ENT:OnThink()
     end
     self:GekkoJump_Think()
     self:GekkoTargetJump_Think()
+    self:GekkoElastic_Think()
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
     if CurTime() > self.Gekko_NextDebugT then
@@ -948,6 +954,40 @@ local function FireBushmaster(ent, enemy)
     return true
 end
 
+local function FireElastic(ent, enemy)
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist > 900 then
+        -- Cooldown guard (separate from the constraint check in GekkoElastic_Fire)
+        print(string.format("[GekkoElastic] Re-rolling (dist=%.0f > 900)", dist))
+        local alt
+        repeat alt = RollWeapon() until alt ~= "ELASTIC"
+        if     alt == "MG"           then return FireMGBurst(ent, enemy)
+        elseif alt == "MISSILE"      then return FireMissile(ent, enemy)
+        elseif alt == "SALVO"        then return FireDoubleSalvo(ent, enemy)
+        elseif alt == "TOPMISSILE"   then return FireTopMissile(ent, enemy)
+        elseif alt == "TRACKMISSILE" then return FireTrackMissile(ent, enemy)
+        elseif alt == "ORBITRPG"     then return FireOrbitRpg(ent, enemy)
+        elseif alt == "NIKITA"       then return FireNikita(ent, enemy)
+        elseif alt == "BRUSHMASTER"  then return FireBushmaster(ent, enemy)
+        else                              return FireGrenadeLauncher(ent, enemy) end
+    end
+    if CurTime() < (ent._elasticNextShotT or 0) then
+        print("[GekkoElastic] On cooldown, re-rolling")
+        local alt
+        repeat alt = RollWeapon() until alt ~= "ELASTIC"
+        if     alt == "MG"           then return FireMGBurst(ent, enemy)
+        elseif alt == "MISSILE"      then return FireMissile(ent, enemy)
+        elseif alt == "SALVO"        then return FireDoubleSalvo(ent, enemy)
+        elseif alt == "TOPMISSILE"   then return FireTopMissile(ent, enemy)
+        elseif alt == "TRACKMISSILE" then return FireTrackMissile(ent, enemy)
+        elseif alt == "ORBITRPG"     then return FireOrbitRpg(ent, enemy)
+        elseif alt == "NIKITA"       then return FireNikita(ent, enemy)
+        elseif alt == "BRUSHMASTER"  then return FireBushmaster(ent, enemy)
+        else                              return FireGrenadeLauncher(ent, enemy) end
+    end
+    return ent:GekkoElastic_Fire(enemy)
+end
+
 function ENT:OnRangeAttackExecute(status, enemy, projectile)
     if status ~= "Init" then return end
     if not IsValid(enemy) then return true end
@@ -962,6 +1002,7 @@ function ENT:OnRangeAttackExecute(status, enemy, projectile)
     elseif choice == "TRACKMISSILE" then return FireTrackMissile(self, enemy)
     elseif choice == "ORBITRPG"     then return FireOrbitRpg(self, enemy)
     elseif choice == "NIKITA"       then return FireNikita(self, enemy)
+    elseif choice == "ELASTIC"      then return FireElastic(self, enemy)
     elseif choice == "BRUSHMASTER"  then return FireBushmaster(self, enemy)
     else                                 return FireGrenadeLauncher(self, enemy)
     end
@@ -981,6 +1022,7 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     self:SetNoDraw(true)
     self:SetNotSolid(true)
 
+    self:GekkoElastic_OnRemove()
     self:GekkoDeath_SpawnRagdoll()
 
     timer.Simple(0.8, function()
