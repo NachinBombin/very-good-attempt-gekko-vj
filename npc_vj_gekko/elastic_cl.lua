@@ -1,28 +1,50 @@
 -- ============================================================
 --  ELASTIC SLING SYSTEM  (client-side)
 --
---  Receives net "GekkoElasticRope" from elastic_system.lua.
---  Draws a taut cable between Gekko torso and the target using
---  the client-only  CreateClientsideRope()  API — the same
---  function the Rope Tool uses on the client.
+--  There is no client-side rope entity API in GMod.
+--  We draw the cable manually each frame using render.DrawBeam
+--  inside PostDrawOpaqueRenderables, which is the correct hook
+--  for world-space 3D lines.
 --
---  The rope is removed after snapDelay seconds.
+--  The beam is removed after snapDelay seconds.
 -- ============================================================
 
 -- ============================================================
---  ROPE POOL
+--  ACTIVE BEAM TABLE
+--  Each entry: { gekko, enemy, startOffset, endOffset,
+--               width, color, removeAt }
 -- ============================================================
-local activeRopes = {}
+local activeBeams = {}
 
-hook.Add("Think", "GekkoElasticRopeCleanup", function()
-    local now = CurTime()
-    local i   = 1
-    while i <= #activeRopes do
-        local e = activeRopes[i]
-        if now >= e.removeAt then
-            if IsValid(e.rope) then e.rope:Remove() end
-            table.remove(activeRopes, i)
+-- ============================================================
+--  DRAW HOOK
+-- ============================================================
+hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
+    if #activeBeams == 0 then return end
+
+    local now    = CurTime()
+    local mat    = Material("cable/cable2")
+    local i      = 1
+
+    while i <= #activeBeams do
+        local b = activeBeams[i]
+
+        if now >= b.removeAt
+        or not IsValid(b.gekko)
+        or not IsValid(b.enemy) then
+            table.remove(activeBeams, i)
         else
+            local startPos = b.gekko:GetPos() + b.startOffset
+            local endPos   = b.enemy:GetPos() + b.endOffset
+
+            render.SetMaterial(mat)
+            render.DrawBeam(
+                startPos,
+                endPos,
+                b.width,   -- width in world units
+                0, 1,      -- texture start / end
+                b.color
+            )
             i = i + 1
         end
     end
@@ -50,38 +72,15 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
-    local ropeLen = math.max(1, math.floor(
-        gekko:GetPos():Distance(enemy:GetPos())))
-
-    -- CreateClientsideRope is the client-only rope API.
-    -- Signature:
-    --   CreateClientsideRope(startPos, startEnt, endEnt,
-    --                        startBone, endBone,
-    --                        startOffset, endOffset,
-    --                        ropeLen, slack, width,
-    --                        rigid, material)
-    local rope = CreateClientsideRope(
-        gekko:GetPos() + Vector(0, 0, 80),  -- startPos (initial)
-        gekko,                              -- startEnt
-        enemy,                              -- endEnt
-        0,                                  -- startBone (root)
-        0,                                  -- endBone   (root)
-        Vector(0, 0, 80),                   -- startOffset (torso height)
-        Vector(0, 0, 40),                   -- endOffset   (centre mass)
-        ropeLen,                            -- rope length
-        0,                                  -- slack = 0 → taut
-        width,                              -- pixel width
-        false,                              -- rigid
-        "cable/cable2"                      -- material
-    )
-
-    if IsValid(rope) then
-        rope:SetColor(Color(r, g, b, 255))
-        table.insert(activeRopes, {
-            rope     = rope,
-            removeAt = CurTime() + snapDelay,
-        })
-    end
+    table.insert(activeBeams, {
+        gekko       = gekko,
+        enemy       = enemy,
+        startOffset = Vector(0, 0, 80),
+        endOffset   = Vector(0, 0, 40),
+        width       = width,
+        color       = Color(r, g, b, 255),
+        removeAt    = CurTime() + snapDelay,
+    })
 
     -- twang sound
     sound.Play(
@@ -89,7 +88,7 @@ net.Receive("GekkoElasticRope", function()
         enemy:GetPos(), 85, math.random(55, 75)
     )
 
-    -- screen shake for nearby local player
+    -- screen shake
     local ply = LocalPlayer()
     if IsValid(ply) then
         local d = ply:GetPos():Distance(enemy:GetPos())
