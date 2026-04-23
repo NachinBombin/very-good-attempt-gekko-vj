@@ -1,32 +1,63 @@
 -- ============================================================
---  npc_vj_gekko / elastic_system.lua
+--  npc_vj_gekko / elastic_system.lua  (v3 — fully standalone)
 --
---  Weapon 10: Elastic Tether
---  Triggered only when the enemy is within 0–900 units.
---  Spawns a GMod elastic constraint from an invisible anchor
---  prop (tracked to the Bushmaster muzzle each tick) to the
---  target entity.  The elastic pulls the target continuously;
---  it snaps after ELASTIC_DURATION seconds or when either end
---  becomes invalid.
+--  Weapon 10 : Elastic Tether
+--  Range     : 0 – 900 units
+--  Mechanic  : On fire, a visible rope is drawn between the
+--              Gekko muzzle and the target.  Every server tick
+--              a pull force is applied directly to the target's
+--              physics object — no constraint.Elastic, no
+--              toolgun, no AdvDupe2 dependency.
+--
+--  Visual rope: sent via net message each tick; drawn on the
+--              client with a beam/rope effect (CurvedBeam).
+--
+--  Integration (already done in init.lua):
+--    include("elastic_system.lua")
+--    GekkoElastic_Init()     — in ENT:Init()
+--    GekkoElastic_Think()    — in ENT:OnThink()
+--    GekkoElastic_Fire(ent)  — called from FireElastic() local
+--    GekkoElastic_OnRemove() — in ENT:OnDeath()
 -- ============================================================
 
--- ── Tuning ───────────────────────────────────────────────────
-local ELASTIC_MAX_DIST     = 900      -- units; only fires within this range
-local ELASTIC_DURATION     = 6.0      -- seconds before auto-snap
-local ELASTIC_COOLDOWN_MIN = 12.0
-local ELASTIC_COOLDOWN_MAX = 22.0
-local ELASTIC_CONSTANT     = 800      -- spring stiffness (18 was imperceptible)
-local ELASTIC_DAMPING      = 0.8
-local ELASTIC_RDAMP        = 0
-local ELASTIC_WIDTH        = 4        -- rope pixel width
-local ELASTIC_MATERIAL     = "cable/cable"   -- thicker / more visible than rope
-local ELASTIC_SNAP_SND     = "physics/metal/metal_box_impact_hard1.wav"
-local ELASTIC_FIRE_SND     = "weapons/crossbow/bolt_fly1.wav"
-local ELASTIC_FIRE_SND_LVL = 90
-local ELASTIC_ATTACH_SND   = "physics/metal/metal_solid_impact_hard1.wav"
+-- ── Net strings ──────────────────────────────────────────────
+if SERVER then
+    util.AddNetworkString("GekkoElasticRope")
+    util.AddNetworkString("GekkoElasticSnap")
+end
 
--- Z offset above the pelvis bone for the muzzle anchor origin
-local ANCHOR_Z_OFFSET = 200
+-- ── Tuning ───────────────────────────────────────────────────
+local ELASTIC_MAX_DIST     = 900
+local ELASTIC_DURATION     = 5.0      -- seconds the tether lasts
+local ELASTIC_COOLDOWN_MIN = 14.0
+local ELASTIC_COOLDOWN_MAX = 24.0
+
+-- Force applied per tick toward the Gekko muzzle.
+-- phys:ApplyForceCenter is in kg*in/s² (GMod units).
+-- 280 000 gives a strong but survivable yank on a ~85 kg player.
+local ELASTIC_FORCE        = 280000
+
+-- How often (seconds) to re-apply force and re-send the rope net msg.
+-- 0 = every single think tick (recommended for smooth pull).
+local ELASTIC_TICK_RATE    = 0        -- every tick
+
+-- Rope visuals (sent to client)
+local ROPE_MATERIAL        = "cable/rope"
+local ROPE_WIDTH           = 3        -- pixels
+local ROPE_COLOR_R         = 40
+local ROPE_COLOR_G         = 220
+local ROPE_COLOR_B         = 80
+local ROPE_COLOR_A         = 230
+local ROPE_SEGMENTS        = 6        -- CurvedBeam subdivisions
+local ROPE_NOISE           = 8        -- wobble amplitude
+
+-- SFX
+local SFX_FIRE             = "weapons/crossbow/bolt_fly1.wav"
+local SFX_FIRE_LVL         = 90
+local SFX_ATTACH           = "physics/metal/metal_solid_impact_hard1.wav"
+local SFX_SNAP             = "physics/metal/metal_box_impact_hard1.wav"
+local SFX_PULL_LOOP        = "ambient/energy/zap7.wav" -- short electric hum
+local SFX_PULL_LOOP_LVL    = 65
 
 -- ── Helpers ──────────────────────────────────────────────────
 
@@ -34,159 +65,133 @@ local function GetMuzzlePos(ent)
     local bone = ent.GekkoPelvisBone
     if bone and bone >= 0 then
         local m = ent:GetBoneMatrix(bone)
-        if m then
-            return m:GetTranslation() + Vector(0, 0, ANCHOR_Z_OFFSET)
-        end
+        if m then return m:GetTranslation() + Vector(0, 0, 200) end
     end
-    return ent:GetPos() + Vector(0, 0, ANCHOR_Z_OFFSET)
+    return ent:GetPos() + Vector(0, 0, 200)
+end
+
+local function BroadcastSnap()
+    net.Start("GekkoElasticSnap")
+    net.Broadcast()
+end
+
+local function BroadcastRope(muzzle, targetPos)
+    net.Start("GekkoElasticRope")
+        net.WriteVector(muzzle)
+        net.WriteVector(targetPos)
+    net.Broadcast()
 end
 
 local function DestroyTether(ent, reason)
-    if IsValid(ent._elasticConstraint) then
-        ent._elasticConstraint:Remove()
+    if ent._elasticActive then
+        BroadcastSnap()
+        ent:EmitSound(SFX_SNAP, 80, math.random(90, 110), 1)
     end
-    if IsValid(ent._elasticAnchorProp) then
-        ent._elasticAnchorProp:Remove()
-    end
-    ent._elasticConstraint  = nil
-    ent._elasticAnchorProp  = nil
+    ent._elasticActive      = false
     ent._elasticTarget      = nil
     ent._elasticActiveUntil = 0
+    ent._elasticLastTick    = 0
     print("[GekkoElastic] Tether removed — " .. (reason or "unknown"))
 end
 
--- ── ENT methods ──────────────────────────────────────────────
+-- ── Init ─────────────────────────────────────────────────────
 
 function ENT:GekkoElastic_Init()
-    self._elasticConstraint  = nil
-    self._elasticAnchorProp  = nil
+    self._elasticActive      = false
     self._elasticTarget      = nil
     self._elasticActiveUntil = 0
+    self._elasticLastTick    = 0
     self._elasticNextShotT   = CurTime() + math.Rand(ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
-    print("[GekkoElastic] Init complete")
+    print("[GekkoElastic] Init")
 end
 
+-- ── Think (called every server tick from ENT:OnThink) ────────
+
 function ENT:GekkoElastic_Think()
-    if not IsValid(self._elasticConstraint) then return end
+    if not self._elasticActive then return end
 
     local now = CurTime()
 
+    -- Expiry
     if now >= self._elasticActiveUntil then
         DestroyTether(self, "expired")
-        self:EmitSound(ELASTIC_SNAP_SND, 80, math.random(90, 110), 1)
         return
     end
 
-    if not IsValid(self._elasticTarget) then
-        DestroyTether(self, "target invalid")
+    -- Target validity
+    local target = self._elasticTarget
+    if not IsValid(target) then
+        DestroyTether(self, "target gone")
         return
     end
 
-    -- Track the anchor prop to the muzzle each tick.
-    -- We keep EnableMotion(true) and just zero the velocity after
-    -- teleporting, which is the only reliable way to move a physobj.
-    if IsValid(self._elasticAnchorProp) then
-        local newMuzzle = GetMuzzlePos(self)
-        self._elasticAnchorProp:SetPos(newMuzzle)
-        local phys = self._elasticAnchorProp:GetPhysicsObject()
-        if IsValid(phys) then
-            phys:SetPos(newMuzzle)
-            phys:SetVelocity(Vector(0, 0, 0))
-            phys:SetAngleVelocity(Vector(0, 0, 0))
-        end
+    -- Tick-rate gate
+    if ELASTIC_TICK_RATE > 0 and (now - self._elasticLastTick) < ELASTIC_TICK_RATE then
+        return
     end
+    self._elasticLastTick = now
+
+    local muzzle    = GetMuzzlePos(self)
+    local targetPos = target:GetPos() + Vector(0, 0, 40)
+
+    -- ── Apply pull force ─────────────────────────────────────
+    local phys = target:GetPhysicsObject()
+    if IsValid(phys) then
+        local pullDir = (muzzle - targetPos):GetNormalized()
+        phys:ApplyForceCenter(pullDir * ELASTIC_FORCE)
+    elseif target:IsPlayer() then
+        -- Players need SetVelocity nudge since their physobj may be invalid
+        local pullDir = (muzzle - target:GetPos()):GetNormalized()
+        local cur     = target:GetVelocity()
+        target:SetVelocity(cur + pullDir * (ELASTIC_FORCE / 10000))
+    end
+
+    -- ── Send rope to all clients ──────────────────────────────
+    BroadcastRope(muzzle, targetPos)
 end
 
+-- ── Fire ─────────────────────────────────────────────────────
+
 function ENT:GekkoElastic_Fire(enemy)
-    if IsValid(self._elasticConstraint) then
-        print("[GekkoElastic] Tether already active, skipping")
+    if self._elasticActive then
+        print("[GekkoElastic] Already active")
         return false
     end
 
     local dist = self:GetPos():Distance(enemy:GetPos())
     if dist > ELASTIC_MAX_DIST then
-        print(string.format("[GekkoElastic] Target too far (%.0f > %d), skipping", dist, ELASTIC_MAX_DIST))
+        print(string.format("[GekkoElastic] Too far (%.0f)", dist))
         return false
     end
 
-    local muzzlePos = GetMuzzlePos(self)
-
-    -- ── Invisible anchor prop ────────────────────────────────
-    local anchor = ents.Create("prop_physics")
-    if not IsValid(anchor) then
-        print("[GekkoElastic] ERROR: anchor prop create failed")
-        return false
-    end
-    anchor:SetModel("models/props_junk/PopCan01a.mdl")
-    anchor:SetPos(muzzlePos)
-    anchor:SetAngles(angle_zero)
-    anchor:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
-    anchor:DrawShadow(false)
-    anchor:Spawn()
-    anchor:Activate()
-    -- Fully transparent — only the rope is visible
-    anchor:SetColor(Color(0, 0, 0, 0))
-    anchor:SetRenderMode(RENDERMODE_TRANSALPHA)
-
-    local anchorPhys = anchor:GetPhysicsObject()
-    if IsValid(anchorPhys) then
-        anchorPhys:SetMass(1)
-        anchorPhys:EnableGravity(false)
-        -- Keep motion ENABLED so SetPos/phys:SetPos actually move it each tick.
-        -- We zero velocity after every teleport in _Think instead of freezing.
-        anchorPhys:EnableMotion(true)
-        anchorPhys:SetVelocity(Vector(0, 0, 0))
-    end
-
-    -- ── Elastic constraint ───────────────────────────────────
-    local tether = constraint.Elastic(
-        anchor, enemy,
-        0, 0,
-        ELASTIC_CONSTANT,
-        ELASTIC_DAMPING,
-        ELASTIC_RDAMP,
-        ELASTIC_MATERIAL,
-        ELASTIC_WIDTH,
-        false
-    )
-
-    if not IsValid(tether) then
-        print("[GekkoElastic] ERROR: constraint.Elastic failed")
-        anchor:Remove()
-        return false
-    end
-
-    -- Color the rope.  The rope entity stores its color as a networked
-    -- Color NW var rather than responding to SetColor on the constraint.
-    -- Walk the constraint's rope entity if it exists.
-    if tether.RopeEntity and IsValid(tether.RopeEntity) then
-        tether.RopeEntity:SetColor(Color(40, 220, 80, 230))
-    end
-    -- Also try directly — harmless if it fails
-    pcall(function() tether:SetColor(Color(40, 220, 80, 230)) end)
-
-    self._elasticConstraint  = tether
-    self._elasticAnchorProp  = anchor
+    self._elasticActive      = true
     self._elasticTarget      = enemy
     self._elasticActiveUntil = CurTime() + ELASTIC_DURATION
+    self._elasticLastTick    = 0
     self._elasticNextShotT   = CurTime() + math.Rand(ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
 
     -- SFX
-    self:EmitSound(ELASTIC_FIRE_SND, ELASTIC_FIRE_SND_LVL, math.random(90, 110), 1)
-    timer.Simple(0.12, function()
+    self:EmitSound(SFX_FIRE, SFX_FIRE_LVL, math.random(90, 110), 1)
+    timer.Simple(0.1, function()
         if IsValid(enemy) then
-            enemy:EmitSound(ELASTIC_ATTACH_SND, 80, math.random(85, 105), 1)
+            enemy:EmitSound(SFX_ATTACH, 80, math.random(85, 105), 1)
+        end
+    end)
+    timer.Simple(0.2, function()
+        if IsValid(self) and self._elasticActive then
+            self:EmitSound(SFX_PULL_LOOP, SFX_PULL_LOOP_LVL, 100, 1)
         end
     end)
 
     print(string.format(
-        "[GekkoElastic] Tether FIRED | dist=%.0f  duration=%.1fs  expires=%.2f  constant=%d",
-        dist, ELASTIC_DURATION, self._elasticActiveUntil, ELASTIC_CONSTANT
+        "[GekkoElastic] FIRED | dist=%.0f  dur=%.1fs  force=%d",
+        dist, ELASTIC_DURATION, ELASTIC_FORCE
     ))
     return true
 end
 
 -- ── Cleanup ──────────────────────────────────────────────────
+
 function ENT:GekkoElastic_OnRemove()
     DestroyTether(self, "gekko removed")
 end
