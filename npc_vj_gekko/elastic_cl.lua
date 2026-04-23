@@ -2,15 +2,15 @@
 --  ELASTIC SLING SYSTEM  (client-side)
 --
 --  Receives net "GekkoElasticRope" from elastic_system.lua.
---  Draws a rope between Gekko torso and the target using
---  Garry's Mod's  ents.Create("keyframe_rope")  — the same
---  entity the Rope Tool and Winch Tool create.
+--  Draws a taut cable between Gekko torso and the target using
+--  the client-only  CreateClientsideRope()  API — the same
+--  function the Rope Tool uses on the client.
 --
 --  The rope is removed after snapDelay seconds.
 -- ============================================================
 
 -- ============================================================
---  ROPE POOL  — track active ropes and auto-remove them
+--  ROPE POOL
 -- ============================================================
 local activeRopes = {}
 
@@ -50,48 +50,46 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
-    -- ---- rope ----
-    -- keyframe_rope is the entity both the Rope Tool and Winch Tool
-    -- spawn.  We create it client-side only (no physics constraint),
-    -- purely as a visual cable between Gekko and the target.
-    local rope = ents.Create("keyframe_rope")
-    if not IsValid(rope) then return end
-
     local ropeLen = math.max(1, math.floor(
         gekko:GetPos():Distance(enemy:GetPos())))
 
-    rope:SetKeyValue("RopeLength",  tostring(ropeLen))
-    rope:SetKeyValue("Slack",       "0")
-    rope:SetKeyValue("Width",       tostring(width))
-    rope:SetKeyValue("TextureScale","1")
-    rope:SetKeyValue("NextKey",     "")
-    rope:SetKeyValue("Type",        "2")   -- TYPE_PLASTIC (taut)
-    rope:SetKeyValue("CollideWith", "0")
-    rope:SetKeyValue("Dangling",    "0")
-    rope:SetKeyValue("material",    "cable/cable2")
+    -- CreateClientsideRope is the client-only rope API.
+    -- Signature:
+    --   CreateClientsideRope(startPos, startEnt, endEnt,
+    --                        startBone, endBone,
+    --                        startOffset, endOffset,
+    --                        ropeLen, slack, width,
+    --                        rigid, material)
+    local rope = CreateClientsideRope(
+        gekko:GetPos() + Vector(0, 0, 80),  -- startPos (initial)
+        gekko,                              -- startEnt
+        enemy,                              -- endEnt
+        0,                                  -- startBone (root)
+        0,                                  -- endBone   (root)
+        Vector(0, 0, 80),                   -- startOffset (torso height)
+        Vector(0, 0, 40),                   -- endOffset   (centre mass)
+        ropeLen,                            -- rope length
+        0,                                  -- slack = 0 → taut
+        width,                              -- pixel width
+        false,                              -- rigid
+        "cable/cable2"                      -- material
+    )
 
-    rope:Spawn()
-    rope:Activate()
+    if IsValid(rope) then
+        rope:SetColor(Color(r, g, b, 255))
+        table.insert(activeRopes, {
+            rope     = rope,
+            removeAt = CurTime() + snapDelay,
+        })
+    end
 
-    -- attach endpoints
-    rope:SetEntity("StartEntity",  gekko)
-    rope:SetEntity("EndEntity",    enemy)
-    rope:SetPos(gekko:GetPos() + Vector(0, 0, 80))
-    rope:SetColor(Color(r, g, b, 255))
-
-    -- fire the rope inputs so the endpoints lock in
-    rope:Fire("SetStartEntity",   tostring(gekko:EntIndex()),  0)
-    rope:Fire("SetEndEntity",     tostring(enemy:EntIndex()),  0)
-
-    table.insert(activeRopes, { rope = rope, removeAt = CurTime() + snapDelay })
-
-    -- ---- twang sound ----
+    -- twang sound
     sound.Play(
         SNAP_SOUNDS[math.random(#SNAP_SOUNDS)],
         enemy:GetPos(), 85, math.random(55, 75)
     )
 
-    -- ---- screen shake for nearby local player ----
+    -- screen shake for nearby local player
     local ply = LocalPlayer()
     if IsValid(ply) then
         local d = ply:GetPos():Distance(enemy:GetPos())
