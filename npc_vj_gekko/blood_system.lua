@@ -1,39 +1,42 @@
 -- ============================================================
---  GEKKO BLOOD STREAM SYSTEM  (server-side)  [DEBUG BUILD]
---  Changes vs normal:
---    - No cooldown (fires every single damage event)
---    - Fires on ALL damage types, not just bullet
---    - Falls back to entity origin if bone resolve fails
---    - Prints to server console on every trigger
+--  GEKKO BLOOD STREAM SYSTEM  (server-side)
+--
+--  Replaces the broken gekko_bloodstream EFFECT approach.
+--  Instead we net-broadcast GekkoBloodGeyser with a world-space
+--  origin + direction so cl_init.lua can run a full geyser burst
+--  directly -- no dummy prop, no missing EFFECT file.
 -- ============================================================
 
--- DEBUG: cooldown completely disabled
-local BS_COOLDOWN_MIN   = 0
-local BS_COOLDOWN_MAX   = 0
-local BS_DUMMY_LIFETIME = 30   -- DEBUG: dummy lives longer
+-- Minimum seconds between geyser net-messages per NPC.
+-- Set to 0 to fire on every hit (useful for testing).
+local BS_COOLDOWN = 0.18
 
 local FLAG_BURST  = 1
 local FLAG_STREAM = 0
 
+-- Network string declared in init.lua via util.AddNetworkString.
+
 -- ------------------------------------------------------------
 --  PHYSBONE -> BONE RESOLVER
+--  Finds the bone closest to the damage position so the geyser
+--  sprays from the actual hit location on the model.
 -- ------------------------------------------------------------
 local _collCache = {}
 
-local function GetHitPhysBone(ent, dmginfo)
+local function GetHitBone(ent, dmginfo)
     local mdl   = ent:GetModel()
     local colls = _collCache[mdl]
     if not colls then
         colls           = CreatePhysCollidesFromModel(mdl)
         _collCache[mdl] = colls
     end
-    if not colls then return nil end
+    if not colls then return 0 end
 
     local dmgPos      = dmginfo:GetDamagePosition()
-    local closestBone = nil
+    local closestBone = 0
     local closestDist = math.huge
 
-    for physBone1, _ in pairs(colls) do
+    for physBone1 in pairs(colls) do
         local physBone0 = physBone1 - 1
         local bone      = ent:TranslatePhysBoneToBone(physBone0)
         local pos       = ent:GetBonePosition(bone)
@@ -41,7 +44,7 @@ local function GetHitPhysBone(ent, dmginfo)
             local d = pos:DistToSqr(dmgPos)
             if d < closestDist then
                 closestDist = d
-                closestBone = physBone0
+                closestBone = bone
             end
         end
     end
@@ -50,112 +53,73 @@ local function GetHitPhysBone(ent, dmginfo)
 end
 
 -- ------------------------------------------------------------
---  CORE SPAWN HELPER
+--  NET SEND
+--  Sends world-space geyser origin + force direction to all
+--  clients.  cl_init.lua receives GekkoBloodGeyser and calls
+--  the appropriate BloodVariant_* function.
 -- ------------------------------------------------------------
-local function DoBloodStream(lpos, lang, bone, flags, ent)
-    if not IsValid(ent) then return end
+local function SendBloodGeyser(ent, dmginfo, flag)
+    local bone    = GetHitBone(ent, dmginfo)
+    local bonePos = ent:GetBonePosition(bone)
+    if not bonePos then bonePos = ent:GetPos() end
 
-    -- DEBUG: no cooldown gate
-    ent._gekkoNextBloodStream = 0
-
-    local dummy = ents.Create("prop_dynamic")
-    if not IsValid(dummy) then
-        print("[GekkoBlood DEBUG] prop_dynamic creation failed")
-        return
+    local dmgForce = dmginfo:GetDamageForce()
+    local dir
+    if dmgForce:LengthSqr() > 1 then
+        dir = dmgForce:GetNormalized()
+    else
+        -- fallback: spray upward-forward from the hit surface
+        dir = (ent:GetForward() + Vector(0, 0, 0.6)):GetNormalized()
     end
-    dummy:SetModel("models/error.mdl")
-    dummy:Spawn()
-    dummy:SetModelScale(0)
-    dummy:SetNotSolid(true)
-    dummy:DrawShadow(false)
-    SafeRemoveEntityDelayed(dummy, BS_DUMMY_LIFETIME)
 
-    dummy:FollowBone(ent, bone)
-    dummy:SetLocalAngles(lang)
-    dummy:SetLocalPos(lpos - lang:Forward() * -8)
+    -- Clamp origin to model bounds so it never spawns underground
+    local origin = bonePos
+    origin.z     = math.max(origin.z, ent:GetPos().z + 20)
 
-    dummy.bloodstream_lastdmgbone = bone
+    net.Start("GekkoBloodGeyser")
+        net.WriteVector(origin)
+        net.WriteVector(dir)
+        net.WriteUInt(flag, 1)   -- 0 = stream, 1 = burst
+    net.Broadcast()
 
-    if not ent._gekkoBloodDummies then ent._gekkoBloodDummies = {} end
-    table.insert(ent._gekkoBloodDummies, dummy)
-
-    print("[GekkoBlood DEBUG] util.Effect fired | ent:", ent, "| bone:", bone, "| flags:", flags, "| dummy:", dummy)
-
-    local ed = EffectData()
-    ed:SetEntity(dummy)
-    ed:SetFlags(flags)
-    util.Effect("gekko_bloodstream", ed)
+    -- Cache last hit for ragdoll inheritance
+    ent._gekkoBloodLastOrigin = origin
+    ent._gekkoBloodLastDir    = dir
 end
 
 -- ------------------------------------------------------------
 --  ENT:GekkoBlood_OnDamage
---  DEBUG: fires on ANY damage, falls back to bone 0 / entity pos
---  if normal bone resolve fails.
+--  Called from init.lua:OnTakeDamage on every damage event.
+--  Gated by a short per-NPC cooldown to avoid spam on
+--  rapid-fire weapons (MG bursts etc.).
 -- ------------------------------------------------------------
 function ENT:GekkoBlood_OnDamage(dmginfo)
-    -- DEBUG: removed bullet-only filter
-    print("[GekkoBlood DEBUG] OnDamage called | dmg:", dmginfo:GetDamage(), "| type:", dmginfo:GetDamageType())
+    local now = CurTime()
+    if now < (self._gekkoNextBloodStream or 0) then return end
+    self._gekkoNextBloodStream = now + BS_COOLDOWN
 
-    local physBone = GetHitPhysBone(self, dmginfo)
-
-    local bone
-    if physBone then
-        bone = self:TranslatePhysBoneToBone(physBone)
-    else
-        -- DEBUG fallback: use bone 0 so the effect still fires
-        print("[GekkoBlood DEBUG] bone resolve failed, falling back to bone 0")
-        bone = 0
-    end
-
-    local dmgPos   = dmginfo:GetDamagePosition()
-    local dmgForce = dmginfo:GetDamageForce()
-
-    local bonePos, boneAng = self:GetBonePosition(bone)
-    -- DEBUG fallback if GetBonePosition returns nil
-    if not bonePos then
-        bonePos = self:GetPos()
-        boneAng = self:GetAngles()
-        print("[GekkoBlood DEBUG] GetBonePosition nil, using entity origin")
-    end
-
-    local lpos, lang
-    if dmgForce:LengthSqr() > 1 then
-        lpos, lang = WorldToLocal(dmgPos, dmgForce:Angle(), bonePos, boneAng)
-    else
-        lpos, lang = WorldToLocal(dmgPos, Angle(0,0,0), bonePos, boneAng)
-    end
-
-    self._gekkoBloodLastBone = bone
-    self._gekkoBloodLastLPos = lpos
-    self._gekkoBloodLastLAng = lang
-
-    DoBloodStream(lpos, lang, bone, FLAG_BURST, self)
+    SendBloodGeyser(self, dmginfo, FLAG_BURST)
 end
 
 -- ------------------------------------------------------------
 --  Ragdoll inheritance
+--  When the Gekko dies and a ragdoll is created, continue a
+--  blood stream from the last known hit location.
 -- ------------------------------------------------------------
 hook.Add("CreateEntityRagdoll", "GekkoBloodStream_Ragdoll", function(ent, rag)
-    if not IsValid(ent) or not IsValid(rag) then return end
-    if not ent._gekkoBloodLastLPos then return end
+    if not IsValid(ent) or not IsValid(rag)        then return end
+    if not ent._gekkoBloodLastOrigin               then return end
+    if ent:GetClass() ~= "npc_vj_gekko"            then return end
 
-    rag.allownextgen4bloodstreams = true
-    DoBloodStream(
-        ent._gekkoBloodLastLPos,
-        ent._gekkoBloodLastLAng,
-        ent._gekkoBloodLastBone,
-        FLAG_STREAM,
-        rag
-    )
+    -- Synthesise a fake dmginfo-like table for SendBloodGeyser
+    -- by directly sending the cached last-hit data.
+    net.Start("GekkoBloodGeyser")
+        net.WriteVector(ent._gekkoBloodLastOrigin)
+        net.WriteVector(ent._gekkoBloodLastDir or Vector(0,0,1))
+        net.WriteUInt(FLAG_STREAM, 1)
+    net.Broadcast()
 end)
 
 -- ------------------------------------------------------------
---  Cleanup
+--  Cleanup  (nothing to clean up now -- no dummy props)
 -- ------------------------------------------------------------
-hook.Add("EntityRemoved", "GekkoBloodStream_Cleanup", function(ent)
-    if not ent._gekkoBloodDummies then return end
-    for _, d in ipairs(ent._gekkoBloodDummies) do
-        if IsValid(d) then SafeRemoveEntity(d) end
-    end
-    ent._gekkoBloodDummies = nil
-end)
