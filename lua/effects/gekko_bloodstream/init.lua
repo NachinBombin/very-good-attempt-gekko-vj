@@ -3,26 +3,23 @@
 --  Registered as GMod EFFECT "gekko_bloodstream".
 --  Lives at lua/effects/gekko_bloodstream/init.lua  <- correct path.
 --
---  Ported 1-to-1 from bloodstreameffectzippy.lua.
---  All ConVar reads replaced with hardcoded local constants.
---
 --  EFFECT flags:
 --    bit.band(flags,1) == 1  ->  burst  (fewer reps, short pop)
 --    bit.band(flags,1) == 0  ->  stream (more reps, sustained)
 -- ============================================================
 
 -- ------------------------------------------------------------
---  TUNABLES  (replaces ConVars from the original addon)
+--  TUNABLES
 -- ------------------------------------------------------------
-local REPS_STREAM        = 300    -- particle repetitions for stream mode
-local REPS_BURST         = 150    -- particle repetitions for burst mode
-local REPS_MULTIPLIER    = 1.0    -- global reps scale
-local SIZE_MULT          = 1.0    -- particle size multiplier
-local FORCE_MULT         = 1.0    -- launch force multiplier
-local SPREAD_ANGLE       = 5      -- cone spread in degrees (0 = straight line)
-local DENSITY            = 1.0    -- spurt frequency; lower = more frequent
+local REPS_STREAM        = 300
+local REPS_BURST         = 150
+local REPS_MULTIPLIER    = 1.0
+local SIZE_MULT          = 1.0
+local FORCE_MULT         = 1.0
+local SPREAD_ANGLE       = 5
+local DENSITY            = 1.0
 
-local PARTICLE_LENGTH_RAND     = { min = 100, max = 100 }   -- original: both positive
+local PARTICLE_LENGTH_RAND     = { min = 100, max = 100 }
 local PARTICLE_START_LEN_MULT  = 0.1
 local PARTICLE_SCALE           = 0.4
 local PARTICLE_GRAVITY         = 1050
@@ -32,7 +29,7 @@ local PULSATE_SPEED_MULT       = 8
 local PARTICLE_FPS             = 60
 local PARTICLE_LIFETIME        = 8
 local DECAL_SCALE              = 0.2
-local IMPACT_CHANCE            = 1     -- 1-in-N; 1 = always
+local IMPACT_CHANCE            = 1
 local MIN_STRENGTH             = 0.25
 
 local BLOOD_SOUND_VOLUME  = 1.0
@@ -41,7 +38,7 @@ local SOUND_LEVEL_DRIP    = 70
 local SOUND_LEVEL_SQUIRT  = 35
 
 -- ------------------------------------------------------------
---  ASSET TABLES  (same as original)
+--  ASSET TABLES
 -- ------------------------------------------------------------
 local PARTICLE_MATS_RAW = { "decals/trail" }
 local DECAL_MATS_RAW = {
@@ -74,10 +71,14 @@ local SQUIRT_SOUNDS = {
     "squirting/artery_squirt_3.wav", "squirting/artery_squirt_2.wav",
 }
 
+-- Material() returns (IMaterial, bool) in some GMod builds.
+-- Wrapping in () clamps it to exactly 1 return value so
+-- table.insert(out, val) never receives a spurious 3rd argument
+-- that Lua would interpret as the positional form table.insert(t, pos, val).
 local function MakeMaterials(tbl)
     local out = {}
     for _, v in ipairs(tbl) do
-        table.insert(out, Material(v))
+        out[#out + 1] = (Material(v))   -- () clamps multi-return to 1 value
     end
     return out
 end
@@ -96,11 +97,10 @@ function EFFECT:Init(data)
 
     local flags = data:GetFlags()
 
-    -- GMod runs LuaJIT (Lua 5.1): use bit.band() instead of & operator
+    -- LuaJIT / Lua 5.1: use bit.band() not &
     local repsBase   = (bit.band(flags, 1) == 1) and REPS_BURST or REPS_STREAM
     self.reps        = math.floor(repsBase * REPS_MULTIPLIER)
 
-    -- Convert density to per-rep delay (mirrors original: math.Rand(0.5,5) / (fps*density))
     local spurtDelay = math.Rand(0.5, 5) / (PARTICLE_FPS * DENSITY)
 
     self.StartTime  = CurTime()
