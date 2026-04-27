@@ -21,15 +21,15 @@ AddCSLuaFile("elastic_cl.lua")
 local ELASTIC_MAX_RANGE    = 900
 local ELASTIC_COOLDOWN_MIN = 6
 local ELASTIC_COOLDOWN_MAX = 12
-local ELASTIC_DAMAGE       = 35
-local ELASTIC_DURATION     = 2.5    -- seconds the pull lasts
+local ELASTIC_DAMAGE       = 12
+local ELASTIC_DURATION     = 3.5    -- seconds the pull lasts
 local ELASTIC_PULL_SPEED   = 420    -- velocity magnitude toward Gekko
 local ELASTIC_PULL_INTERVAL= 0.08   -- how often the velocity kick repeats
-local ELASTIC_ROPE_WIDTH   = 3
+local ELASTIC_ROPE_WIDTH   = 1.5
 local ELASTIC_ROPE_R       = 180
 local ELASTIC_ROPE_G       = 220
 local ELASTIC_ROPE_B       = 80
-local ELASTIC_SNAP_DELAY   = 2.4    -- matches ELASTIC_DURATION
+local ELASTIC_SNAP_DELAY   = 3.5    -- matches ELASTIC_DURATION
 local ANCHOR_MODEL         = "models/hunter/blocks/cube025x025x025.mdl"
 
 util.AddNetworkString("GekkoElasticRope")
