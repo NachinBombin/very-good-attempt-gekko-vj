@@ -1,14 +1,14 @@
 -- ============================================================
 --  GEKKO BLOOD STREAM EFFECT  (client-side)
 --  Registered as GMod EFFECT "gekko_bloodstream".
---  Lives at lua/effects/gekko_bloodstream/init.lua  ← correct path.
+--  Lives at lua/effects/gekko_bloodstream/init.lua  <- correct path.
 --
 --  Ported 1-to-1 from bloodstreameffectzippy.lua.
 --  All ConVar reads replaced with hardcoded local constants.
 --
 --  EFFECT flags:
---    flags & 1  == 1  →  burst  (fewer reps, short pop)
---    flags & 1  == 0  →  stream (more reps, sustained)
+--    bit.band(flags,1) == 1  ->  burst  (fewer reps, short pop)
+--    bit.band(flags,1) == 0  ->  stream (more reps, sustained)
 -- ============================================================
 
 -- ------------------------------------------------------------
@@ -51,12 +51,12 @@ local DECAL_MATS_RAW = {
 }
 
 local DRIP_SOUNDS = {
-    "bloodsplashing/drip_1.wav",        "bloodsplashing/drip_2.wav",
-    "bloodsplashing/drip_3.wav",        "bloodsplashing/drip_4.wav",
+    "bloodsplashing/drip_1.wav",          "bloodsplashing/drip_2.wav",
+    "bloodsplashing/drip_3.wav",          "bloodsplashing/drip_4.wav",
     "bloodsplashing/drip_5.wav",
-    "bloodsplashing/drips_1.wav",       "bloodsplashing/drips_2.wav",
-    "bloodsplashing/drips_3.wav",       "bloodsplashing/drips_4.wav",
-    "bloodsplashing/drips_5.wav",       "bloodsplashing/drips_6.wav",
+    "bloodsplashing/drips_1.wav",         "bloodsplashing/drips_2.wav",
+    "bloodsplashing/drips_3.wav",         "bloodsplashing/drips_4.wav",
+    "bloodsplashing/drips_5.wav",         "bloodsplashing/drips_6.wav",
     "bloodsplashing/spatter_grass_1.wav", "bloodsplashing/spatter_grass_2.wav",
     "bloodsplashing/spatter_grass_3.wav",
     "bloodsplashing/spatter_hard_1.wav",  "bloodsplashing/spatter_hard_2.wav",
@@ -96,7 +96,8 @@ function EFFECT:Init(data)
 
     local flags = data:GetFlags()
 
-    local repsBase   = ((flags & 1) == 1) and REPS_BURST or REPS_STREAM
+    -- GMod runs LuaJIT (Lua 5.1): use bit.band() instead of & operator
+    local repsBase   = (bit.band(flags, 1) == 1) and REPS_BURST or REPS_STREAM
     self.reps        = math.floor(repsBase * REPS_MULTIPLIER)
 
     -- Convert density to per-rep delay (mirrors original: math.Rand(0.5,5) / (fps*density))
@@ -175,7 +176,6 @@ function EFFECT:Init(data)
 end
 
 function EFFECT:UpdateExtraForce()
-    -- Original uses (1 + sin) not (1 - sin)
     self.ExtraForce      = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
     self.CurrentStrenght = 1
 end
