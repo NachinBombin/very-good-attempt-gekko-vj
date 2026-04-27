@@ -91,16 +91,14 @@ net.Receive("GekkoElasticRope", function()
     local enemy     = net.ReadEntity()
     local snapDelay = net.ReadFloat()
     local width     = net.ReadUInt(8)
-    local r         = net.ReadUInt(8)
-    local g         = net.ReadUInt(8)
-    local b_col     = net.ReadUInt(8)
+    local col_r     = net.ReadUInt(8)
+    local col_g     = net.ReadUInt(8)
+    local col_b     = net.ReadUInt(8)
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
     -- CreateSound attaches a looping sound to an entity.
-    -- The sound file must have a looping cue point, OR we rely on
-    -- the "loop" flag already baked into the .wav.
-    -- CreateSound is client-only and perfectly valid here.
+    -- Valid client-only API; no sound/ prefix needed.
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
     if loopSnd then
         loopSnd:SetSoundLevel(75)
@@ -113,7 +111,7 @@ net.Receive("GekkoElasticRope", function()
         startOffset = Vector(0, 0, GEKKO_ORIGIN_Z),
         endOffset   = Vector(0, 0, 40),
         width       = width,
-        color       = Color(r, g_col, b_col, 255),
+        color       = Color(col_r, col_g, col_b, 255),
         removeAt    = CurTime() + snapDelay,
         loopSnd     = loopSnd,
     }
