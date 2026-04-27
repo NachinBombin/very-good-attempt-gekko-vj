@@ -193,9 +193,9 @@ local NIKITA_MUZZLE_SMOKE_STAGGER = 0.06
 
 local JUMP_STATE_NAMES       = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 local HEAD_Z_FRACTION        = 0.65
-local BLOOD_DAMAGE_THRESHOLD = 900
-local BLOOD_RANDOM_CHANCE    = 40
-local GROUNDED_BLEED_CHANCE  = 0.85
+local BLOOD_DAMAGE_THRESHOLD = 900   -- kept for reference but no longer used as gate
+local BLOOD_RANDOM_CHANCE    = 4     -- 1-in-4 chance per hit (was 40)
+local GROUNDED_BLEED_CHANCE  = 0.97  -- near-certain bleed when legs disabled (was 0.85)
 
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
@@ -497,7 +497,7 @@ function ENT:Init()
     self._gekkoSuppressActivity  = 0
     self._gekkoSkipAnimTick      = false
     self._crushHitTimes          = {}
-    self._bloodSplatPulse        = 0
+    self._bloodSplatPulse        = 1   -- start at 1 so first pulse is never silently dropped (packed=0 is sentinel)
     self._gibCooldownT           = 0
     self._lastWeaponChoice       = ""
     self._glSparkCounter         = 0
@@ -583,12 +583,14 @@ function ENT:OnTakeDamage(dmginfo)
     local rawDmg = dmginfo:GetDamage()
     local doSplat
     if self._gekkoLegsDisabled then
+        -- near-certain bleed when grounded
         doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
     else
-        doSplat = (math.random(1,BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
+        -- 1-in-BLOOD_RANDOM_CHANCE chance on any damage type
+        doSplat = (math.random(1, BLOOD_RANDOM_CHANCE) == 1)
     end
     if doSplat then
-        self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
+        self._bloodSplatPulse = (self._bloodSplatPulse or 1) + 1
         local variant = math.random(1,5)
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse*8 + (variant-1))
     end
@@ -957,7 +959,6 @@ end
 local function FireElastic(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist > 900 then
-        -- Cooldown guard (separate from the constraint check in GekkoElastic_Fire)
         print(string.format("[GekkoElastic] Re-rolling (dist=%.0f > 900)", dist))
         local alt
         repeat alt = RollWeapon() until alt ~= "ELASTIC"
