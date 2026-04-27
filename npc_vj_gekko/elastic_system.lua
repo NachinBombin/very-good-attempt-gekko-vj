@@ -18,23 +18,22 @@ AddCSLuaFile("elastic_cl.lua")
 -- ------------------------------------------------------------
 --  TUNABLES
 -- ------------------------------------------------------------
-local ELASTIC_MAX_RANGE    = 900
-local ELASTIC_COOLDOWN_MIN = 6
-local ELASTIC_COOLDOWN_MAX = 12
-local ELASTIC_DAMAGE       = 12
-local ELASTIC_DURATION     = 3.5    -- seconds the pull lasts
-local ELASTIC_PULL_SPEED   = 420    -- velocity magnitude toward Gekko
-local ELASTIC_PULL_INTERVAL= 0.08   -- how often the velocity kick repeats
-local ELASTIC_ROPE_WIDTH   = 1.5
-local ELASTIC_ROPE_R       = 180
-local ELASTIC_ROPE_G       = 220
-local ELASTIC_ROPE_B       = 80
-local ELASTIC_SNAP_DELAY   = 3.5    -- matches ELASTIC_DURATION
-local ANCHOR_MODEL         = "models/hunter/blocks/cube025x025x025.mdl"
+local ELASTIC_MAX_RANGE     = 900
+local ELASTIC_COOLDOWN_MIN  = 6
+local ELASTIC_COOLDOWN_MAX  = 12
+local ELASTIC_DAMAGE        = 12
+local ELASTIC_DURATION      = 3.5    -- seconds the pull lasts
+local ELASTIC_PULL_SPEED    = 420    -- velocity magnitude toward Gekko
+local ELASTIC_PULL_INTERVAL = 0.08   -- how often the velocity kick repeats
+local ELASTIC_ROPE_WIDTH    = 1.5
+local ELASTIC_ROPE_R        = 180
+local ELASTIC_ROPE_G        = 220
+local ELASTIC_ROPE_B        = 80
+local ELASTIC_SNAP_DELAY    = 3.5    -- matches ELASTIC_DURATION
+local ANCHOR_MODEL          = "models/hunter/blocks/cube025x025x025.mdl"
 
--- The origin Z offset for the rope / pull.  Raised to 180 so the
--- cable fires from a higher point on the Gekko's body.
-local GEKKO_ORIGIN_Z       = 180
+-- The origin Z offset for the rope / pull.
+local GEKKO_ORIGIN_Z        = 180
 
 -- Pre-fire delay: shoot sound plays NOW, actual logic starts after.
 local ELASTIC_PREFIRE_DELAY = 0.9
@@ -42,6 +41,33 @@ local ELASTIC_PREFIRE_DELAY = 0.9
 util.AddNetworkString("GekkoElasticRope")
 util.AddNetworkString("GekkoElasticShootSound")
 util.PrecacheModel(ANCHOR_MODEL)
+
+-- ============================================================
+--  LINE-OF-SIGHT HELPER
+--
+--  Traces from the Gekko's fire origin (GetPos + GEKKO_ORIGIN_Z)
+--  to the enemy's eye / center position.
+--
+--  Uses MASK_SOLID_BRUSHONLY so only world brushes (walls,
+--  rooftops, solid geometry) block the shot.  Other NPCs and
+--  props are intentionally ignored -- the Gekko can reach
+--  through them but NOT through solid architecture.
+--
+--  Returns true if the path is clear.
+-- ============================================================
+local function GekkoElastic_HasLOS(gekko, enemy)
+    local fromPos = gekko:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
+    local toPos   = enemy:GetPos() + Vector(0, 0, 40)
+
+    local tr = util.TraceLine({
+        start  = fromPos,
+        endpos = toPos,
+        filter = { gekko, enemy },
+        mask   = MASK_SOLID_BRUSHONLY,
+    })
+
+    return not tr.Hit
+end
 
 -- ============================================================
 --  HELPERS
@@ -69,17 +95,17 @@ end
 --  GekkoElastic_Init
 -- ============================================================
 function ENT:GekkoElastic_Init()
-    self._elasticNextShotT  = CurTime() + math.Rand(
+    self._elasticNextShotT    = CurTime() + math.Rand(
         ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
-    self._elasticActive     = false
-    self._elasticPending    = false   -- waiting for pre-fire delay
-    self._elasticPendingT   = 0
+    self._elasticActive       = false
+    self._elasticPending      = false
+    self._elasticPendingT     = 0
     self._elasticPendingEnemy = nil
-    self._elasticCleanupT   = 0
-    self._elasticNextKickT  = 0
-    self._elasticAnchorG    = nil
-    self._elasticAnchorE    = nil
-    self._elasticEnemy      = nil
+    self._elasticCleanupT     = 0
+    self._elasticNextKickT    = 0
+    self._elasticAnchorG      = nil
+    self._elasticAnchorE      = nil
+    self._elasticEnemy        = nil
 end
 
 -- ============================================================
@@ -94,7 +120,17 @@ function ENT:GekkoElastic_Think()
             self._elasticPending = false
             local pendEnemy = self._elasticPendingEnemy
             self._elasticPendingEnemy = nil
+
             if IsValid(pendEnemy) then
+                -- Re-check LOS at detonation time.
+                -- If enemy ducked behind cover during the 0.9s wind-up,
+                -- abort silently.  Reset cooldown to a short value so
+                -- the Gekko tries again quickly once LOS is restored.
+                if not GekkoElastic_HasLOS(self, pendEnemy) then
+                    print("[GekkoElastic] DETONATE BLOCKED (no LOS) -- re-queuing")
+                    self._elasticNextShotT = now + 2.0
+                    return
+                end
                 self:_GekkoElastic_Detonate(pendEnemy)
             end
         end
@@ -148,11 +184,15 @@ function ENT:GekkoElastic_Think()
         return
     end
 
-    -- passive fire gate
+    -- ---- passive fire gate ----
     if now < (self._elasticNextShotT or 0) then return end
     local enemy = self:GetEnemy()
     if not IsValid(enemy) then return end
     if self:GetPos():Distance(enemy:GetPos()) > ELASTIC_MAX_RANGE then return end
+
+    -- LOS gate: don't even commit to pre-fire if sight is blocked
+    if not GekkoElastic_HasLOS(self, enemy) then return end
+
     if math.random() > 0.18 then return end
     self:GekkoElastic_Fire(enemy)
 end
