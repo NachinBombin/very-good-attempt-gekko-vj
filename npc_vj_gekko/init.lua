@@ -1,16 +1,5 @@
 -- ============================================================
 --  npc_vj_gekko / init.lua
---  Weapon list:
---  1. Machine-gun burst         (FireBullets)
---  2. Single accurate missile   (obj_vj_rocket)
---  3. Double inaccurate salvo   (obj_vj_rocket x2)
---  4. Grenade launcher barrage  (bombin_gas_grenade / stun / flash)
---  5. Top-attack terror missile (sent_npc_topmissile)
---  6. Active-track missile      (sent_npc_trackmissile)
---  7. Orbit RPG                 (sent_orbital_rpg)
---  8. Nikita cruise missile     (npc_vj_gekko_nikita)
---  9. Bushmaster 25mm cannon    (sent_gekko_bushmaster x7-13)
--- 10. Elastic tether            (elastic_system.lua — 0-900 u)
 -- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
@@ -25,6 +14,7 @@ include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
 include("elastic_system.lua")
+include("blood_system.lua")   -- FIX: was missing entirely
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -206,7 +196,7 @@ local function GetActiveEnemy(ent)
 end
 
 local function RollWeapon()
-    local r   = math.random(1, 120)   -- 108 + WWEIGHT_ELASTIC(12)
+    local r   = math.random(1, 120)
     local cum = 0
     cum = cum + WWEIGHT_MG;             if r <= cum then return "MG"           end
     cum = cum + WWEIGHT_MISSILE_SINGLE; if r <= cum then return "MISSILE"      end
@@ -340,7 +330,6 @@ local function SpawnCartridge(pos, ang, scale)
     shell:Activate()
     shell:SetModelScale(scale, 0)
     shell:DrawShadow(false)
-
     local phys = shell:GetPhysicsObject()
     if IsValid(phys) then
         phys:SetMass(SHELL_MASS)
@@ -357,7 +346,6 @@ local function SpawnCartridge(pos, ang, scale)
             math.Rand(SHELL_ANGVEL_MIN, SHELL_ANGVEL_MAX)
         ))
     end
-
     timer.Simple(SHELL_LIFETIME, function()
         if IsValid(shell) then shell:Remove() end
     end)
@@ -592,6 +580,9 @@ function ENT:OnTakeDamage(dmginfo)
         local variant = math.random(1,5)
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse*8 + (variant-1))
     end
+
+    -- FIX: call blood stream system on every damage event
+    self:GekkoBlood_OnDamage(dmginfo)
 
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
@@ -957,7 +948,6 @@ end
 local function FireElastic(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist > 900 then
-        -- Cooldown guard (separate from the constraint check in GekkoElastic_Fire)
         print(string.format("[GekkoElastic] Re-rolling (dist=%.0f > 900)", dist))
         local alt
         repeat alt = RollWeapon() until alt ~= "ELASTIC"
@@ -1011,20 +1001,16 @@ end
 function ENT:OnDeath(dmginfo, hitgroup, status)
     if status ~= "Finish" then return end
     if self._gekkoDead then return end
-
     self._gekkoDead = true
     local attacker = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos      = self:GetPos()
-
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
     self:SetNoDraw(true)
     self:SetNotSolid(true)
-
     self:GekkoElastic_OnRemove()
     self:GekkoDeath_SpawnRagdoll()
-
     timer.Simple(0.8, function()
         if not IsValid(self) then return end
         ParticleEffect("astw2_nightfire_explosion_generic", pos, angle_zero)
