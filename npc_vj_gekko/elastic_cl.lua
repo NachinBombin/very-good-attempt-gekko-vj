@@ -1,20 +1,36 @@
 -- ============================================================
 --  ELASTIC SLING SYSTEM  (client-side)
 --
---  There is no client-side rope entity API in GMod.
---  We draw the cable manually each frame using render.DrawBeam
---  inside PostDrawOpaqueRenderables, which is the correct hook
---  for world-space 3D lines.
+--  Beam drawn manually each frame via render.DrawBeam inside
+--  PostDrawOpaqueRenderables.
 --
---  The beam is removed after snapDelay seconds.
+--  Sounds:
+--    shoot_1..5  : played immediately on GekkoElasticShootSound
+--                  (0.9s before beam/pull exists)
+--    tentaclepull_1 : looped for the beam's full lifetime
 -- ============================================================
 
 -- ============================================================
 --  ACTIVE BEAM TABLE
 --  Each entry: { gekko, enemy, startOffset, endOffset,
---               width, color, removeAt }
+--               width, color, removeAt, loopChannel }
 -- ============================================================
 local activeBeams = {}
+
+-- The Gekko-side origin Z — must match elastic_system.lua GEKKO_ORIGIN_Z
+local GEKKO_ORIGIN_Z = 180
+
+-- ============================================================
+--  SOUNDS
+-- ============================================================
+local SHOOT_SOUNDS = {
+    "gekko/elastic/shoot_1.wav",
+    "gekko/elastic/shoot_2.wav",
+    "gekko/elastic/shoot_3.wav",
+    "gekko/elastic/shoot_4.wav",
+    "gekko/elastic/shoot_5.wav",
+}
+local TENTACLE_LOOP = "gekko/elastic/tentaclepull_1.wav"
 
 -- ============================================================
 --  DRAW HOOK
@@ -22,9 +38,9 @@ local activeBeams = {}
 hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
     if #activeBeams == 0 then return end
 
-    local now    = CurTime()
-    local mat    = Material("cable/cable2")
-    local i      = 1
+    local now = CurTime()
+    local mat = Material("cable/cable2")
+    local i   = 1
 
     while i <= #activeBeams do
         local b = activeBeams[i]
@@ -32,6 +48,10 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
         if now >= b.removeAt
         or not IsValid(b.gekko)
         or not IsValid(b.enemy) then
+            -- stop the loop sound
+            if b.loopChannel and IsValid(b.loopChannel) then
+                b.loopChannel:Stop()
+            end
             table.remove(activeBeams, i)
         else
             local startPos = b.gekko:GetPos() + b.startOffset
@@ -41,8 +61,8 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
             render.DrawBeam(
                 startPos,
                 endPos,
-                b.width,   -- width in world units
-                0, 1,      -- texture start / end
+                b.width,
+                0, 1,
                 b.color
             )
             i = i + 1
@@ -51,15 +71,17 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
 end)
 
 -- ============================================================
---  SOUNDS
+--  PRE-FIRE SHOOT SOUND  (arrives 0.9s before beam)
 -- ============================================================
-local SNAP_SOUNDS = {
-    "physics/metal/metal_box_impact_hard1.wav",
-    "physics/metal/metal_box_impact_hard2.wav",
-}
+net.Receive("GekkoElasticShootSound", function()
+    local gekko = net.ReadEntity()
+    local snd   = SHOOT_SOUNDS[math.random(#SHOOT_SOUNDS)]
+    local pos   = IsValid(gekko) and gekko:GetPos() or Vector(0,0,0)
+    sound.Play(snd, pos, 90, 100)
+end)
 
 -- ============================================================
---  NET RECEIVER
+--  BEAM + TENTACLE LOOP  (arrives after pre-fire delay)
 -- ============================================================
 net.Receive("GekkoElasticRope", function()
     local gekko     = net.ReadEntity()
@@ -72,23 +94,40 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
-    table.insert(activeBeams, {
+    -- start looping tentaclepull_1 for the beam's lifetime
+    local loopChan = nil
+    sound.PlayURL(
+        "sound/" .. TENTACLE_LOOP,
+        "3d loop",
+        function(chan)
+            if not chan then return end
+            loopChan = chan
+            chan:SetPos(gekko:GetPos())
+            chan:Play()
+        end
+    )
+
+    -- register beam (loopChannel set after async callback, wrapped via closure)
+    local entry = {
         gekko       = gekko,
         enemy       = enemy,
-        startOffset = Vector(0, 0, 80),
+        startOffset = Vector(0, 0, GEKKO_ORIGIN_Z),
         endOffset   = Vector(0, 0, 40),
         width       = width,
         color       = Color(r, g, b, 255),
         removeAt    = CurTime() + snapDelay,
-    })
+        loopChannel = nil,
+    }
+    table.insert(activeBeams, entry)
 
-    -- twang sound
-    sound.Play(
-        SNAP_SOUNDS[math.random(#SNAP_SOUNDS)],
-        enemy:GetPos(), 85, math.random(55, 75)
-    )
+    -- wire channel into entry once async resolves
+    timer.Simple(0, function()
+        if loopChan then
+            entry.loopChannel = loopChan
+        end
+    end)
 
-    -- screen shake
+    -- screen shake on beam arrival
     local ply = LocalPlayer()
     if IsValid(ply) then
         local d = ply:GetPos():Distance(enemy:GetPos())

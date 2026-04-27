@@ -32,7 +32,15 @@ local ELASTIC_ROPE_B       = 80
 local ELASTIC_SNAP_DELAY   = 3.5    -- matches ELASTIC_DURATION
 local ANCHOR_MODEL         = "models/hunter/blocks/cube025x025x025.mdl"
 
+-- The origin Z offset for the rope / pull.  Raised to 180 so the
+-- cable fires from a higher point on the Gekko's body.
+local GEKKO_ORIGIN_Z       = 180
+
+-- Pre-fire delay: shoot sound plays NOW, actual logic starts after.
+local ELASTIC_PREFIRE_DELAY = 0.9
+
 util.AddNetworkString("GekkoElasticRope")
+util.AddNetworkString("GekkoElasticShootSound")
 util.PrecacheModel(ANCHOR_MODEL)
 
 -- ============================================================
@@ -64,6 +72,9 @@ function ENT:GekkoElastic_Init()
     self._elasticNextShotT  = CurTime() + math.Rand(
         ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
     self._elasticActive     = false
+    self._elasticPending    = false   -- waiting for pre-fire delay
+    self._elasticPendingT   = 0
+    self._elasticPendingEnemy = nil
     self._elasticCleanupT   = 0
     self._elasticNextKickT  = 0
     self._elasticAnchorG    = nil
@@ -76,6 +87,19 @@ end
 -- ============================================================
 function ENT:GekkoElastic_Think()
     local now = CurTime()
+
+    -- ---- pending pre-fire delay ----
+    if self._elasticPending then
+        if now >= self._elasticPendingT then
+            self._elasticPending = false
+            local pendEnemy = self._elasticPendingEnemy
+            self._elasticPendingEnemy = nil
+            if IsValid(pendEnemy) then
+                self:_GekkoElastic_Detonate(pendEnemy)
+            end
+        end
+        return
+    end
 
     if self._elasticActive then
         -- cleanup when duration expires
@@ -104,7 +128,7 @@ function ENT:GekkoElastic_Think()
         -- repeated velocity kick toward Gekko
         if now >= self._elasticNextKickT then
             self._elasticNextKickT = now + ELASTIC_PULL_INTERVAL
-            local gekkoPos = self:GetPos() + Vector(0, 0, 80)
+            local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
             local enemyPos = enemy:GetPos() + Vector(0, 0, 40)
             local dir      = (gekkoPos - enemyPos):GetNormalized()
             local vel      = dir * ELASTIC_PULL_SPEED
@@ -135,6 +159,8 @@ end
 
 -- ============================================================
 --  GekkoElastic_Fire
+--  Sends the shoot sound net message immediately, then waits
+--  ELASTIC_PREFIRE_DELAY before actually doing anything.
 -- ============================================================
 function ENT:GekkoElastic_Fire(enemy)
     if not IsValid(enemy) then return false end
@@ -143,7 +169,27 @@ function ENT:GekkoElastic_Fire(enemy)
         ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
     self:_GekkoElastic_Cleanup()
 
-    local gekkoPos = self:GetPos() + Vector(0, 0, 80)
+    -- broadcast the pre-fire shoot sound immediately
+    net.Start("GekkoElasticShootSound")
+        net.WriteEntity(self)
+    net.Broadcast()
+
+    -- queue the real logic for ELASTIC_PREFIRE_DELAY seconds later
+    self._elasticPending      = true
+    self._elasticPendingT     = CurTime() + ELASTIC_PREFIRE_DELAY
+    self._elasticPendingEnemy = enemy
+
+    print(string.format("[GekkoElastic] PRE-FIRE  delay=%.1fs", ELASTIC_PREFIRE_DELAY))
+    return true
+end
+
+-- ============================================================
+--  _GekkoElastic_Detonate  (runs after pre-fire delay)
+-- ============================================================
+function ENT:_GekkoElastic_Detonate(enemy)
+    if not IsValid(enemy) then return end
+
+    local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
     local enemyPos = enemy:GetPos() + Vector(0, 0, 40)
 
     local anchorG = MakeAnchor(gekkoPos)
@@ -151,7 +197,7 @@ function ENT:GekkoElastic_Fire(enemy)
     if not IsValid(anchorG) or not IsValid(anchorE) then
         if IsValid(anchorG) then anchorG:Remove() end
         if IsValid(anchorE) then anchorE:Remove() end
-        return false
+        return
     end
 
     -- initial damage
@@ -186,21 +232,19 @@ function ENT:GekkoElastic_Fire(enemy)
     self._elasticAnchorE   = anchorE
     self._elasticEnemy     = enemy
 
-    -- VFX net message
+    -- VFX net message (beam + tentacle loop sound)
     net.Start("GekkoElasticRope")
         net.WriteEntity(self)
         net.WriteEntity(enemy)
         net.WriteFloat(ELASTIC_SNAP_DELAY)
-        net.WriteUInt(ELASTIC_ROPE_WIDTH, 8)
-        net.WriteUInt(ELASTIC_ROPE_R,     8)
-        net.WriteUInt(ELASTIC_ROPE_G,     8)
-        net.WriteUInt(ELASTIC_ROPE_B,     8)
+        net.WriteUInt(math.floor(ELASTIC_ROPE_WIDTH), 8)
+        net.WriteUInt(ELASTIC_ROPE_R, 8)
+        net.WriteUInt(ELASTIC_ROPE_G, 8)
+        net.WriteUInt(ELASTIC_ROPE_B, 8)
     net.Broadcast()
 
     print(string.format("[GekkoElastic] FIRE  dist=%.0f  dur=%.1fs",
         self:GetPos():Distance(enemy:GetPos()), ELASTIC_DURATION))
-
-    return true
 end
 
 -- ============================================================
@@ -209,10 +253,12 @@ end
 function ENT:_GekkoElastic_Cleanup()
     if IsValid(self._elasticAnchorG) then self._elasticAnchorG:Remove() end
     if IsValid(self._elasticAnchorE) then self._elasticAnchorE:Remove() end
-    self._elasticActive  = false
-    self._elasticAnchorG = nil
-    self._elasticAnchorE = nil
-    self._elasticEnemy   = nil
+    self._elasticActive       = false
+    self._elasticPending      = false
+    self._elasticPendingEnemy = nil
+    self._elasticAnchorG      = nil
+    self._elasticAnchorE      = nil
+    self._elasticEnemy        = nil
 end
 
 -- ============================================================
