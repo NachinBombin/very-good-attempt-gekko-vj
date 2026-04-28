@@ -198,26 +198,31 @@ local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- -------------------------------------------------------
--- Vanilla GMod blood helper
--- util.BloodDecal  - places a blood splat decal on a surface
--- util.BloodDrips  - spawns physics blood drip particles
--- Both are always available in Lua; no C++ method needed.
+-- Serverside blood helper.
+--
+-- Correct GMod Lua API for blood on SERVER:
+--   util.Decal( name, start, end )         -- paints a decal by tracing from start to end
+--   util.Effect( "BloodImpact", data )     -- fires the BloodImpact particle effect
+--                                             (networked automatically to all clients)
+--
+-- util.BloodDecal / util.BloodDrips do NOT exist in Lua.
 -- -------------------------------------------------------
 local function GekkoVanillaBleed(ent, hitPos, hitDir)
-    -- Trace from slightly behind the hit point along hitDir to
-    -- find the exact surface normal for the decal.
-    local tr = util.TraceLine({
-        start  = hitPos - hitDir * 4,
-        endpos = hitPos + hitDir * 8,
-        filter = ent,
-    })
-    if tr.Hit then
-        util.BloodDecal("Blood", tr.HitPos, tr.HitNormal)
-    else
-        util.BloodDecal("Blood", hitPos, -hitDir)
-    end
-    -- BloodDrips: origin, direction, big (bool)
-    util.BloodDrips(hitPos, hitDir, false)
+    -- util.Decal traces between two world points; offset slightly
+    -- behind and ahead of the impact so the trace crosses the surface.
+    util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8)
+
+    -- BloodImpact effect: plays the client-side blood particle burst.
+    -- SetOrigin  = world impact position
+    -- SetNormal  = surface normal (inward hit direction)
+    -- SetEntity  = the entity that was hit (used for bone-attachment if needed)
+    -- SetScale   = particle scale (1 = normal)
+    local ed = EffectData()
+    ed:SetOrigin(hitPos)
+    ed:SetNormal(-hitDir)   -- normal points AWAY from the surface
+    ed:SetEntity(ent)
+    ed:SetScale(1)
+    util.Effect("BloodImpact", ed)
 end
 
 local function GetActiveEnemy(ent)
@@ -605,20 +610,15 @@ function ENT:OnTakeDamage(dmginfo)
 
     local rawDmg = dmginfo:GetDamage()
 
-    -- -------------------------------------------------------
-    -- Vanilla GMod bleed: blood decal on the hit surface
-    -- + blood drip particles at the impact point.
-    -- -------------------------------------------------------
+    -- Blood decal + BloodImpact particle burst at the hit point.
     local attacker = dmginfo:GetAttacker()
     local hitDir   = IsValid(attacker)
         and (hitPos - attacker:GetPos()):GetNormalized()
         or  self:GetForward()
     GekkoVanillaBleed(self, hitPos, hitDir)
 
-    -- -------------------------------------------------------
-    -- Custom bleed chance: pulse GekkoBloodSplat NWInt so
-    -- cl_init fires one of the 6 particle/effect variants.
-    -- -------------------------------------------------------
+    -- Pulse GekkoBloodSplat NWInt so cl_init fires a heavier
+    -- particle/effect variant on big or grounded hits.
     local doSplat
     if self._gekkoLegsDisabled then
         doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
