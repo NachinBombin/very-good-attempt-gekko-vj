@@ -1,219 +1,111 @@
 -- ============================================================
 --  GEKKO BLOOD STREAM EFFECT
---  Based on bloodstreameffectzippy.lua (Hemo-fluid-stream)
---  Copied verbatim, ConVars replaced by per-call randomizers.
---  size_mult  → data:GetScale()      (randomized at call site)
---  force_mult → data:GetMagnitude()  (randomized at call site)
+--  Blood particles arc forward from the entity using
+--  patterns from VJ_Blood1 (DrVrej/VJ-Base).
+--  data:GetScale()     = size_mult   (set by BloodVariant_HemoStream)
+--  data:GetMagnitude() = force_mult  (set by BloodVariant_HemoStream)
+--  data:GetFlags()     = 0 stream / 1 burst
 -- ============================================================
 
-local particles = {
-    "decals/trail",
+local BLOOD_COLOR_R = 180
+local BLOOD_COLOR_G = 10
+local BLOOD_COLOR_B = 10
+
+local SMOKE_MATS = {
+    "particle/smokesprites_0001",
+    "particle/smokesprites_0002",
+    "particle/smokesprites_0003",
+    "particle/smokesprites_0004",
+    "particle/smokesprites_0005",
+    "particle/smokesprites_0006",
+    "particle/smokesprites_0007",
+    "particle/smokesprites_0008",
+    "particle/smokesprites_0009",
 }
 
-local decals = {
+local DECALS = {
     "decals/Blood1",
+    "decals/Blood2",
     "decals/Blood3",
     "decals/Blood4",
     "decals/Blood5",
     "decals/Blood6",
-    "decals/Blood2",
-    "decals/Blood3",
 }
-
-local particle_length_random         = { min = 100, max = 100 }
-local particle_start_lengt_mult      = 0.1
-local particle_scale                 = 0.4
-
-local particle_gravity               = 1050
-local particle_force                 = 200
-local particle_pulsate_max_force     = 100
-local particle_pulsate_speed_mult    = 8
-
-local particle_reps_stream           = 300
-local particle_reps_burst            = 150
-
-local particle_fps                   = 60
-local particle_lifetime              = 8
-
-local stream_particle_lifetime       = 8
-local burst_particle_lifetime        = 8
-
-local decal_scale                    = 0.2
-
-local drip_sounds = {
-    "bloodsplashing/drip_1.wav",
-    "bloodsplashing/drip_2.wav",
-    "bloodsplashing/drip_3.wav",
-    "bloodsplashing/drip_4.wav",
-    "bloodsplashing/drip_5.wav",
-    "bloodsplashing/drips_1.wav",
-    "bloodsplashing/drips_2.wav",
-    "bloodsplashing/drips_3.wav",
-    "bloodsplashing/drips_4.wav",
-    "bloodsplashing/drips_5.wav",
-    "bloodsplashing/drips_6.wav",
-    "bloodsplashing/spatter_grass_1.wav",
-    "bloodsplashing/spatter_grass_2.wav",
-    "bloodsplashing/spatter_grass_3.wav",
-    "bloodsplashing/spatter_hard_1.wav",
-    "bloodsplashing/spatter_hard_2.wav",
-    "bloodsplashing/spatter_hard_3.wav",
-    "bloodsplashing/drip_lowpass_1.wav",
-    "bloodsplashing/drip_lowpass_2.wav",
-    "bloodsplashing/drip_lowpass_3.wav",
-    "bloodsplashing/drip_lowpass_4.wav",
-    "bloodsplashing/drip_lowpass_5.wav",
-}
-
-local sound_level = 70
-
-local squrt_sounds = {
-    "squirting/artery_squirt_1.wav",
-    "squirting/artery_squirt_2.wav",
-    "squirting/artery_squirt_3.wav",
-    "squirting/artery_squirt_3.wav",
-    "squirting/artery_squirt_2.wav",
-    "squirting/artery_squirt_1.wav",
-    "squirting/artery_squirt_2.wav",
-    "squirting/artery_squirt_2.wav",
-    "squirting/artery_squirt_3.wav",
-    "squirting/artery_squirt_1.wav",
-    "squirting/artery_squirt_3.wav",
-    "squirting/artery_squirt_2.wav",
-}
-
-local sound_level2   = 35
-local impact_chance  = 1
-
-local function make_materials(tbl)
-    local materials = {}
-    for i, v in ipairs(tbl) do
-        materials[i] = Material(v)
-    end
-    return materials
-end
-
-local decal_mats    = make_materials(decals)
-local particle_mats = make_materials(particles)
-
-local min_strenght = 0.25
 
 function EFFECT:Init(data)
-    local ent = data:GetEntity()
-    if not IsValid(ent) then return end
+    local ent        = data:GetEntity()
+    local origin     = data:GetOrigin()
+    local flags      = data:GetFlags()   -- 0 = stream, 1 = burst
+    local size_mult  = math.max(data:GetScale(), 0.1)
+    local force_mult = math.max(data:GetMagnitude(), 0.1)
 
-    local flags = data:GetFlags()
+    -- If entity is valid use its position; otherwise fall back to origin
+    if IsValid(ent) then
+        origin = ent:GetPos() + Vector(0, 0, 60)
+    end
 
-    -- size_mult and force_mult are baked in by the Gekko caller via SetScale / SetMagnitude
-    local size_mult  = data:GetScale()
-    local force_mult = data:GetMagnitude()
+    local fwd   = IsValid(ent) and ent:GetForward() or Vector(1, 0, 0)
+    local right = IsValid(ent) and ent:GetRight()   or Vector(0, 1, 0)
+    local up    = IsValid(ent) and ent:GetUp()      or Vector(0, 0, 1)
 
-    -- spread is randomized here per-stream for natural variation
-    local spread_angle = math.Rand(2, 9)
+    local count      = (flags == 1) and 12 or 24
+    local base_speed = 180 * force_mult
 
-    local reps_multiplier = 1
-    self.reps = math.floor(
-        ((flags == 1 and particle_reps_burst) or
-         (flags == 0 and particle_reps_stream) or 0)
-        * reps_multiplier
-    )
-
-    local density    = 1
-    local spurt_delay = math.Rand(0.5, 5) / (particle_fps * density)
-
-    self.StartTime    = CurTime()
-    self.CurrentPos   = ent:GetPos()
-    self.CurrentStrenght = 1
-    self:UpdateExtraForce()
-
-    self.timername = "GekkoBloodStreamTimer_" .. ent:EntIndex() .. "_" .. CurTime()
-
-    local emitter = ParticleEmitter(self.CurrentPos, false)
+    local emitter = ParticleEmitter(origin)
     if not emitter then return end
 
-    sound.Play(table.Random(squrt_sounds), ent:GetPos(), sound_level2, math.Rand(95, 105), 1)
-
-    local effect_self = self
-    local reps        = self.reps
-
-    timer.Create(self.timername, spurt_delay, reps, function()
-        if not IsValid(ent) or not emitter then
-            if emitter then emitter:Finish() end
-            timer.Remove(effect_self.timername)
-            return
+    -- Blood mist cloud at origin
+    for _ = 1, 6 do
+        local mist = emitter:Add(SMOKE_MATS[math.random(#SMOKE_MATS)], origin)
+        if mist then
+            mist:SetVelocity(Vector(math.Rand(-30, 30), math.Rand(-30, 30), math.Rand(10, 60)))
+            mist:SetDieTime(math.Rand(0.4, 0.9))
+            mist:SetStartAlpha(180)
+            mist:SetEndAlpha(0)
+            mist:SetStartSize(8 * size_mult)
+            mist:SetEndSize(22 * size_mult)
+            mist:SetRoll(math.Rand(0, 360))
+            mist:SetRollDelta(math.Rand(-2, 2))
+            mist:SetAirResistance(60)
+            mist:SetGravity(Vector(0, 0, -200))
+            mist:SetColor(BLOOD_COLOR_R, BLOOD_COLOR_G, BLOOD_COLOR_B)
+            mist:SetCollide(false)
         end
+    end
 
-        sound.Play(table.Random(squrt_sounds), ent:GetPos(), sound_level2, math.Rand(95, 105), 1)
+    -- Arcing blood droplets
+    for _ = 1, count do
+        local spread_x = math.Rand(-0.5, 0.5)
+        local spread_z = math.Rand(-0.3, 0.6)
+        local dir = (fwd + right * spread_x + up * spread_z)
+        dir:Normalize()
 
-        ent.CurrentPos = ent:GetPos()
-
-        local length   = math.Rand(particle_length_random.min, particle_length_random.max)
-        local particle = emitter:Add(table.Random(particle_mats), ent.CurrentPos)
-
-        if not particle then return end
-
-        particle:SetDieTime(particle_lifetime * effect_self.CurrentStrenght)
-        particle:SetStartSize(math.Rand(1.9, 3.8) * particle_scale * size_mult)
-        particle:SetEndSize(0)
-        particle:SetStartLength(length * particle_scale * particle_start_lengt_mult * size_mult)
-        particle:SetEndLength(length * particle_scale * size_mult)
-        particle:SetGravity(Vector(0, 0, -particle_gravity))
-
-        local base_velocity = ent:GetForward() * -(particle_force + effect_self.ExtraForce) * effect_self.CurrentStrenght * force_mult
-
-        if spread_angle > 0 then
-            local spread_rad   = math.rad(spread_angle)
-            local random_pitch = math.Rand(-spread_rad, spread_rad)
-            local random_yaw   = math.Rand(-spread_rad, spread_rad)
-
-            local forward = ent:GetForward()
-            local right   = ent:GetRight()
-            local up      = ent:GetUp()
-
-            local spread_dir = forward + (right * math.sin(random_yaw)) + (up * math.sin(random_pitch))
-            spread_dir:Normalize()
-
-            local velocity_magnitude = base_velocity:Length()
-            base_velocity = spread_dir * -velocity_magnitude
+        local speed = math.Rand(base_speed * 0.5, base_speed * 1.4)
+        local droplet = emitter:Add(SMOKE_MATS[math.random(#SMOKE_MATS)], origin)
+        if droplet then
+            droplet:SetVelocity(dir * speed)
+            droplet:SetDieTime(math.Rand(0.5, 1.2))
+            droplet:SetStartAlpha(255)
+            droplet:SetEndAlpha(0)
+            droplet:SetStartSize(math.Rand(2, 5) * size_mult)
+            droplet:SetEndSize(math.Rand(1, 3) * size_mult)
+            droplet:SetRoll(math.Rand(0, 360))
+            droplet:SetRollDelta(0)
+            droplet:SetAirResistance(30)
+            droplet:SetGravity(Vector(0, 0, -600))
+            droplet:SetColor(BLOOD_COLOR_R, BLOOD_COLOR_G, BLOOD_COLOR_B)
+            droplet:SetCollide(true)
+            droplet:SetCollideCallback(function(_, pos, normal)
+                util.Decal(DECALS[math.random(#DECALS)], pos + normal, pos - normal)
+            end)
         end
+    end
 
-        particle:SetVelocity(base_velocity)
-        particle:SetCollide(true)
-        particle:SetCollideCallback(function(_, pos, normal)
-            if math.random(1, impact_chance) == 1 and (effect_self.CurrentStrenght or min_strenght) > 0.2 then
-                sound.Play(table.Random(drip_sounds), pos, sound_level, math.Rand(95, 105), 1)
-                local ds = decal_scale * size_mult
-                util.DecalEx(table.Random(decal_mats), Entity(0), pos, normal, Color(255, 255, 255), ds, ds)
-            end
-        end)
-
-        if timer.RepsLeft(effect_self.timername) == 0 then emitter:Finish() end
-    end)
-end
-
-function EFFECT:UpdateExtraForce()
-    self.ExtraForce = particle_pulsate_max_force * (1 + math.sin(CurTime() * particle_pulsate_speed_mult))
+    emitter:Finish()
 end
 
 function EFFECT:Think()
-    if timer.Exists(self.timername) then
-        local lifetime = CurTime() - self.StartTime
-        local dietime  = self.reps * (1 / particle_fps)
-        self.CurrentStrenght = math.Clamp(
-            1 - (lifetime / dietime) * (1 - min_strenght),
-            0, 1
-        )
-        self:UpdateExtraForce()
-        return true
-    else
-        return false
-    end
+    return false
 end
 
 function EFFECT:Render() end
-
-hook.Add("EntityRemoved", "GekkoBloodStream_Cleanup", function(ent)
-    if ent.gekko_bloodstream_timer then
-        timer.Remove(ent.gekko_bloodstream_timer)
-    end
-end)
