@@ -1093,6 +1093,28 @@ local function BloodVariant_GroundPool(origin)
         util.Effect("BloodImpact", e, false)
     end
 end
+-- ============================================================
+--  BLOOD VARIANT 6 — HEMO STREAM  (Hemo-fluid-stream port)
+--  Fires the gekko_bloodstream effect with randomized
+--  size_mult (SetScale) and force_mult (SetMagnitude).
+-- ============================================================
+local function BloodVariant_HemoStream(ent)
+    local size_mult  = math.Rand(0.6, 1.8)
+    local force_mult = math.Rand(0.7, 2.0)
+
+    -- flags: 0 = stream (long), 1 = burst (short)
+    -- We randomly pick between stream and burst for variety
+    local flags = (math.random(1, 3) == 1) and 1 or 0
+
+    local effectdata = EffectData()
+    effectdata:SetEntity(ent)
+    effectdata:SetFlags(flags)
+    effectdata:SetScale(size_mult)
+    effectdata:SetMagnitude(force_mult)
+    util.Effect("gekko_bloodstream", effectdata, false)
+end
+
+
 
 local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
@@ -1111,6 +1133,7 @@ local function GekkoDoBloodSplat(ent)
     elseif variant == 3 then BloodVariant_BurstCloud(origin)
     elseif variant == 4 then BloodVariant_ArcShower(origin, fwd)
     elseif variant == 5 then BloodVariant_GroundPool(ent:GetPos())
+    elseif variant == 6 then BloodVariant_HemoStream(ent)
     end
 end
 
