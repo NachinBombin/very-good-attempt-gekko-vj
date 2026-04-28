@@ -197,6 +197,29 @@ local BLOOD_DAMAGE_THRESHOLD = 80
 local BLOOD_RANDOM_CHANCE    = 40
 local GROUNDED_BLEED_CHANCE  = 0.85
 
+-- -------------------------------------------------------
+-- Vanilla GMod blood helper
+-- util.BloodDecal  - places a blood splat decal on a surface
+-- util.BloodDrips  - spawns physics blood drip particles
+-- Both are always available in Lua; no C++ method needed.
+-- -------------------------------------------------------
+local function GekkoVanillaBleed(ent, hitPos, hitDir)
+    -- Trace from slightly behind the hit point along hitDir to
+    -- find the exact surface normal for the decal.
+    local tr = util.TraceLine({
+        start  = hitPos - hitDir * 4,
+        endpos = hitPos + hitDir * 8,
+        filter = ent,
+    })
+    if tr.Hit then
+        util.BloodDecal("Blood", tr.HitPos, tr.HitNormal)
+    else
+        util.BloodDecal("Blood", hitPos, -hitDir)
+    end
+    -- BloodDrips: origin, direction, big (bool)
+    util.BloodDrips(hitPos, hitDir, false)
+end
+
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -583,12 +606,14 @@ function ENT:OnTakeDamage(dmginfo)
     local rawDmg = dmginfo:GetDamage()
 
     -- -------------------------------------------------------
-    -- Vanilla GMod bleed: blood decals + drips on the surface
-    -- at the hit position. Uses ENT.BloodColor automatically.
+    -- Vanilla GMod bleed: blood decal on the hit surface
+    -- + blood drip particles at the impact point.
     -- -------------------------------------------------------
     local attacker = dmginfo:GetAttacker()
-    local hitDir   = IsValid(attacker) and (hitPos - attacker:GetPos()):GetNormalized() or self:GetForward()
-    self:MakeBlood(hitPos, hitDir, dmginfo)
+    local hitDir   = IsValid(attacker)
+        and (hitPos - attacker:GetPos()):GetNormalized()
+        or  self:GetForward()
+    GekkoVanillaBleed(self, hitPos, hitDir)
 
     -- -------------------------------------------------------
     -- Custom bleed chance: pulse GekkoBloodSplat NWInt so
