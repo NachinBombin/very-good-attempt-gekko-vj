@@ -1,1 +1,0 @@
-$(cat /tmp/cl_init_patched.lua)
