@@ -1,5 +1,0 @@
--- THIS FILE IS INTENTIONALLY EMPTY.
--- GMod mounts effects from <addon_root>/lua/effects/ only.
--- The real gekko_bloodstream effect lives at:
---   lua/effects/gekko_bloodstream.lua
--- This stub exists only to prevent any stale includes.
