@@ -581,6 +581,19 @@ function ENT:OnTakeDamage(dmginfo)
     if hitPos.z > headZ then dmginfo:ScaleDamage(1/3) end
 
     local rawDmg = dmginfo:GetDamage()
+
+    -- -------------------------------------------------------
+    -- Vanilla GMod bleed: blood decals + drips on the surface
+    -- at the hit position. Uses ENT.BloodColor automatically.
+    -- -------------------------------------------------------
+    local attacker = dmginfo:GetAttacker()
+    local hitDir   = IsValid(attacker) and (hitPos - attacker:GetPos()):GetNormalized() or self:GetForward()
+    self:MakeBlood(hitPos, hitDir, dmginfo)
+
+    -- -------------------------------------------------------
+    -- Custom bleed chance: pulse GekkoBloodSplat NWInt so
+    -- cl_init fires one of the 6 particle/effect variants.
+    -- -------------------------------------------------------
     local doSplat
     if self._gekkoLegsDisabled then
         doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
@@ -957,7 +970,6 @@ end
 local function FireElastic(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist > 900 then
-        -- Cooldown guard (separate from the constraint check in GekkoElastic_Fire)
         print(string.format("[GekkoElastic] Re-rolling (dist=%.0f > 900)", dist))
         local alt
         repeat alt = RollWeapon() until alt ~= "ELASTIC"
@@ -1019,7 +1031,6 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     self:SetGekkoJumpState(self.JUMP_NONE)
     self:SetMoveType(MOVETYPE_STEP)
     self:SetNWBool("GekkoMGFiring", false)
-    self:SetNoDraw(true)
     self:SetNotSolid(true)
 
     self:GekkoElastic_OnRemove()
