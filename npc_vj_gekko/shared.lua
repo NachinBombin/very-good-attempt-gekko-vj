@@ -94,9 +94,17 @@ ENT.AnimationTranslations = {}
 
 -- ============================================================
 --  Blood / gore
+--
+--  IMPORTANT: BloodColor must be the VJ string constant
+--  (VJ.BLOOD_COLOR_RED = "Red"), NOT the GMod native integer
+--  (BLOOD_COLOR_RED = 0). VJ's SetupBloodColor() does:
+--      bloodNames[blColor]  -- keys are strings like "Red"
+--  Passing the integer 0 returns nil → BloodParticle /
+--  BloodDecal / BloodPool stay as empty tables → PICK({}) = nil
+--  → SpawnBloodParticles and SpawnBloodDecals silently bail.
 -- ============================================================
 ENT.Bleeds     = true
-ENT.BloodColor = BLOOD_COLOR_RED
+ENT.BloodColor = VJ.BLOOD_COLOR_RED   -- "Red" (VJ string, NOT GMod BLOOD_COLOR_RED int)
 
 -- ============================================================
 --  Sound precache

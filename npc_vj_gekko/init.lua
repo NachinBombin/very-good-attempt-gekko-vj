@@ -200,29 +200,26 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 -- -------------------------------------------------------
 -- Serverside blood helper.
 --
--- Correct GMod Lua API for blood on SERVER:
---   util.Decal( name, start, end )         -- paints a decal by tracing from start to end
---   util.Effect( "BloodImpact", data )     -- fires the BloodImpact particle effect
---                                             (networked automatically to all clients)
+-- Correct serverside blood API:
+--   util.Decal( name, start, endpos [, filter] )
+--       Traces between start→end and stamps a decal at the hit.
 --
--- util.BloodDecal / util.BloodDrips do NOT exist in Lua.
+--   ParticleEffect( name, pos, ang [, ent] )
+--       Broadcasts a named Source particle to all clients.
+--       This is the correct way to trigger "blood_impact_red_01"
+--       etc. from the server.  util.Effect("BloodImpact") is a
+--       Lua EFFECT — "BloodImpact" is NOT a registered Lua
+--       effect, so it silently does nothing from the server.
 -- -------------------------------------------------------
 local function GekkoVanillaBleed(ent, hitPos, hitDir)
-    -- util.Decal traces between two world points; offset slightly
-    -- behind and ahead of the impact so the trace crosses the surface.
-    util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8)
+    -- Decal: trace from slightly behind to slightly in front of
+    -- the surface so the ray always crosses the geometry.
+    util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8, ent)
 
-    -- BloodImpact effect: plays the client-side blood particle burst.
-    -- SetOrigin  = world impact position
-    -- SetNormal  = surface normal (inward hit direction)
-    -- SetEntity  = the entity that was hit (used for bone-attachment if needed)
-    -- SetScale   = particle scale (1 = normal)
-    local ed = EffectData()
-    ed:SetOrigin(hitPos)
-    ed:SetNormal(-hitDir)   -- normal points AWAY from the surface
-    ed:SetEntity(ent)
-    ed:SetScale(1)
-    util.Effect("BloodImpact", ed)
+    -- Particle burst: broadcast the VJ red blood impact particle
+    -- to all clients. Angle faces away from the surface (normal out).
+    local impactAng = (-hitDir):Angle()
+    ParticleEffect("blood_impact_red_01", hitPos, impactAng, ent)
 end
 
 local function GetActiveEnemy(ent)
@@ -610,7 +607,9 @@ function ENT:OnTakeDamage(dmginfo)
 
     local rawDmg = dmginfo:GetDamage()
 
-    -- Blood decal + BloodImpact particle burst at the hit point.
+    -- GekkoVanillaBleed: decal + particle burst at the bullet hit point.
+    -- This is supplemental to VJ's own SpawnBloodParticles / SpawnBloodDecals
+    -- which fire inside BaseClass.OnTakeDamage below.
     local attacker = dmginfo:GetAttacker()
     local hitDir   = IsValid(attacker)
         and (hitPos - attacker:GetPos()):GetNormalized()
