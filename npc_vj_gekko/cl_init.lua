@@ -1124,9 +1124,29 @@ local function GekkoDoBloodSplat(ent)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
 
-    local variant = (packed % 16) + 1
-    local origin  = ent:GetPos() + Vector(0, 0, 80)
+       local variant = (packed % 16) + 1
     local fwd     = ent:GetForward()
+
+    -- Pick a random bone to bleed from so wounds appear all over the model
+    local BLOOD_BONES = {
+        "b_spine3",       -- torso / upper body
+        "b_spine4",       -- neck / head area
+        "b_pelvis",       -- midsection
+        "b_l_upperleg",   -- left thigh
+        "b_r_upperleg",   -- right thigh
+        "b_l_hippiston1", -- left hip
+        "b_r_hippiston1", -- right hip
+        "b_pedestal",     -- lower base
+    }
+    local origin
+    local boneName = BLOOD_BONES[math.random(#BLOOD_BONES)]
+    local boneIdx  = ent:LookupBone(boneName)
+    if boneIdx and boneIdx >= 0 then
+        local mat = ent:GetBoneMatrix(boneIdx)
+        origin = mat and mat:GetTranslation() or (ent:GetPos() + Vector(0, 0, 80))
+    else
+        origin = ent:GetPos() + Vector(0, 0, 80)
+    end
 
     if     variant == 1 then BloodVariant_Geyser(origin)
     elseif variant == 2 then BloodVariant_RadialRing(origin)
