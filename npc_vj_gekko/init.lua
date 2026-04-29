@@ -200,26 +200,26 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 -- -------------------------------------------------------
 -- Serverside blood helper.
 --
--- Correct serverside blood API:
---   util.Decal( name, start, endpos [, filter] )
---       Traces between start→end and stamps a decal at the hit.
---
---   ParticleEffect( name, pos, ang [, ent] )
---       Broadcasts a named Source particle to all clients.
---       This is the correct way to trigger "blood_impact_red_01"
---       etc. from the server.  util.Effect("BloodImpact") is a
---       Lua EFFECT — "BloodImpact" is NOT a registered Lua
---       effect, so it silently does nothing from the server.
+-- FIX #3: util.Effect("BloodImpact", ed) is the correct way to
+-- trigger a blood burst from the server.  ParticleEffect() is a
+-- clientside-only function; calling it on the server is a no-op
+-- and produces zero visual output.  util.Effect() broadcasts the
+-- named Lua EFFECT to all connected clients.
 -- -------------------------------------------------------
 local function GekkoVanillaBleed(ent, hitPos, hitDir)
-    -- Decal: trace from slightly behind to slightly in front of
-    -- the surface so the ray always crosses the geometry.
+    -- Decal: trace slightly behind → in front so the ray always
+    -- crosses the surface geometry.
     util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8, ent)
 
-    -- Particle burst: broadcast the VJ red blood impact particle
-    -- to all clients. Angle faces away from the surface (normal out).
-    local impactAng = (-hitDir):Angle()
-    ParticleEffect("blood_impact_red_01", hitPos, impactAng, ent)
+    -- FIX #3: broadcast BloodImpact Lua effect to all clients.
+    -- SetNormal to the outward surface direction (away from attacker).
+    local ed = EffectData()
+    ed:SetOrigin(hitPos)
+    ed:SetNormal(-hitDir)   -- normal points away from the hit direction
+    ed:SetEntity(ent)
+    ed:SetScale(1)
+    ed:SetMagnitude(1)
+    util.Effect("BloodImpact", ed)
 end
 
 local function GetActiveEnemy(ent)
@@ -503,6 +503,12 @@ local function SafeInitVJTables(ent)
 end
 
 function ENT:Init()
+    -- FIX #1: SetupBloodColor must be called before anything else in Init()
+    -- so that VJBase's BloodParticle and BloodDecal fields are populated.
+    -- Without this call they remain nil forever and ALL vanilla VJ blood
+    -- effects (SpawnBloodParticles, SpawnBloodDecals) silently produce nothing.
+    self:SetupBloodColor(self.BloodColor)
+
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
     self:SetSkin(1)
     self.GekkoSpineBone  = self:LookupBone("b_spine4")    or -1
@@ -588,7 +594,17 @@ function ENT:OnTakeDamage(dmginfo)
         return
     end
 
+    -- FIX #2: Save the real incoming force BEFORE zeroing it.
+    -- VJBase reads DamageForce inside BaseClass.OnTakeDamage to aim its
+    -- blood trace rays. If we zero it beforehand those rays all point
+    -- straight down (0,0,0 → Vector(0,0,-1) fallback) producing decals
+    -- that always land on the floor rather than on the hit surface.
+    -- We restore the real force immediately before the BaseClass call so
+    -- VJ gets the correct direction, then re-zero afterward so physics
+    -- ragdoll impulse is not affected.
+    local savedForce = dmginfo:GetDamageForce()
     dmginfo:SetDamageForce(Vector(0,0,0))
+
     local hitPos = dmginfo:GetDamagePosition()
     if hitPos == vector_origin then
         local inflictor = dmginfo:GetInflictor()
@@ -596,6 +612,8 @@ function ENT:OnTakeDamage(dmginfo)
             hitPos = inflictor:GetPos()
         else
             dmginfo:SetDamagePosition(self:GetPos())
+            -- restore force even on early-exit path
+            dmginfo:SetDamageForce(savedForce)
             self.BaseClass.OnTakeDamage(self, dmginfo)
             return
         end
@@ -607,9 +625,7 @@ function ENT:OnTakeDamage(dmginfo)
 
     local rawDmg = dmginfo:GetDamage()
 
-    -- GekkoVanillaBleed: decal + particle burst at the bullet hit point.
-    -- This is supplemental to VJ's own SpawnBloodParticles / SpawnBloodDecals
-    -- which fire inside BaseClass.OnTakeDamage below.
+    -- GekkoVanillaBleed: decal + BloodImpact effect at the bullet hit point.
     local attacker = dmginfo:GetAttacker()
     local hitDir   = IsValid(attacker)
         and (hitPos - attacker:GetPos()):GetNormalized()
@@ -633,6 +649,10 @@ function ENT:OnTakeDamage(dmginfo)
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
+
+    -- FIX #2: restore the real force so VJ blood traces fire correctly,
+    -- then call the base class.
+    dmginfo:SetDamageForce(savedForce)
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
 
