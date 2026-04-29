@@ -199,32 +199,38 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- ============================================================
 --  BLOOD STREAM SYSTEM
---  Exact copy of Hemo-fluid-stream bloodstream.lua do_blood_stream.
---  Uses dmginfo:GetHitPhysBone() — the real GMod API.
---  fire util.Effect("gekko_bloodstream_fx") on it.
+--  Finds the closest bone to the actual hit position so the
+--  bloodstream anchor spawns at the wound, not the pelvis.
+--  Fires util.Effect("gekko_bloodstream_fx") client-side.
 -- ============================================================
 
 local function GekkoDoBloodStream(ent, dmginfo)
     if not IsValid(ent) then return end
 
-    local phys_bone = dmginfo:GetHitPhysBone(ent)
-    if not phys_bone then return end
+    local dmgpos = dmginfo:GetDamagePosition()
+    if not dmgpos or dmgpos == vector_origin then return end
 
-    local bone = ent:TranslatePhysBoneToBone(phys_bone)
-    if not bone or bone < 0 then return end
+    -- Find the bone closest to the hit position (GetHitPhysBone is unreliable on living NPCs)
+    local bone     = -1
+    local bestDist = math.huge
+    local boneCount = ent:GetBoneCount()
+    if not boneCount or boneCount <= 0 then return end
+    for i = 0, boneCount - 1 do
+        local bpos = ent:GetBonePosition(i)
+        if bpos then
+            local d = bpos:DistToSqr(dmgpos)
+            if d < bestDist then bestDist = d ; bone = i end
+        end
+    end
+    if bone < 0 then return end
 
     if not ent.gekko_next_bloodstream then ent.gekko_next_bloodstream = 0 end
     if ent.gekko_next_bloodstream > CurTime() then return end
     ent.gekko_next_bloodstream = CurTime() + math.Rand(1, 2)
 
-    local dmgpos = dmginfo:GetDamagePosition()
-    local dmgdir = dmginfo:GetDamageForce()
-
-    local lpos, lang = WorldToLocal(dmgpos, dmgdir:Angle(), ent:GetBonePosition(bone))
-
-    ent.bloodstream_lastdmgbone = bone
-    ent.bloodstream_lastdmglpos = lpos
-    ent.bloodstream_lastdmglang = lang
+    local bonePos, boneAng = ent:GetBonePosition(bone)
+    if not bonePos then return end
+    local lpos, lang = WorldToLocal(dmgpos, angle_zero, bonePos, boneAng)
 
     local meme = ents.Create("prop_dynamic")
     if not IsValid(meme) then return end
@@ -239,9 +245,7 @@ local function GekkoDoBloodStream(ent, dmginfo)
 
     meme:FollowBone(ent, bone)
     meme:SetLocalAngles(lang)
-    meme:SetLocalPos(lpos - lang:Forward() * -8)
-
-    meme.bloodstream_lastdmgbone = bone
+    meme:SetLocalPos(lpos)
 
     if not ent.gekko_bloodstream_ents then
         ent.gekko_bloodstream_ents = {}
@@ -645,7 +649,6 @@ function ENT:OnTakeDamage(dmginfo)
         if IsValid(inflictor) then
             hitPos = inflictor:GetPos()
         else
-            dmginfo:SetDamagePosition(self:GetPos())
             dmginfo:SetDamageForce(savedForce)
             self.BaseClass.OnTakeDamage(self, dmginfo)
             return
@@ -670,7 +673,6 @@ function ENT:OnTakeDamage(dmginfo)
 
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
-    dmginfo:SetDamagePosition(self:GetPos())
 
     dmginfo:SetDamageForce(savedForce)
     self.BaseClass.OnTakeDamage(self, dmginfo)
