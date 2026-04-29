@@ -202,7 +202,7 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 --  Exact port of Hemo-fluid-stream addon logic.
 --  On every hit: find closest physics bone, spawn a zero-size
 --  prop_dynamic anchored to that bone via FollowBone, then
---  fire util.Effect("bloodstreameffectzippy") on it.
+--  fire util.Effect("gekko_bloodstream_fx") on it.
 --  This is identical to how the standalone addon works.
 -- ============================================================
 
@@ -290,7 +290,7 @@ local function GekkoDoBloodStream(ent, dmgpos, dmgdir, flags)
     local effectdata = EffectData()
     effectdata:SetEntity(meme)
     effectdata:SetFlags(flags)
-    util.Effect("bloodstreameffectzippy", effectdata)
+    util.Effect("gekko_bloodstream_fx", effectdata)
 end
 
 -- ============================================================
