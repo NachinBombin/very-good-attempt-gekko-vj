@@ -1,30 +1,19 @@
 -- ============================================================
 --  gekko_bloodstream.lua
---  Standalone blood stream effect for VJ Gekko
---  Architecture mirrors Hemo-fluid-stream (NachinBombin)
+--  Standalone blood stream for VJ Gekko
 -- ============================================================
 
 -- ============================================================
---  MATERIAL PRE-CACHE  (FILE SCOPE — outside every function)
+--  MATERIAL PRE-CACHE  (file scope)
 --
---  particle/smokesprites_* are UnlitGeneric ADDITIVE textures
---  guaranteed in every GMod/HL2 install.  Black pixels become
---  fully transparent.  SetColor(R,0,0) tints them dark red =
---  blood globs with zero black-square fringing.
+--  gekko_blood_particle.vmt is our own VMT inside this addon:
+--    UnlitGeneric + $additive 1 + $vertexcolor 1 + $vertexalpha 1
+--    basetexture = decals/trail  (same texture as original Hemo)
+--  Additive shader: black pixels are fully transparent,
+--  no black squares possible.
 -- ============================================================
-local BLOOD_MATS = {
-    Material("particle/smokesprites_0001"),
-    Material("particle/smokesprites_0002"),
-    Material("particle/smokesprites_0003"),
-    Material("particle/smokesprites_0004"),
-    Material("particle/smokesprites_0005"),
-    Material("particle/smokesprites_0006"),
-    Material("particle/smokesprites_0007"),
-    Material("particle/smokesprites_0008"),
-    Material("particle/smokesprites_0009"),
-}
+local BLOOD_MAT = Material("gekko_blood_particle")
 
--- Decal materials for wall / floor splats on collision
 local DECAL_MATS = {
     Material("decals/Blood1"),
     Material("decals/Blood2"),
@@ -36,84 +25,83 @@ local DECAL_MATS = {
 
 -- ============================================================
 --  BONE EMISSION POINTS
---  Each burst picks one at random so blood sprays from
---  different body locations rather than one single point.
+--  Each burst picks one at random so blood comes from
+--  different body parts rather than a single origin point.
 -- ============================================================
 local EMISSION_BONES = {
-    "b_spine3",       -- chest / upper torso
-    "b_pelvis",       -- lower torso
-    "b_pedestal",     -- mid body
-    "b_r_hippiston1", -- right hip
-    "b_l_hippiston1", -- left hip
+    "b_spine3",
+    "b_pelvis",
+    "b_pedestal",
+    "b_r_hippiston1",
+    "b_l_hippiston1",
 }
 
 local function GetEmissionPos(ent)
-    -- Try a random bone from the list first
     local boneName = EMISSION_BONES[math.random(#EMISSION_BONES)]
     local boneIdx  = ent:LookupBone(boneName)
     if boneIdx and boneIdx >= 0 then
         local bmat = ent:GetBoneMatrix(boneIdx)
         if bmat then
-            -- Small random jitter so even the same bone varies slightly
             local p = bmat:GetTranslation()
             return p + Vector(
-                math.Rand(-12, 12),
-                math.Rand(-12, 12),
-                math.Rand(-8, 8)
+                math.Rand(-10, 10),
+                math.Rand(-10, 10),
+                math.Rand(-5,   5)
             )
         end
     end
-    -- Fallback: random offset from entity origin
+    -- Fallback if bone not found
     return ent:GetPos() + Vector(
-        math.Rand(-20, 20),
-        math.Rand(-20, 20),
-        math.Rand(30, 120)
+        math.Rand(-15, 15),
+        math.Rand(-15, 15),
+        math.Rand(30, 110)
     )
 end
 
 -- ============================================================
 --  PARTICLE SETTINGS  (matching Hemo defaults)
 -- ============================================================
-local PARTICLE_SCALE      = 0.4
-local PARTICLE_GRAVITY    = 1050
-local PARTICLE_FORCE      = 200
-local PARTICLE_LIFETIME   = 8
-local PARTICLE_REPS       = 300
-local PULSATE_MAX_FORCE   = 100
-local PULSATE_SPEED_MULT  = 8
-local DECAL_SCALE         = 0.2
-local MIN_STRENGTH        = 0.25
-
--- Blood colour — deep arterial red
-local BLOOD_R = 180
-local BLOOD_G = 0
-local BLOOD_B = 0
+local PARTICLE_SCALE     = 0.4
+local PARTICLE_GRAVITY   = 1050
+local PARTICLE_FORCE     = 200
+local PARTICLE_LIFETIME  = 8
+local PARTICLE_REPS      = 300
+local PULSATE_MAX_FORCE  = 100
+local PULSATE_SPEED_MULT = 8
+local DECAL_SCALE        = 0.2
+local MIN_STRENGTH       = 0.25
 
 -- ============================================================
 --  EFFECT
 -- ============================================================
 function EFFECT:Init(data)
     local ent = data:GetEntity()
+
+    -- DIAGNOSTIC: confirm this function is reached
+    print("[GekkoBloodstream] EFFECT:Init called. ent valid = " .. tostring(IsValid(ent)))
+
     if not IsValid(ent) then return end
 
-    self.Ent            = ent
-    self.reps           = PARTICLE_REPS
-    self.StartTime      = CurTime()
+    self.Ent             = ent
+    self.reps            = PARTICLE_REPS
+    self.StartTime       = CurTime()
     self.CurrentStrength = 1
+    self.ExtraForce      = 0
     self:_CalcExtraForce()
 
-    -- Unique name avoids timer collisions in multiplayer
     self.TimerName = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. math.floor(CurTime() * 1000)
 
-    -- Emitter anchored to entity origin; false = 2D mode (matches Hemo)
     local emitter = ParticleEmitter(ent:GetPos(), false)
-    if not emitter then return end
+    if not emitter then
+        print("[GekkoBloodstream] ERROR: ParticleEmitter returned nil")
+        return
+    end
 
-    -- Spurt cadence identical to Hemo (~60 fps base)
+    print("[GekkoBloodstream] Emitter created, starting " .. self.reps .. " rep timer")
+
     local spurt_delay = math.Rand(0.5, 5) / 60
-
-    local self_ref   = self
-    local reps_count = self.reps
+    local self_ref    = self
+    local reps_count  = self.reps
 
     timer.Create(self.TimerName, spurt_delay, self.reps, function()
         if not IsValid(ent) then
@@ -122,33 +110,21 @@ function EFFECT:Init(data)
             return
         end
 
-        -- Each burst emits from a DIFFERENT body location
-        local emitPos = GetEmissionPos(ent)
+        local emitPos  = GetEmissionPos(ent)
+        local particle = emitter:Add(BLOOD_MAT, emitPos)
 
-        local particle = emitter:Add(
-            BLOOD_MATS[math.random(#BLOOD_MATS)],
-            emitPos
-        )
         if not particle then return end
 
-        -- Size: matches Hemo scale
         local sz = math.Rand(1.9, 3.8) * PARTICLE_SCALE
         particle:SetStartSize(sz)
         particle:SetEndSize(0)
-
-        -- Length stretch gives the "droplet trail" look
         particle:SetStartLength(4  * PARTICLE_SCALE)
         particle:SetEndLength(100 * PARTICLE_SCALE)
-
         particle:SetDieTime(PARTICLE_LIFETIME * (self_ref.CurrentStrength or 1))
-
-        -- Tint the additive sprite red — black pixels vanish, white pixels go red
-        particle:SetColor(BLOOD_R, BLOOD_G, BLOOD_B)
-        particle:SetAlpha(230)
-
+        particle:SetColor(200, 0, 0)
+        particle:SetAlpha(240)
         particle:SetGravity(Vector(0, 0, -PARTICLE_GRAVITY))
 
-        -- Velocity: forward arc from NPC + pulsating force + small spread
         local fwd   = ent:GetForward()
         local force = (PARTICLE_FORCE + (self_ref.ExtraForce or 0)) * (self_ref.CurrentStrength or 1)
         particle:SetVelocity(
@@ -156,11 +132,10 @@ function EFFECT:Init(data)
             Vector(
                 math.Rand(-50, 50),
                 math.Rand(-50, 50),
-                math.Rand(10, 90)
+                math.Rand(10,  90)
             )
         )
 
-        -- Collide and leave a decal on whatever surface it hits
         particle:SetCollide(true)
         particle:SetCollideCallback(function(_, pos, normal)
             util.DecalEx(
@@ -178,7 +153,6 @@ function EFFECT:Init(data)
     end)
 end
 
--- Sinusoidal force pulsation — makes the stream pump rather than spray uniformly
 function EFFECT:_CalcExtraForce()
     self.ExtraForce = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
 end
@@ -187,7 +161,6 @@ function EFFECT:Think()
     if not timer.Exists(self.TimerName) then
         return false
     end
-
     local elapsed = CurTime() - self.StartTime
     local dietime = self.reps / 60
     self.CurrentStrength = math.Clamp(
