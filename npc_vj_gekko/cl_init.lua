@@ -911,7 +911,7 @@ end
 -- ============================================================
 --  BLOOD SPLATTER
 -- ============================================================
-local BLOOD_SIZE   = 0.4
+local BLOOD_SIZE   = 0.15
 local BLOOD_DECAL  = "Blood"
 local BLOOD_DECAL2 = "Blood"
 
@@ -972,7 +972,7 @@ local function BloodVariant_Geyser(origin)
         SpawnBloodBlob(
             origin + Vector(0, 0, math.Rand(20, 120) * s),
             dir,
-            math.Rand(800, 2200),
+            math.Rand(80, 220),
             math.Rand(8, 22)
         )
     end
