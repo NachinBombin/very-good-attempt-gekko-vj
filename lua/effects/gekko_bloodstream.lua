@@ -1,145 +1,204 @@
 -- =============================================================
---  lua/effects/gekko_bloodstream.lua
---  Gekko VJ blood-stream effect
+--  gekko_bloodstream.lua
+--  Called by BloodVariant_HemoStream(ent) in cl_init.lua via:
+--    util.Effect("gekko_bloodstream", effectdata, false)
 --
---  GMod loads effects ONLY from <addon_root>/lua/effects/.
---  The copy that was inside npc_vj_gekko/lua/effects/ was never
---  mounted, which is why util.Effect("gekko_bloodstream") silently
---  failed. This file is the single authoritative copy.
+--  EffectData contract:
+--    SetEntity(ent)      -- the gekko entity to bleed from
+--    SetFlags(0 or 1)    -- 0 = long stream, 1 = short burst
+--    SetScale(float)     -- size multiplier  (0.6 – 1.8)
+--    SetMagnitude(float) -- force multiplier (0.7 – 2.0)
 --
---  Crash fix: Material() called at file scope during effect
---  registration returns broken userdata in some GMod builds.
---  All Material() calls are deferred into EnsureMaterials()
---  which runs inside EFFECT:Init (safe, live-game context).
+--  Design fixes vs. the original Hemo port:
+--    1. Self-contained: no external ConVars, no custom sound packs required.
+--    2. Reads SetScale / SetMagnitude instead of ignoring them.
+--    3. Bleeds in a FORWARD + UPWARD arc so the stream is
+--       visible from the player's side.
+--    4. Uses HL2 stock blood particles/decals — always available.
 -- =============================================================
 
--- ---- path tables only (no Material() calls here) -----------
-local DECAL_PATHS = {
-    "decals/Blood1", "decals/Blood2", "decals/Blood3",
-    "decals/Blood4", "decals/Blood5", "decals/Blood6",
+local PARTICLE_MATS = {
+    Material("particle/blood1"),
+    Material("particle/blood2"),
+    Material("particle/blood3"),
+    Material("particle/blood4"),
+    Material("particle/blood5"),
+    Material("particle/blood6"),
 }
 
--- Tinted smoke sprites -- coloured red via SetColor, cheap & reliable
-local PARTICLE_PATHS = {
-    "particle/smokesprites_0001",
-    "particle/smokesprites_0002",
-    "particle/smokesprites_0003",
-    "particle/smokesprites_0004",
-    "particle/smokesprites_0005",
+local DECAL_MATS = {
+    Material("decals/Blood1"),
+    Material("decals/Blood2"),
+    Material("decals/Blood3"),
+    Material("decals/Blood4"),
+    Material("decals/Blood5"),
+    Material("decals/Blood6"),
 }
 
--- lazily populated on first EFFECT:Init
-local decal_mats    = nil
-local particle_mats = nil
+-- Stock HL2 flesh-hit sounds, always present in any GarrysMod install
+local SQUIRT_SOUNDS = {
+    "physics/flesh/flesh_impact_bullet1.wav",
+    "physics/flesh/flesh_impact_bullet2.wav",
+    "physics/flesh/flesh_impact_bullet3.wav",
+    "physics/flesh/flesh_impact_bullet4.wav",
+    "physics/flesh/flesh_impact_bullet5.wav",
+}
 
-local function EnsureMaterials()
-    if decal_mats then return end
-    decal_mats    = {}
-    particle_mats = {}
-    for _, v in ipairs(DECAL_PATHS)    do decal_mats[#decal_mats+1]       = Material(v) end
-    for _, v in ipairs(PARTICLE_PATHS) do particle_mats[#particle_mats+1] = Material(v) end
-end
+local DRIP_SOUNDS = {
+    "physics/flesh/flesh_squishy_impact_hard1.wav",
+    "physics/flesh/flesh_squishy_impact_hard2.wav",
+    "physics/flesh/flesh_squishy_impact_hard3.wav",
+    "physics/flesh/flesh_squishy_impact_hard4.wav",
+}
 
--- ---- blood colour ------------------------------------------
-local BLOOD_R, BLOOD_G, BLOOD_B = 180, 10, 10
+-- Tunable constants
+local BASE_PARTICLE_SCALE   = 0.45
+local BASE_GRAVITY          = 950
+local BASE_FORCE            = 220      -- units/s before multiplier
+local PULSATE_MAX_FORCE     = 90
+local PULSATE_SPEED_MULT    = 7
+local SPREAD_ANGLE_DEG      = 18       -- cone half-angle for spray
+local STREAM_LIFETIME       = 7
+local MIN_STRENGTH          = 0.20
 
--- ---- stream/burst constants --------------------------------
-local REPS_STREAM = 28     -- ticks for a long wound stream
-local REPS_BURST  = 10     -- ticks for a quick burst
-local SPURT_DELAY = 0.055  -- seconds per tick
+local REPS_STREAM           = 280      -- pulses for a long stream
+local REPS_BURST            = 120      -- pulses for a short burst
+local TIMER_INTERVAL        = 1 / 55  -- ~55 hz tick
 
--- =============================================================
 function EFFECT:Init(data)
-    EnsureMaterials()   -- safe: we are inside a running game frame
+    local ent = data:GetEntity()
+    if not IsValid(ent) then return end
 
-    local ent        = data:GetEntity()
-    local origin     = data:GetOrigin()
-    local flags      = data:GetFlags()
-    local size_mult  = math.max(data:GetScale(),     0.1)
-    local force_mult = math.max(data:GetMagnitude(), 0.1)
+    local flags      = data:GetFlags()       -- 0 = stream, 1 = burst
+    local size_mult  = data:GetScale()       -- passed from BloodVariant_HemoStream
+    local force_mult = data:GetMagnitude()
 
-    -- Fallback origin if caller didn't SetOrigin
-    if origin == Vector(0, 0, 0) and IsValid(ent) then
-        origin = ent:GetPos() + Vector(0, 0, 60)
-    end
+    -- Clamp to sane values in case caller passes garbage
+    size_mult  = math.Clamp(size_mult  or 1, 0.3, 3.0)
+    force_mult = math.Clamp(force_mult or 1, 0.3, 3.0)
 
-    local reps = (flags == 1) and REPS_BURST or REPS_STREAM
+    self.reps       = (flags == 1) and REPS_BURST or REPS_STREAM
+    self.StartTime  = CurTime()
+    self.CurrentStrength = 1
+    self:_UpdateExtraForce()
 
-    self.TimerName = "GekkoBS_" .. tostring(math.random(1, 999999)) .. "_" .. CurTime()
+    -- Unique timer name so multiple simultaneous bleeds don't stomp each other
+    self.timername = "GekkoBloodStream_" .. tostring(ent:EntIndex()) .. "_" .. tostring(CurTime())
 
-    local emitter = ParticleEmitter(origin, false)
+    local emitter = ParticleEmitter(ent:GetPos(), false)
     if not emitter then return end
 
-    local eff        = self
-    local base_speed = 220 * force_mult
+    -- Initial squirt sound
+    sound.Play(
+        SQUIRT_SOUNDS[math.random(#SQUIRT_SOUNDS)],
+        ent:GetPos(), 68, math.random(90, 110)
+    )
 
-    local function SpurtTick()
-        -- Follow a moving NPC
-        local pos = origin
-        if IsValid(ent) then
-            pos = ent:GetPos() + Vector(0, 0, 60)
+    local self_ref = self
+    local reps     = self.reps
+
+    timer.Create(self.timername, TIMER_INTERVAL, reps, function()
+        if not IsValid(ent) or not emitter then
+            if emitter then emitter:Finish() end
+            timer.Remove(self_ref.timername)
+            return
         end
 
-        local fwd   = IsValid(ent) and ent:GetForward() or Vector(1, 0, 0)
-        local right = IsValid(ent) and ent:GetRight()   or Vector(0, 1, 0)
-
-        -- Blood mist puff
-        local mist = emitter:Add(particle_mats[math.random(#particle_mats)], pos)
-        if mist then
-            mist:SetVelocity(Vector(math.Rand(-20, 20), math.Rand(-20, 20), math.Rand(5, 40)))
-            mist:SetDieTime(math.Rand(0.3, 0.7))
-            mist:SetStartAlpha(160)
-            mist:SetEndAlpha(0)
-            mist:SetStartSize(6  * size_mult)
-            mist:SetEndSize(18 * size_mult)
-            mist:SetRoll(math.Rand(0, 360))
-            mist:SetRollDelta(math.Rand(-3, 3))
-            mist:SetAirResistance(55)
-            mist:SetGravity(Vector(0, 0, -180))
-            mist:SetColor(BLOOD_R, BLOOD_G, BLOOD_B)
-        end
-
-        -- 3-5 arcing droplets
-        for _ = 1, math.random(3, 5) do
-            local dir = (fwd
-                + right * math.Rand(-0.55, 0.55)
-                + Vector(0, 0, 1) * math.Rand(-0.2, 0.7)):GetNormalized()
-
-            local droplet = emitter:Add(particle_mats[math.random(#particle_mats)], pos)
-            if droplet then
-                droplet:SetVelocity(dir * math.Rand(base_speed * 0.45, base_speed * 1.3))
-                droplet:SetDieTime(math.Rand(0.5, 1.3))
-                droplet:SetStartAlpha(255)
-                droplet:SetEndAlpha(0)
-                droplet:SetStartSize(math.Rand(2, 5) * size_mult)
-                droplet:SetEndSize(math.Rand(0.5, 2) * size_mult)
-                droplet:SetRoll(math.Rand(0, 360))
-                droplet:SetAirResistance(28)
-                droplet:SetGravity(Vector(0, 0, -620))
-                droplet:SetColor(BLOOD_R, BLOOD_G, BLOOD_B)
-                droplet:SetCollide(true)
-                droplet:SetCollideCallback(function(_, hpos, normal)
-                    util.DecalEx(
-                        decal_mats[math.random(#decal_mats)],
-                        Entity(0), hpos, normal,
-                        Color(255, 255, 255),
-                        0.15 * size_mult,
-                        0.15 * size_mult
-                    )
-                end)
+        -- -------------------------------------------------------
+        --  Emit position: random bone on the gekko so blood
+        --  appears to pour from the body, not the origin
+        -- -------------------------------------------------------
+        local BLOOD_BONES = {
+            "b_spine3",
+            "b_spine4",
+            "b_pelvis",
+            "b_l_upperleg",
+            "b_r_upperleg",
+            "b_l_hippiston1",
+            "b_r_hippiston1",
+        }
+        local emit_pos = ent:GetPos() + Vector(0, 0, 80)
+        local boneName = BLOOD_BONES[math.random(#BLOOD_BONES)]
+        local boneIdx  = ent:LookupBone(boneName)
+        if boneIdx and boneIdx >= 0 then
+            local mat = ent:GetBoneMatrix(boneIdx)
+            if mat then
+                emit_pos = mat:GetTranslation()
             end
         end
 
-        if timer.RepsLeft(eff.TimerName) == 0 then
+        -- -------------------------------------------------------
+        --  Direction: forward arc upward so stream is visible.
+        --  The original Hemo code used -GetForward() which shoots
+        --  BACKWARD (into geometry behind the NPC).  We use a
+        --  blend of forward + slight upward bias instead.
+        -- -------------------------------------------------------
+        local fwd = ent:GetForward()
+        local up  = Vector(0, 0, 1)
+
+        -- Build a spread cone around (fwd + 0.3*up)
+        local base_dir = (fwd + up * 0.3):GetNormalized()
+        local spread_rad = math.rad(SPREAD_ANGLE_DEG)
+        local right = fwd:Cross(up):GetNormalized()
+
+        local pitch_off = math.Rand(-spread_rad, spread_rad)
+        local yaw_off   = math.Rand(-spread_rad, spread_rad)
+        local dir = (base_dir + right * math.sin(yaw_off) + up * math.sin(pitch_off)):GetNormalized()
+
+        -- -------------------------------------------------------
+        --  Particle
+        -- -------------------------------------------------------
+        local speed = (BASE_FORCE + self_ref.ExtraForce) * self_ref.CurrentStrength * force_mult
+        local sz    = BASE_PARTICLE_SCALE * size_mult
+
+        local particle = emitter:Add(PARTICLE_MATS[math.random(#PARTICLE_MATS)], emit_pos)
+        if particle then
+            particle:SetDieTime(STREAM_LIFETIME * self_ref.CurrentStrength)
+            particle:SetStartSize(math.Rand(2.0, 4.0) * sz)
+            particle:SetEndSize(0)
+            particle:SetStartLength(10 * sz)
+            particle:SetEndLength(math.Rand(80, 120) * sz)
+            particle:SetGravity(Vector(0, 0, -BASE_GRAVITY))
+            particle:SetVelocity(dir * speed)
+            particle:SetCollide(true)
+            particle:SetCollideCallback(function(_, pos, normal)
+                if self_ref.CurrentStrength > 0.15 then
+                    sound.Play(
+                        DRIP_SOUNDS[math.random(#DRIP_SOUNDS)],
+                        pos, 60, math.random(90, 115)
+                    )
+                    local ds = 0.18 * size_mult
+                    util.DecalEx(
+                        DECAL_MATS[math.random(#DECAL_MATS)],
+                        Entity(0), pos, normal,
+                        Color(255, 255, 255), ds, ds
+                    )
+                end
+            end)
+        end
+
+        if timer.RepsLeft(self_ref.timername) == 0 then
             emitter:Finish()
         end
-    end
+    end)
+end
 
-    timer.Create(self.TimerName, SPURT_DELAY, reps, SpurtTick)
+function EFFECT:_UpdateExtraForce()
+    self.ExtraForce = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
 end
 
 function EFFECT:Think()
-    return timer.Exists(self.TimerName)
+    if timer.Exists(self.timername) then
+        local lifetime = CurTime() - self.StartTime
+        local dietime  = self.reps * TIMER_INTERVAL
+        self.CurrentStrength = math.Clamp(
+            1 - (lifetime / dietime) * (1 - MIN_STRENGTH),
+            0, 1
+        )
+        self:_UpdateExtraForce()
+        return true
+    end
+    return false
 end
 
 function EFFECT:Render() end
