@@ -193,8 +193,8 @@ local NIKITA_MUZZLE_SMOKE_STAGGER = 0.06
 
 local JUMP_STATE_NAMES       = { [0]="NONE", [1]="RISING", [2]="FALLING", [3]="LAND" }
 local HEAD_Z_FRACTION        = 0.65
-local BLOOD_DAMAGE_THRESHOLD = 80
-local BLOOD_RANDOM_CHANCE    = 40
+local BLOOD_DAMAGE_THRESHOLD = 20
+local BLOOD_RANDOM_CHANCE    = 80
 local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- -------------------------------------------------------
@@ -507,7 +507,8 @@ function ENT:Init()
     -- so that VJBase's BloodParticle and BloodDecal fields are populated.
     -- Without this call they remain nil forever and ALL vanilla VJ blood
     -- effects (SpawnBloodParticles, SpawnBloodDecals) silently produce nothing.
-    self:SetupBloodColor(self.BloodColor)
+     self.BloodColor = BLOOD_COLOR_RED
+     self:SetupBloodColor(self.BloodColor)
 
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
     self:SetSkin(1)
