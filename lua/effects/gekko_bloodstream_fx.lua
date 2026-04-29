@@ -1,16 +1,13 @@
 -- lua/effects/gekko_bloodstream_fx.lua
 -- Standalone port of Hemo-fluid-stream bloodstreameffectzippy.lua
 -- Self-contained: no external addon dependency.
--- Registered as "gekko_bloodstream_fx" so init.lua's util.Effect call works directly.
 
 -- ============================================================
---  LIMB MULTIPLIER (inlined from bloodstream_menu.lua)
---  Returns a force/density multiplier based on bone name.
+--  LIMB MULTIPLIER
 -- ============================================================
 local function GetLimbMultiplierForBone(boneName)
     if not boneName then return 1 end
     boneName = string.lower(boneName)
-
     if string.find(boneName, "head")                                                     then return 2.5  end
     if string.find(boneName, "neck")                                                     then return 2.0  end
     if string.find(boneName, "clavicle") or string.find(boneName, "upperarm") or
@@ -18,34 +15,34 @@ local function GetLimbMultiplierForBone(boneName)
        string.find(boneName, "hand")                                                     then return 1.2  end
     if string.find(boneName, "thigh")    or string.find(boneName, "calf")    or
        string.find(boneName, "foot")     or string.find(boneName, "toe")                then return 1.2  end
-    -- torso / spine / pelvis / anything else
     return 1.0
 end
 
 -- ============================================================
---  MATERIALS
---  Direct construction avoids table.insert(t, IMaterial)
---  which errors in GMod's LuaJIT: "number expected, got userdata"
+--  MATERIALS  (exact same paths as original)
 -- ============================================================
-local particle_mats = {
-    Material("decals/trail"),
-}
+local function make_materials(tbl)
+    local out = {}
+    for _, v in ipairs(tbl) do
+        table.insert(out, Material(v))
+    end
+    return out
+end
 
-local decal_mats = {
-    Material("decals/Blood1"),
-    Material("decals/Blood3"),
-    Material("decals/Blood4"),
-    Material("decals/Blood5"),
-    Material("decals/Blood6"),
-    Material("decals/Blood2"),
-    Material("decals/Blood3"),
-}
+local particle_mats = make_materials({ "decals/trail" })
+
+local decal_mats = make_materials({
+    "decals/Blood1",
+    "decals/Blood3",
+    "decals/Blood4",
+    "decals/Blood5",
+    "decals/Blood6",
+    "decals/Blood2",
+    "decals/Blood3",
+})
 
 -- ============================================================
---  SOUNDS
---  Custom Hemo sounds are unavailable in standalone mode,
---  so we fall back to vanilla HL2 equivalents that are
---  always present in any GMod install.
+--  SOUNDS  (vanilla HL2 fallbacks; Hemo sounds unavailable standalone)
 -- ============================================================
 local drip_sounds = {
     "physics/flesh/flesh_squishy_impact_hard1.wav",
@@ -63,42 +60,42 @@ local squrt_sounds = {
 }
 
 -- ============================================================
---  PARTICLE CONSTANTS  (mirrored from original)
+--  PARTICLE CONSTANTS  (identical to original)
 -- ============================================================
-local particle_length_random        = { min = 100, max = 100 }
-local particle_start_lengt_mult     = 0.1
-local particle_scale                = 0.4
-local particle_gravity              = 1050
-local particle_force                = 200
-local particle_pulsate_max_force    = 100
-local particle_pulsate_speed_mult   = 8
-local particle_reps_stream          = 300
-local particle_reps_burst           = 150
-local particle_fps                  = 60
-local particle_lifetime             = 8
-local decal_scale                   = 0.2
-local sound_level                   = 70
-local sound_level2                  = 35
-local min_strenght                  = 0.25
-local impact_chance                 = 1     -- 1-in-x; 1 = every collision
-
--- Spread angle in degrees (matches original default ConVar value of 5)
-local stream_spread                 = 5
+local particle_length_random     = { min = 100, max = 100 }
+local particle_start_lengt_mult  = 0.1
+local particle_scale             = 0.4
+local particle_gravity           = 1050
+local particle_force             = 200
+local particle_pulsate_max_force = 100
+local particle_pulsate_speed_mult= 8
+local particle_reps_stream       = 300
+local particle_reps_burst        = 150
+local particle_fps               = 60
+local particle_lifetime          = 8
+local decal_scale                = 0.2
+local sound_level                = 70
+local sound_level2               = 35
+local min_strenght               = 0.25
+local impact_chance              = 1
+local stream_spread              = 5
 
 -- ============================================================
 --  EFFECT
+--  NOTE: do NOT declare "local EFFECT = {}" here.
+--  GMod sets EFFECT as a global before loading this file and
+--  auto-registers it by filename after load. A local would shadow
+--  that global, causing the framework to overwrite our table
+--  with an empty one.
 -- ============================================================
-local EFFECT = {}
 
 function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
     local flags     = data:GetFlags()
-    local base_reps = (flags == 1) and particle_reps_burst or particle_reps_stream
-    self.reps       = base_reps
+    self.reps       = (flags == 1) and particle_reps_burst or particle_reps_stream
 
-    -- ---- limb multiplier ------------------------------------------
     local boneName = ""
     if ent.bloodstream_lastdmgbone then
         boneName = ent:GetBoneName(ent.bloodstream_lastdmgbone) or ""
@@ -126,8 +123,8 @@ function EFFECT:Init(data)
     local timername   = self.timername
 
     timer.Create(timername, spurt_delay, reps, function()
-        if not IsValid(ent) or not emitter then
-            if emitter then emitter:Finish() end
+        if not IsValid(ent) then
+            emitter:Finish()
             timer.Remove(timername)
             return
         end
@@ -153,16 +150,12 @@ function EFFECT:Init(data)
                 local spread_rad   = math.rad(stream_spread)
                 local random_pitch = math.Rand(-spread_rad, spread_rad)
                 local random_yaw   = math.Rand(-spread_rad, spread_rad)
-
                 local forward = ent:GetForward()
                 local right   = ent:GetRight()
                 local up      = ent:GetUp()
-
                 local spread_dir = forward + (right * math.sin(random_yaw)) + (up * math.sin(random_pitch))
                 spread_dir:Normalize()
-
-                local vel_magnitude = base_velocity:Length()
-                base_velocity = spread_dir * -vel_magnitude
+                base_velocity = spread_dir * -base_velocity:Length()
             end
 
             particle:SetVelocity(base_velocity)
@@ -170,8 +163,7 @@ function EFFECT:Init(data)
             particle:SetCollideCallback(function(_, pos, normal)
                 if math.random(1, impact_chance) == 1 and (effect_self.CurrentStrenght or min_strenght) > 0.2 then
                     sound.Play(table.Random(drip_sounds), pos, sound_level, math.Rand(95, 105))
-                    local decal_size = decal_scale
-                    util.DecalEx(table.Random(decal_mats), Entity(0), pos, normal, Color(255, 255, 255), decal_size, decal_size)
+                    util.DecalEx(table.Random(decal_mats), Entity(0), pos, normal, Color(255, 255, 255), decal_scale, decal_scale)
                 end
             end)
         end
@@ -198,5 +190,3 @@ function EFFECT:Think()
 end
 
 function EFFECT:Render() end
-
-effects.Register(EFFECT, "gekko_bloodstream_fx")
