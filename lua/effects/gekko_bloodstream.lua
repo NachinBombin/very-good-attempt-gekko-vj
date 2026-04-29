@@ -1,26 +1,16 @@
 -- ============================================================
 --  gekko_bloodstream.lua
---  Standalone blood stream for VJ Gekko
---  Mirrors Hemo-fluid-stream architecture exactly.
---  Additions: multi-bone emission + torso-height fallback.
+--  Blood stream for VJ Gekko.
+--
+--  ParticleEmitter abandoned: every material tried rendered
+--  as black squares on target system.
+--
+--  Instead we fire util.Effect("BloodSpray") + "BloodImpact"
+--  in rapid bursts from random bone positions.
+--  These are the SAME built-in effects used by the other five
+--  blood variants in cl_init — guaranteed to render correctly.
+--  Zero custom materials. 100% stock GMod.
 -- ============================================================
-
--- ============================================================
---  MATERIAL PRE-CACHE  (file scope, exactly like Hemo)
---  decals/trail is stock HL2 — no addon VMT needed.
--- ============================================================
-local BLOOD_MATS = {
-    Material("decals/trail"),
-}
-
-local DECAL_MATS = {
-    Material("decals/Blood1"),
-    Material("decals/Blood2"),
-    Material("decals/Blood3"),
-    Material("decals/Blood4"),
-    Material("decals/Blood5"),
-    Material("decals/Blood6"),
-}
 
 -- ============================================================
 --  BONE EMISSION POINTS
@@ -33,9 +23,7 @@ local EMISSION_BONES = {
     "b_l_hippiston1",
 }
 
--- Torso height offset used when bone lookup fails.
--- Gekko pelvis sits ~80 units above its feet (entity origin).
-local TORSO_Z = 80
+local TORSO_Z = 80   -- fallback height when bone lookup fails
 
 local function GetEmissionPos(ent)
     local boneName = EMISSION_BONES[math.random(#EMISSION_BONES)]
@@ -44,13 +32,12 @@ local function GetEmissionPos(ent)
         local bmat = ent:GetBoneMatrix(boneIdx)
         if bmat then
             return bmat:GetTranslation() + Vector(
-                math.Rand(-10, 10),
-                math.Rand(-10, 10),
-                math.Rand(-5,   5)
+                math.Rand(-12, 12),
+                math.Rand(-12, 12),
+                math.Rand(-6,   6)
             )
         end
     end
-    -- Fallback: mid-body, NOT feet
     return ent:GetPos() + Vector(
         math.Rand(-15, 15),
         math.Rand(-15, 15),
@@ -59,17 +46,16 @@ local function GetEmissionPos(ent)
 end
 
 -- ============================================================
---  PARTICLE SETTINGS  (identical to Hemo defaults)
+--  STREAM SETTINGS
 -- ============================================================
-local PARTICLE_SCALE     = 0.4
-local PARTICLE_GRAVITY   = 1050
-local PARTICLE_FORCE     = 200
-local PARTICLE_LIFETIME  = 8
-local PARTICLE_REPS      = 300
-local PULSATE_MAX_FORCE  = 100
-local PULSATE_SPEED_MULT = 8
-local DECAL_SCALE        = 0.2
-local MIN_STRENGTH       = 0.25
+local STREAM_REPS      = 40     -- number of bursts
+local STREAM_INTERVAL  = 0.06   -- seconds between bursts (~17Hz)
+local SPRAY_SCALE_MIN  = 3
+local SPRAY_SCALE_MAX  = 6
+local SPRAY_MAG_MIN    = 8
+local SPRAY_MAG_MAX    = 18
+local IMPACT_SCALE_MIN = 4
+local IMPACT_SCALE_MAX = 8
 
 -- ============================================================
 --  EFFECT
@@ -81,86 +67,41 @@ function EFFECT:Init(data)
 
     if not IsValid(ent) then return end
 
-    self.Ent             = ent
-    self.reps            = PARTICLE_REPS
-    self.StartTime       = CurTime()
-    self.CurrentStrength = 1
-    self.ExtraForce      = 0
-    self:_CalcExtraForce()
-
     self.TimerName = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. math.floor(CurTime() * 1000)
 
-    -- Emitter origin at torso height, not feet
-    local emitOrigin = ent:GetPos() + Vector(0, 0, TORSO_Z)
-    local emitter    = ParticleEmitter(emitOrigin, false)
-    if not emitter then
-        print("[GekkoBloodstream] ERROR: emitter nil")
-        return
-    end
-
-    local spurt_delay = math.Rand(0.5, 5) / 60
-    local self_ref    = self
-    local reps_count  = self.reps
-
-    timer.Create(self.TimerName, spurt_delay, self.reps, function()
+    timer.Create(self.TimerName, STREAM_INTERVAL, STREAM_REPS, function()
         if not IsValid(ent) then
-            emitter:Finish()
-            timer.Remove(self_ref.TimerName)
+            timer.Remove(self.TimerName)
             return
         end
 
-        local emitPos  = GetEmissionPos(ent)
-        local particle = emitter:Add(table.Random(BLOOD_MATS), emitPos)
-        if not particle then return end
+        local pos = GetEmissionPos(ent)
+        local fwd = ent:GetForward()
 
-        -- Identical to Hemo: no SetColor, no SetAlpha
-        particle:SetDieTime(PARTICLE_LIFETIME * (self_ref.CurrentStrength or 1))
-        particle:SetStartSize(math.Rand(1.9, 3.8) * PARTICLE_SCALE)
-        particle:SetEndSize(0)
-        particle:SetStartLength(4   * PARTICLE_SCALE)
-        particle:SetEndLength(100  * PARTICLE_SCALE)
-        particle:SetGravity(Vector(0, 0, -PARTICLE_GRAVITY))
+        -- Direction: mostly away from NPC forward, slight upward arc
+        local dir = (fwd * -1 + Vector(
+            math.Rand(-0.4, 0.4),
+            math.Rand(-0.4, 0.4),
+            math.Rand(0.05, 0.4)
+        )):GetNormalized()
 
-        local fwd   = ent:GetForward()
-        local force = (PARTICLE_FORCE + (self_ref.ExtraForce or 0)) * (self_ref.CurrentStrength or 1)
-        particle:SetVelocity(
-            fwd * -force +
-            Vector(
-                math.Rand(-50, 50),
-                math.Rand(-50, 50),
-                math.Rand(10,  90)
-            )
-        )
+        -- BloodSpray: travelling blood droplets
+        local eSpray = EffectData()
+        eSpray:SetOrigin(pos)
+        eSpray:SetNormal(dir)
+        eSpray:SetScale(math.Rand(SPRAY_SCALE_MIN, SPRAY_SCALE_MAX))
+        eSpray:SetMagnitude(math.Rand(SPRAY_MAG_MIN, SPRAY_MAG_MAX))
+        util.Effect("BloodSpray", eSpray, false)
 
-        particle:SetCollide(true)
-        particle:SetCollideCallback(function(_, pos, normal)
-            util.DecalEx(
-                DECAL_MATS[math.random(#DECAL_MATS)],
-                Entity(0), pos, normal,
-                Color(255, 255, 255),
-                DECAL_SCALE, DECAL_SCALE
-            )
-        end)
-
-        reps_count = reps_count - 1
-        if reps_count <= 0 then emitter:Finish() end
+        -- BloodImpact: burst cloud at emission point
+        local eImpact = EffectData()
+        eImpact:SetOrigin(pos)
+        eImpact:SetNormal(dir)
+        eImpact:SetScale(math.Rand(IMPACT_SCALE_MIN, IMPACT_SCALE_MAX))
+        eImpact:SetMagnitude(math.Rand(4, 10))
+        util.Effect("BloodImpact", eImpact, false)
     end)
 end
 
-function EFFECT:_CalcExtraForce()
-    self.ExtraForce = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
-end
-
-function EFFECT:Think()
-    if not timer.Exists(self.TimerName) then return false end
-    local elapsed = CurTime() - self.StartTime
-    local dietime = self.reps / 60
-    self.CurrentStrength = math.Clamp(
-        1 - (elapsed / dietime) * (1 - MIN_STRENGTH),
-        MIN_STRENGTH, 1
-    )
-    self:_CalcExtraForce()
-    return true
-end
-
+function EFFECT:Think()  return false end
 function EFFECT:Render() end
