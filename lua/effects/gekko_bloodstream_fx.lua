@@ -3,6 +3,9 @@
 --  Standalone blood stream effect for npc_vj_gekko.
 --  Ported from Hemo-fluid-stream (bloodstreameffectzippy).
 --  No external dependencies required.
+--
+--  Registered as "gekko_bloodstream" to match cl_init call:
+--    util.Effect("gekko_bloodstream", effectdata, false)
 -- ============================================================
 
 local EFFECT = {}
@@ -15,19 +18,23 @@ local stream_speed_max = 90
 local stream_gravity   = Vector(0, 0, -200)
 local drip_chance      = 0.35
 local drip_speed       = 15
-local blood_color      = Color(180, 10, 10)
+local blood_r, blood_g, blood_b = 180, 10, 10
 
+-- BUG FIX #2: emitter:Add() requires a raw STRING path, not an IMaterial object.
+-- Storing strings here; they are passed directly to emitter:Add() each tick.
 local BLOOD_MATERIALS = {
-    Material("effects/blood"),
-    Material("effects/blood2"),
-    Material("effects/blood3"),
-    Material("effects/blood4"),
+    "effects/blood",
+    "effects/blood2",
+    "effects/blood3",
+    "effects/blood4",
 }
 
+-- BUG FIX #3: decals/blood* are decal paths, not particle sprite paths.
+-- Drip particles must also use the effects/ sprite paths.
 local DRIP_MATERIALS = {
-    Material("decals/blood1"),
-    Material("decals/blood2"),
-    Material("decals/blood3"),
+    "effects/blood",
+    "effects/blood2",
+    "effects/blood3",
 }
 
 function EFFECT:Init(data)
@@ -39,20 +46,20 @@ function EFFECT:Init(data)
     self.anchor     = anchor
     self.starttime  = CurTime()
 
-    local effect_self = self
-
     timer.Create(timername, stream_rate, math.ceil(stream_lifetime / stream_rate), function()
         if not IsValid(anchor) then
             timer.Remove(timername)
             return
         end
 
-        local pos = anchor:GetPos()
+        local pos = anchor:GetPos() + Vector(0, 0, 70)
         local ang = anchor:GetAngles()
 
-        -- Main blood jet
-        local emitter = ParticleEmitter(pos)
+        -- BUG FIX #4: second arg true = 3D emitter.
+        -- Without it particles are 2D sprites; gravity/collide barely visible.
+        local emitter = ParticleEmitter(pos, true)
         if emitter then
+            -- BUG FIX #2 applied: passing string path, not IMaterial object.
             local particle = emitter:Add(BLOOD_MATERIALS[math.random(#BLOOD_MATERIALS)], pos)
             if particle then
                 local forward = ang:Forward()
@@ -71,12 +78,11 @@ function EFFECT:Init(data)
                 particle:SetEndAlpha(0)
                 particle:SetStartSize(particle_scale * math.Rand(6, 14))
                 particle:SetEndSize(particle_scale * math.Rand(2, 6))
-                particle:SetColor(blood_color.r, blood_color.g, blood_color.b)
+                particle:SetColor(blood_r, blood_g, blood_b)
                 particle:SetRoll(math.Rand(0, 360))
                 particle:SetRollDelta(math.Rand(-2, 2))
                 particle:SetCollide(true)
                 particle:SetCollideCallback(function(norm, p)
-                    -- splat decal on impact
                     util.Decal("Blood", p:GetPos() + norm * 2, p:GetPos() - norm * 4)
                 end)
             end
@@ -85,8 +91,10 @@ function EFFECT:Init(data)
 
         -- Occasional drip
         if math.random() < drip_chance then
-            local demitter = ParticleEmitter(pos)
+            -- BUG FIX #4: 3D emitter for drips as well.
+            local demitter = ParticleEmitter(pos, true)
             if demitter then
+                -- BUG FIX #2 + #3: string path from effects/ folder.
                 local dp = demitter:Add(DRIP_MATERIALS[math.random(#DRIP_MATERIALS)], pos + Vector(0,0,-2))
                 if dp then
                     dp:SetVelocity(Vector(
@@ -101,7 +109,7 @@ function EFFECT:Init(data)
                     dp:SetEndAlpha(0)
                     dp:SetStartSize(particle_scale * math.Rand(3, 7))
                     dp:SetEndSize(0)
-                    dp:SetColor(blood_color.r, blood_color.g, blood_color.b)
+                    dp:SetColor(blood_r, blood_g, blood_b)
                     dp:SetRoll(math.Rand(0, 360))
                 end
                 demitter:Finish()
@@ -124,4 +132,6 @@ end
 
 function EFFECT:Render() end
 
-effects.Register(EFFECT, "gekko_bloodstream_fx")
+-- BUG FIX #1: was "gekko_bloodstream_fx" — cl_init calls util.Effect("gekko_bloodstream").
+-- Name mismatch meant the effect NEVER ran. Renamed to match the call site.
+effects.Register(EFFECT, "gekko_bloodstream")
