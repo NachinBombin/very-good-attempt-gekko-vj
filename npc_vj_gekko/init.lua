@@ -17,6 +17,8 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
 AddCSLuaFile("bullet_impact_system.lua")
+-- FIX: network the effect file to clients so it loads in the effects/ path
+AddCSLuaFile("../lua/effects/gekko_bloodstream.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -197,25 +199,11 @@ local BLOOD_DAMAGE_THRESHOLD = 20
 local BLOOD_RANDOM_CHANCE    = 80
 local GROUNDED_BLEED_CHANCE  = 0.85
 
--- -------------------------------------------------------
--- Serverside blood helper.
---
--- FIX #3: util.Effect("BloodImpact", ed) is the correct way to
--- trigger a blood burst from the server.  ParticleEffect() is a
--- clientside-only function; calling it on the server is a no-op
--- and produces zero visual output.  util.Effect() broadcasts the
--- named Lua EFFECT to all connected clients.
--- -------------------------------------------------------
 local function GekkoVanillaBleed(ent, hitPos, hitDir)
-    -- Decal: trace slightly behind → in front so the ray always
-    -- crosses the surface geometry.
     util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8, ent)
-
-    -- FIX #3: broadcast BloodImpact Lua effect to all clients.
-    -- SetNormal to the outward surface direction (away from attacker).
     local ed = EffectData()
     ed:SetOrigin(hitPos)
-    ed:SetNormal(-hitDir)   -- normal points away from the hit direction
+    ed:SetNormal(-hitDir)
     ed:SetEntity(ent)
     ed:SetScale(1)
     ed:SetMagnitude(1)
@@ -231,7 +219,7 @@ local function GetActiveEnemy(ent)
 end
 
 local function RollWeapon()
-    local r   = math.random(1, 120)   -- 108 + WWEIGHT_ELASTIC(12)
+    local r   = math.random(1, 120)
     local cum = 0
     cum = cum + WWEIGHT_MG;             if r <= cum then return "MG"           end
     cum = cum + WWEIGHT_MISSILE_SINGLE; if r <= cum then return "MISSILE"      end
@@ -503,12 +491,8 @@ local function SafeInitVJTables(ent)
 end
 
 function ENT:Init()
-    -- FIX #1: SetupBloodColor must be called before anything else in Init()
-    -- so that VJBase's BloodParticle and BloodDecal fields are populated.
-    -- Without this call they remain nil forever and ALL vanilla VJ blood
-    -- effects (SpawnBloodParticles, SpawnBloodDecals) silently produce nothing.
-     self.BloodColor = BLOOD_COLOR_RED
-     self:SetupBloodColor(self.BloodColor)
+    self.BloodColor = BLOOD_COLOR_RED
+    self:SetupBloodColor(self.BloodColor)
 
     self:SetCollisionBounds(Vector(-64,-64,0), Vector(64,64,200))
     self:SetSkin(1)
@@ -595,14 +579,6 @@ function ENT:OnTakeDamage(dmginfo)
         return
     end
 
-    -- FIX #2: Save the real incoming force BEFORE zeroing it.
-    -- VJBase reads DamageForce inside BaseClass.OnTakeDamage to aim its
-    -- blood trace rays. If we zero it beforehand those rays all point
-    -- straight down (0,0,0 → Vector(0,0,-1) fallback) producing decals
-    -- that always land on the floor rather than on the hit surface.
-    -- We restore the real force immediately before the BaseClass call so
-    -- VJ gets the correct direction, then re-zero afterward so physics
-    -- ragdoll impulse is not affected.
     local savedForce = dmginfo:GetDamageForce()
     dmginfo:SetDamageForce(Vector(0,0,0))
 
@@ -613,7 +589,6 @@ function ENT:OnTakeDamage(dmginfo)
             hitPos = inflictor:GetPos()
         else
             dmginfo:SetDamagePosition(self:GetPos())
-            -- restore force even on early-exit path
             dmginfo:SetDamageForce(savedForce)
             self.BaseClass.OnTakeDamage(self, dmginfo)
             return
@@ -626,15 +601,12 @@ function ENT:OnTakeDamage(dmginfo)
 
     local rawDmg = dmginfo:GetDamage()
 
-    -- GekkoVanillaBleed: decal + BloodImpact effect at the bullet hit point.
     local attacker = dmginfo:GetAttacker()
     local hitDir   = IsValid(attacker)
         and (hitPos - attacker:GetPos()):GetNormalized()
         or  self:GetForward()
     GekkoVanillaBleed(self, hitPos, hitDir)
 
-    -- Pulse GekkoBloodSplat NWInt so cl_init fires a heavier
-    -- particle/effect variant on big or grounded hits.
     local doSplat
     if self._gekkoLegsDisabled then
         doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
@@ -644,15 +616,14 @@ function ENT:OnTakeDamage(dmginfo)
     if doSplat then
         self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
         local variant = math.random(1,6)
-        self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse*8 + (variant-1))
+        -- FIX: pack as pulse*8 + (variant-1) so cl_init unpack of /8 and %8 is correct
+        self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
     dmginfo:SetDamagePosition(self:GetPos())
 
-    -- FIX #2: restore the real force so VJ blood traces fire correctly,
-    -- then call the base class.
     dmginfo:SetDamageForce(savedForce)
     self.BaseClass.OnTakeDamage(self, dmginfo)
 end
