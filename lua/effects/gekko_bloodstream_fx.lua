@@ -24,26 +24,22 @@ end
 
 -- ============================================================
 --  MATERIALS
+--  Direct construction avoids table.insert(t, IMaterial)
+--  which errors in GMod's LuaJIT: "number expected, got userdata"
 -- ============================================================
-local function make_materials(tbl)
-    local out = {}
-    for _, v in ipairs(tbl) do
-        table.insert(out, Material(v))
-    end
-    return out
-end
+local particle_mats = {
+    Material("decals/trail"),
+}
 
-local particle_mats = make_materials({ "decals/trail" })
-
-local decal_mats = make_materials({
-    "decals/Blood1",
-    "decals/Blood3",
-    "decals/Blood4",
-    "decals/Blood5",
-    "decals/Blood6",
-    "decals/Blood2",
-    "decals/Blood3",
-})
+local decal_mats = {
+    Material("decals/Blood1"),
+    Material("decals/Blood3"),
+    Material("decals/Blood4"),
+    Material("decals/Blood5"),
+    Material("decals/Blood6"),
+    Material("decals/Blood2"),
+    Material("decals/Blood3"),
+}
 
 -- ============================================================
 --  SOUNDS
@@ -154,7 +150,7 @@ function EFFECT:Init(data)
             local base_velocity = ent:GetForward() * -(particle_force + effect_self.ExtraForce) * effect_self.CurrentStrenght * force_mult
 
             if stream_spread > 0 then
-                local spread_rad  = math.rad(stream_spread)
+                local spread_rad   = math.rad(stream_spread)
                 local random_pitch = math.Rand(-spread_rad, spread_rad)
                 local random_yaw   = math.Rand(-spread_rad, spread_rad)
 
