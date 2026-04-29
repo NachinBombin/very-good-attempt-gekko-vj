@@ -199,69 +199,33 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- ============================================================
 --  BLOOD STREAM SYSTEM
---  Exact port of Hemo-fluid-stream addon logic.
---  On every hit: find closest physics bone, spawn a zero-size
---  prop_dynamic anchored to that bone via FollowBone, then
+--  Exact copy of Hemo-fluid-stream bloodstream.lua do_blood_stream.
+--  Uses dmginfo:GetHitPhysBone() — the real GMod API.
 --  fire util.Effect("gekko_bloodstream_fx") on it.
---  This is identical to how the standalone addon works.
 -- ============================================================
 
--- Physics collision cache (same approach as bloodmod_extensions.lua)
-local GEKKO_COLL_CACHE = {}
-
-local function GekkoGetClosestPhysBone(ent, dmgpos)
-    local mdl = ent:GetModel()
-    if not mdl then return nil end
-
-    local colls = GEKKO_COLL_CACHE[mdl]
-    if not colls then
-        colls = CreatePhysCollidesFromModel(mdl)
-        if not colls then return nil end
-        GEKKO_COLL_CACHE[mdl] = colls
-    end
-
-    local closest_phys_bone = nil
-    local closest_dist = math.huge
-
-    for phys_bone, _ in pairs(colls) do
-        local pb = phys_bone - 1
-        local bone = ent:TranslatePhysBoneToBone(pb)
-        if bone and bone >= 0 then
-            local pos = ent:GetBonePosition(bone)
-            if pos then
-                local dist = pos:DistToSqr(dmgpos)
-                if dist < closest_dist then
-                    closest_dist = dist
-                    closest_phys_bone = pb
-                end
-            end
-        end
-    end
-
-    return closest_phys_bone
-end
-
-local function GekkoDoBloodStream(ent, dmgpos, dmgdir, flags)
+local function GekkoDoBloodStream(ent, dmginfo)
     if not IsValid(ent) then return end
 
-    -- Cooldown: same as original addon (1-2 seconds between streams)
-    if not ent.gekko_next_bloodstream then ent.gekko_next_bloodstream = 0 end
-    if ent.gekko_next_bloodstream > CurTime() then return end
-    ent.gekko_next_bloodstream = CurTime() + math.Rand(1, 2)
-
-    local phys_bone = GekkoGetClosestPhysBone(ent, dmgpos)
+    local phys_bone = dmginfo:GetHitPhysBone(ent)
     if not phys_bone then return end
 
     local bone = ent:TranslatePhysBoneToBone(phys_bone)
     if not bone or bone < 0 then return end
 
-    local bone_pos, bone_ang = ent:GetBonePosition(bone)
-    if not bone_pos then return end
+    if not ent.gekko_next_bloodstream then ent.gekko_next_bloodstream = 0 end
+    if ent.gekko_next_bloodstream > CurTime() then return end
+    ent.gekko_next_bloodstream = CurTime() + math.Rand(1, 2)
 
-    -- WorldToLocal: get damage position/angle relative to this bone
-    local lpos, lang = WorldToLocal(dmgpos, dmgdir:Angle(), bone_pos, bone_ang)
+    local dmgpos = dmginfo:GetDamagePosition()
+    local dmgdir = dmginfo:GetDamageForce()
 
-    -- Spawn the invisible anchor entity (exact same pattern as the addon)
+    local lpos, lang = WorldToLocal(dmgpos, dmgdir:Angle(), ent:GetBonePosition(bone))
+
+    ent.bloodstream_lastdmgbone = bone
+    ent.bloodstream_lastdmglpos = lpos
+    ent.bloodstream_lastdmglang = lang
+
     local meme = ents.Create("prop_dynamic")
     if not IsValid(meme) then return end
 
@@ -277,19 +241,16 @@ local function GekkoDoBloodStream(ent, dmgpos, dmgdir, flags)
     meme:SetLocalAngles(lang)
     meme:SetLocalPos(lpos - lang:Forward() * -8)
 
-    -- Store the bone on the anchor so the effect can read it
     meme.bloodstream_lastdmgbone = bone
 
-    -- Track for cleanup
     if not ent.gekko_bloodstream_ents then
         ent.gekko_bloodstream_ents = {}
     end
     table.insert(ent.gekko_bloodstream_ents, meme)
 
-    -- Fire the effect exactly as the original addon does
     local effectdata = EffectData()
     effectdata:SetEntity(meme)
-    effectdata:SetFlags(flags)
+    effectdata:SetFlags(1)
     util.Effect("gekko_bloodstream_fx", effectdata)
 end
 
@@ -703,22 +664,8 @@ function ENT:OnTakeDamage(dmginfo)
         or  self:GetForward()
     GekkoVanillaBleed(self, hitPos, hitDir)
 
-    -- Blood stream: trigger on every hit (flags=1 = burst)
-    GekkoDoBloodStream(self, hitPos, dmginfo:GetDamageForce(), 1)
-
-    -- Store last damage bone info for ragdoll (flags=0 = long stream on death)
-    local phys_bone = GekkoGetClosestPhysBone(self, hitPos)
-    if phys_bone then
-        local bone = self:TranslatePhysBoneToBone(phys_bone)
-        if bone and bone >= 0 then
-            local bone_pos, bone_ang = self:GetBonePosition(bone)
-            if bone_pos then
-                local lpos, lang = WorldToLocal(hitPos, dmginfo:GetDamageForce():Angle(), bone_pos, bone_ang)
-                self.bloodstream_lastdmgbone = bone
-                self.bloodstream_lastdmglpos = lpos
-                self.bloodstream_lastdmglang = lang
-            end
-        end
+    if dmginfo:IsBulletDamage() then
+        GekkoDoBloodStream(self, dmginfo)
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
