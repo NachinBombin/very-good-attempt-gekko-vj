@@ -198,64 +198,15 @@ local BLOOD_RANDOM_CHANCE    = 80
 local GROUNDED_BLEED_CHANCE  = 0.85
 
 -- ============================================================
---  BLOOD STREAM SYSTEM
---  Finds the closest bone to the actual hit position so the
---  bloodstream anchor spawns at the wound, not the pelvis.
---  Fires util.Effect("gekko_bloodstream_fx") client-side.
+--  BLOOD SIGNAL
+--  Increments GekkoBloodSplat NWInt on bullet damage.
+--  cl_init reads the pulse change and fires the visual effect.
+--  Packed format: pulse * 8  (matches cl_init math.floor(x/8))
 -- ============================================================
-
-local function GekkoDoBloodStream(ent, dmginfo)
+local function GekkoSignalBloodHit(ent)
     if not IsValid(ent) then return end
-
-    local dmgpos = dmginfo:GetDamagePosition()
-    if not dmgpos or dmgpos == vector_origin then return end
-
-    -- Find the bone closest to the hit position (GetHitPhysBone is unreliable on living NPCs)
-    local bone     = -1
-    local bestDist = math.huge
-    local boneCount = ent:GetBoneCount()
-    if not boneCount or boneCount <= 0 then return end
-    for i = 0, boneCount - 1 do
-        local bpos = ent:GetBonePosition(i)
-        if bpos then
-            local d = bpos:DistToSqr(dmgpos)
-            if d < bestDist then bestDist = d ; bone = i end
-        end
-    end
-    if bone < 0 then return end
-
-    if not ent.gekko_next_bloodstream then ent.gekko_next_bloodstream = 0 end
-    if ent.gekko_next_bloodstream > CurTime() then return end
-    ent.gekko_next_bloodstream = CurTime() + math.Rand(1, 2)
-
-    local bonePos, boneAng = ent:GetBonePosition(bone)
-    if not bonePos then return end
-    local lpos, lang = WorldToLocal(dmgpos, angle_zero, bonePos, boneAng)
-
-    local meme = ents.Create("prop_dynamic")
-    if not IsValid(meme) then return end
-
-    meme:SetModel("models/error.mdl")
-    meme:Spawn()
-    meme:SetModelScale(0)
-    meme:SetNotSolid(true)
-    meme:DrawShadow(false)
-
-    SafeRemoveEntityDelayed(meme, 15)
-
-    meme:FollowBone(ent, bone)
-    meme:SetLocalAngles(lang)
-    meme:SetLocalPos(lpos)
-
-    if not ent.gekko_bloodstream_ents then
-        ent.gekko_bloodstream_ents = {}
-    end
-    table.insert(ent.gekko_bloodstream_ents, meme)
-
-    local effectdata = EffectData()
-    effectdata:SetEntity(meme)
-    effectdata:SetFlags(1)
-    util.Effect("gekko_bloodstream_fx", effectdata)
+    ent._bloodSplatPulse = (ent._bloodSplatPulse or 0) + 1
+    ent:SetNWInt("GekkoBloodSplat", ent._bloodSplatPulse * 8)
 end
 
 -- ============================================================
@@ -667,8 +618,9 @@ function ENT:OnTakeDamage(dmginfo)
         or  self:GetForward()
     GekkoVanillaBleed(self, hitPos, hitDir)
 
+    -- Signal cl_init to fire blood stream effect
     if dmginfo:IsBulletDamage() then
-        GekkoDoBloodStream(self, dmginfo)
+        GekkoSignalBloodHit(self)
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
@@ -1113,12 +1065,5 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     end)
 end
 
--- Cleanup anchor entities when the gekko is removed
 function ENT:OnRemove()
-    if self.gekko_bloodstream_ents then
-        for _, meme in ipairs(self.gekko_bloodstream_ents) do
-            if IsValid(meme) then SafeRemoveEntity(meme) end
-        end
-        self.gekko_bloodstream_ents = nil
-    end
 end
