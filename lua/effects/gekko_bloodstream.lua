@@ -1,13 +1,13 @@
 -- ============================================================
 --  gekko_bloodstream.lua
 --  Standalone blood stream for VJ Gekko
---  Mirrors Hemo-fluid-stream architecture EXACTLY.
---  Only additions: multi-bone emission + diagnostic prints.
+--  Mirrors Hemo-fluid-stream architecture exactly.
+--  Additions: multi-bone emission + torso-height fallback.
 -- ============================================================
 
 -- ============================================================
---  MATERIAL PRE-CACHE  (file scope, exactly like Hemo's
---  make_materials() — called once at load, never inside a fn)
+--  MATERIAL PRE-CACHE  (file scope, exactly like Hemo)
+--  decals/trail is stock HL2 — no addon VMT needed.
 -- ============================================================
 local BLOOD_MATS = {
     Material("decals/trail"),
@@ -24,7 +24,6 @@ local DECAL_MATS = {
 
 -- ============================================================
 --  BONE EMISSION POINTS
---  Each burst picks one so blood comes from different spots.
 -- ============================================================
 local EMISSION_BONES = {
     "b_spine3",
@@ -33,6 +32,10 @@ local EMISSION_BONES = {
     "b_r_hippiston1",
     "b_l_hippiston1",
 }
+
+-- Torso height offset used when bone lookup fails.
+-- Gekko pelvis sits ~80 units above its feet (entity origin).
+local TORSO_Z = 80
 
 local function GetEmissionPos(ent)
     local boneName = EMISSION_BONES[math.random(#EMISSION_BONES)]
@@ -47,22 +50,26 @@ local function GetEmissionPos(ent)
             )
         end
     end
-    -- Fallback matches Hemo: just use entity position
-    return ent:GetPos()
+    -- Fallback: mid-body, NOT feet
+    return ent:GetPos() + Vector(
+        math.Rand(-15, 15),
+        math.Rand(-15, 15),
+        TORSO_Z
+    )
 end
 
 -- ============================================================
 --  PARTICLE SETTINGS  (identical to Hemo defaults)
 -- ============================================================
-local PARTICLE_SCALE      = 0.4
-local PARTICLE_GRAVITY    = 1050
-local PARTICLE_FORCE      = 200
-local PARTICLE_LIFETIME   = 8
-local PARTICLE_REPS       = 300
-local PULSATE_MAX_FORCE   = 100
-local PULSATE_SPEED_MULT  = 8
-local DECAL_SCALE         = 0.2
-local MIN_STRENGTH        = 0.25
+local PARTICLE_SCALE     = 0.4
+local PARTICLE_GRAVITY   = 1050
+local PARTICLE_FORCE     = 200
+local PARTICLE_LIFETIME  = 8
+local PARTICLE_REPS      = 300
+local PULSATE_MAX_FORCE  = 100
+local PULSATE_SPEED_MULT = 8
+local DECAL_SCALE        = 0.2
+local MIN_STRENGTH       = 0.25
 
 -- ============================================================
 --  EFFECT
@@ -70,8 +77,7 @@ local MIN_STRENGTH        = 0.25
 function EFFECT:Init(data)
     local ent = data:GetEntity()
 
-    -- DIAGNOSTIC: tells us whether Init is reached at all
-    print("[GekkoBloodstream] Init called — ent valid: " .. tostring(IsValid(ent)))
+    print("[GekkoBloodstream] Init — ent valid: " .. tostring(IsValid(ent)))
 
     if not IsValid(ent) then return end
 
@@ -84,9 +90,11 @@ function EFFECT:Init(data)
 
     self.TimerName = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. math.floor(CurTime() * 1000)
 
-    local emitter = ParticleEmitter(ent:GetPos(), false)
+    -- Emitter origin at torso height, not feet
+    local emitOrigin = ent:GetPos() + Vector(0, 0, TORSO_Z)
+    local emitter    = ParticleEmitter(emitOrigin, false)
     if not emitter then
-        print("[GekkoBloodstream] ERROR: emitter is nil")
+        print("[GekkoBloodstream] ERROR: emitter nil")
         return
     end
 
@@ -103,15 +111,14 @@ function EFFECT:Init(data)
 
         local emitPos  = GetEmissionPos(ent)
         local particle = emitter:Add(table.Random(BLOOD_MATS), emitPos)
-
         if not particle then return end
 
-        -- *** Exactly what Hemo does — no SetColor, no SetAlpha ***
+        -- Identical to Hemo: no SetColor, no SetAlpha
         particle:SetDieTime(PARTICLE_LIFETIME * (self_ref.CurrentStrength or 1))
         particle:SetStartSize(math.Rand(1.9, 3.8) * PARTICLE_SCALE)
         particle:SetEndSize(0)
-        particle:SetStartLength(4   * PARTICLE_SCALE)   -- = 100 * 0.4 * 0.1
-        particle:SetEndLength(100  * PARTICLE_SCALE)    -- = 100 * 0.4
+        particle:SetStartLength(4   * PARTICLE_SCALE)
+        particle:SetEndLength(100  * PARTICLE_SCALE)
         particle:SetGravity(Vector(0, 0, -PARTICLE_GRAVITY))
 
         local fwd   = ent:GetForward()
@@ -136,9 +143,7 @@ function EFFECT:Init(data)
         end)
 
         reps_count = reps_count - 1
-        if reps_count <= 0 then
-            emitter:Finish()
-        end
+        if reps_count <= 0 then emitter:Finish() end
     end)
 end
 
@@ -147,9 +152,7 @@ function EFFECT:_CalcExtraForce()
 end
 
 function EFFECT:Think()
-    if not timer.Exists(self.TimerName) then
-        return false
-    end
+    if not timer.Exists(self.TimerName) then return false end
     local elapsed = CurTime() - self.StartTime
     local dietime = self.reps / 60
     self.CurrentStrength = math.Clamp(
