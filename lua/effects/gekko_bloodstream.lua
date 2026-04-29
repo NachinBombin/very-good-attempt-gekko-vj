@@ -1,18 +1,17 @@
 -- ============================================================
 --  gekko_bloodstream.lua
 --  Standalone blood stream for VJ Gekko
+--  Mirrors Hemo-fluid-stream architecture EXACTLY.
+--  Only additions: multi-bone emission + diagnostic prints.
 -- ============================================================
 
 -- ============================================================
---  MATERIAL PRE-CACHE  (file scope)
---
---  gekko_blood_particle.vmt is our own VMT inside this addon:
---    UnlitGeneric + $additive 1 + $vertexcolor 1 + $vertexalpha 1
---    basetexture = decals/trail  (same texture as original Hemo)
---  Additive shader: black pixels are fully transparent,
---  no black squares possible.
+--  MATERIAL PRE-CACHE  (file scope, exactly like Hemo's
+--  make_materials() — called once at load, never inside a fn)
 -- ============================================================
-local BLOOD_MAT = Material("gekko_blood_particle")
+local BLOOD_MATS = {
+    Material("decals/trail"),
+}
 
 local DECAL_MATS = {
     Material("decals/Blood1"),
@@ -25,8 +24,7 @@ local DECAL_MATS = {
 
 -- ============================================================
 --  BONE EMISSION POINTS
---  Each burst picks one at random so blood comes from
---  different body parts rather than a single origin point.
+--  Each burst picks one so blood comes from different spots.
 -- ============================================================
 local EMISSION_BONES = {
     "b_spine3",
@@ -42,34 +40,29 @@ local function GetEmissionPos(ent)
     if boneIdx and boneIdx >= 0 then
         local bmat = ent:GetBoneMatrix(boneIdx)
         if bmat then
-            local p = bmat:GetTranslation()
-            return p + Vector(
+            return bmat:GetTranslation() + Vector(
                 math.Rand(-10, 10),
                 math.Rand(-10, 10),
                 math.Rand(-5,   5)
             )
         end
     end
-    -- Fallback if bone not found
-    return ent:GetPos() + Vector(
-        math.Rand(-15, 15),
-        math.Rand(-15, 15),
-        math.Rand(30, 110)
-    )
+    -- Fallback matches Hemo: just use entity position
+    return ent:GetPos()
 end
 
 -- ============================================================
---  PARTICLE SETTINGS  (matching Hemo defaults)
+--  PARTICLE SETTINGS  (identical to Hemo defaults)
 -- ============================================================
-local PARTICLE_SCALE     = 0.4
-local PARTICLE_GRAVITY   = 1050
-local PARTICLE_FORCE     = 200
-local PARTICLE_LIFETIME  = 8
-local PARTICLE_REPS      = 300
-local PULSATE_MAX_FORCE  = 100
-local PULSATE_SPEED_MULT = 8
-local DECAL_SCALE        = 0.2
-local MIN_STRENGTH       = 0.25
+local PARTICLE_SCALE      = 0.4
+local PARTICLE_GRAVITY    = 1050
+local PARTICLE_FORCE      = 200
+local PARTICLE_LIFETIME   = 8
+local PARTICLE_REPS       = 300
+local PULSATE_MAX_FORCE   = 100
+local PULSATE_SPEED_MULT  = 8
+local DECAL_SCALE         = 0.2
+local MIN_STRENGTH        = 0.25
 
 -- ============================================================
 --  EFFECT
@@ -77,8 +70,8 @@ local MIN_STRENGTH       = 0.25
 function EFFECT:Init(data)
     local ent = data:GetEntity()
 
-    -- DIAGNOSTIC: confirm this function is reached
-    print("[GekkoBloodstream] EFFECT:Init called. ent valid = " .. tostring(IsValid(ent)))
+    -- DIAGNOSTIC: tells us whether Init is reached at all
+    print("[GekkoBloodstream] Init called — ent valid: " .. tostring(IsValid(ent)))
 
     if not IsValid(ent) then return end
 
@@ -93,11 +86,9 @@ function EFFECT:Init(data)
 
     local emitter = ParticleEmitter(ent:GetPos(), false)
     if not emitter then
-        print("[GekkoBloodstream] ERROR: ParticleEmitter returned nil")
+        print("[GekkoBloodstream] ERROR: emitter is nil")
         return
     end
-
-    print("[GekkoBloodstream] Emitter created, starting " .. self.reps .. " rep timer")
 
     local spurt_delay = math.Rand(0.5, 5) / 60
     local self_ref    = self
@@ -111,18 +102,16 @@ function EFFECT:Init(data)
         end
 
         local emitPos  = GetEmissionPos(ent)
-        local particle = emitter:Add(BLOOD_MAT, emitPos)
+        local particle = emitter:Add(table.Random(BLOOD_MATS), emitPos)
 
         if not particle then return end
 
-        local sz = math.Rand(1.9, 3.8) * PARTICLE_SCALE
-        particle:SetStartSize(sz)
-        particle:SetEndSize(0)
-        particle:SetStartLength(4  * PARTICLE_SCALE)
-        particle:SetEndLength(100 * PARTICLE_SCALE)
+        -- *** Exactly what Hemo does — no SetColor, no SetAlpha ***
         particle:SetDieTime(PARTICLE_LIFETIME * (self_ref.CurrentStrength or 1))
-        particle:SetColor(200, 0, 0)
-        particle:SetAlpha(240)
+        particle:SetStartSize(math.Rand(1.9, 3.8) * PARTICLE_SCALE)
+        particle:SetEndSize(0)
+        particle:SetStartLength(4   * PARTICLE_SCALE)   -- = 100 * 0.4 * 0.1
+        particle:SetEndLength(100  * PARTICLE_SCALE)    -- = 100 * 0.4
         particle:SetGravity(Vector(0, 0, -PARTICLE_GRAVITY))
 
         local fwd   = ent:GetForward()
