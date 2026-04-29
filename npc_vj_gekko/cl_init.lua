@@ -1120,11 +1120,11 @@ local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
     if packed == 0 then return end
 
-    local pulse = math.floor(packed / 16)
+    local pulse = math.floor(packed / 8)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
 
-       local variant = (packed % 16) + 1
+       local variant = (packed % 8) + 1
     local fwd     = ent:GetForward()
 
     -- Pick a random bone to bleed from so wounds appear all over the model
