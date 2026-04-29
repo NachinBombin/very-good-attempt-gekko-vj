@@ -1113,12 +1113,22 @@ local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
     if packed == 0 then return end
 
-    local pulse = math.floor(packed / 8)
+    local pulse   = math.floor(packed / 8)
+    local variant = packed % 8
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
 
-    -- Every hit fires the bloodstream. No variant lottery.
-    BloodVariant_HemoStream(ent)
+    local origin  = ent:GetPos() + Vector(0, 0, 60)
+    local forward = ent:GetForward()
+
+    if     variant == 0 then BloodVariant_HemoStream(ent)
+    elseif variant == 1 then BloodVariant_Geyser(origin)
+    elseif variant == 2 then BloodVariant_RadialRing(origin)
+    elseif variant == 3 then BloodVariant_BurstCloud(origin)
+    elseif variant == 4 then BloodVariant_ArcShower(origin, forward)
+    elseif variant == 5 then BloodVariant_GroundPool(origin)
+    else                     BloodVariant_HemoStream(ent)
+    end
 end
 
 -- ============================================================
