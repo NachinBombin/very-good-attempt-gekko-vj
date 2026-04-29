@@ -1,28 +1,28 @@
--- =============================================================
---  lua/effects/gekko_bloodstream.lua
--- =============================================================
+-- lua/effects/gekko_bloodstream.lua
+-- Direct port of Hemo-fluid-stream bloodstreameffectzippy.lua
+-- No ConVars. Entity-based. Fires on every hit.
 
 local EFFECT = {}
 
-local PARTICLE_MATS = {
-    Material("particle/blood1"),
-    Material("particle/blood2"),
-    Material("particle/blood3"),
-    Material("particle/blood4"),
-    Material("particle/blood5"),
-    Material("particle/blood6"),
-}
+local particles = { Material("decals/trail") }
 
-local DECAL_MATS = {
+local decals = {
     Material("decals/Blood1"),
-    Material("decals/Blood2"),
     Material("decals/Blood3"),
     Material("decals/Blood4"),
     Material("decals/Blood5"),
     Material("decals/Blood6"),
+    Material("decals/Blood2"),
 }
 
-local SQUIRT_SOUNDS = {
+local drip_sounds = {
+    "physics/flesh/flesh_squishy_impact_hard1.wav",
+    "physics/flesh/flesh_squishy_impact_hard2.wav",
+    "physics/flesh/flesh_squishy_impact_hard3.wav",
+    "physics/flesh/flesh_squishy_impact_hard4.wav",
+}
+
+local squrt_sounds = {
     "physics/flesh/flesh_impact_bullet1.wav",
     "physics/flesh/flesh_impact_bullet2.wav",
     "physics/flesh/flesh_impact_bullet3.wav",
@@ -30,110 +30,79 @@ local SQUIRT_SOUNDS = {
     "physics/flesh/flesh_impact_bullet5.wav",
 }
 
-local DRIP_SOUNDS = {
-    "physics/flesh/flesh_squishy_impact_hard1.wav",
-    "physics/flesh/flesh_squishy_impact_hard2.wav",
-    "physics/flesh/flesh_squishy_impact_hard3.wav",
-    "physics/flesh/flesh_squishy_impact_hard4.wav",
-}
-
-local BASE_PARTICLE_SCALE   = 0.45
-local BASE_GRAVITY          = 950
-local BASE_FORCE            = 220
-local PULSATE_MAX_FORCE     = 90
-local PULSATE_SPEED_MULT    = 7
-local SPREAD_ANGLE_DEG      = 18
-local STREAM_LIFETIME       = 7
-local MIN_STRENGTH          = 0.20
-local REPS_STREAM           = 280
-local REPS_BURST            = 120
-local TIMER_INTERVAL        = 1 / 55
-
-local BLOOD_BONES = {
-    "b_spine3", "b_spine4", "b_pelvis",
-    "b_l_upperleg", "b_r_upperleg",
-    "b_l_hippiston1", "b_r_hippiston1",
-}
+local particle_length_random   = { min = 100, max = 100 }
+local particle_start_lengt_mult = 0.1
+local particle_scale           = 1.0
+local particle_gravity         = 1050
+local particle_force           = 200
+local particle_pulsate_max_force = 100
+local particle_pulsate_speed_mult = 8
+local particle_reps_stream     = 300
+local particle_reps_burst      = 150
+local particle_fps             = 60
+local particle_lifetime        = 8
+local decal_scale              = 0.2
+local sound_level              = 70
+local sound_level2             = 35
+local min_strenght             = 0.25
 
 function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
-    local flags      = data:GetFlags()
-    local size_mult  = math.Clamp(data:GetScale()     or 1, 0.3, 3.0)
-    local force_mult = math.Clamp(data:GetMagnitude() or 1, 0.3, 3.0)
+    local flags = data:GetFlags()
+    self.reps = (flags == 1) and particle_reps_burst or particle_reps_stream
 
-    self.reps      = (flags == 1) and REPS_BURST or REPS_STREAM
-    self.StartTime = CurTime()
+    local spurt_delay = math.Rand(0.5, 5) / particle_fps
 
-    -- Shared state table: bridges Think() updates into the timer closure.
-    -- `self` is NOT the effect table inside a timer callback in GMod.
-    local state = {
-        CurrentStrength = 1,
-        ExtraForce = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
-    }
-    self._state = state
+    self.StartTime      = CurTime()
+    self.CurrentPos     = ent:GetPos()
+    self.CurrentStrenght = 1
+    self:UpdateExtraForce()
 
-    self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. tostring(CurTime())
+    self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. CurTime()
 
-    local emitter = ParticleEmitter(ent:GetPos(), false)
+    local emitter = ParticleEmitter(self.CurrentPos, false)
     if not emitter then return end
 
-    sound.Play(SQUIRT_SOUNDS[math.random(#SQUIRT_SOUNDS)], ent:GetPos(), 68, math.random(90, 110))
+    sound.Play(table.Random(squrt_sounds), ent:GetPos(), sound_level2, math.Rand(95, 105))
 
-    local timername = self.timername
-    local reps      = self.reps
+    local effect_self = self
+    local reps        = self.reps
+    local timername   = self.timername
 
-    timer.Create(timername, TIMER_INTERVAL, reps, function()
-        if not IsValid(ent) then
-            if emitter then emitter:Finish() emitter = nil end
+    timer.Create(timername, spurt_delay, reps, function()
+        if not IsValid(ent) or not emitter then
+            if emitter then emitter:Finish() end
             timer.Remove(timername)
             return
         end
 
-        local emit_pos = ent:GetPos() + Vector(0, 0, 80)
-        local boneIdx  = ent:LookupBone(BLOOD_BONES[math.random(#BLOOD_BONES)])
-        if boneIdx and boneIdx >= 0 then
-            local mat = ent:GetBoneMatrix(boneIdx)
-            if mat then emit_pos = mat:GetTranslation() end
-        end
+        sound.Play(table.Random(squrt_sounds), ent:GetPos(), sound_level2, math.Rand(95, 105))
 
-        local fwd      = ent:GetForward()
-        local up       = Vector(0, 0, 1)
-        local base_dir = fwd + up * 0.3
-        if base_dir:LengthSqr() < 0.001 then base_dir = Vector(1, 0, 0.3) end
-        base_dir:Normalize()
+        ent.CurrentPos = ent:GetPos()
 
-        local right = fwd:Cross(up)
-        if right:LengthSqr() < 0.001 then right = Vector(0, 1, 0) end
-        right:Normalize()
+        local length   = math.Rand(particle_length_random.min, particle_length_random.max)
+        local particle = emitter:Add(table.Random(particles), ent.CurrentPos)
 
-        local spread_rad = math.rad(SPREAD_ANGLE_DEG)
-        local dir = (
-            base_dir
-            + right * math.sin(math.Rand(-spread_rad, spread_rad))
-            + up    * math.sin(math.Rand(-spread_rad, spread_rad))
-        ):GetNormalized()
-
-        local strength = state.CurrentStrength
-        local speed    = (BASE_FORCE + state.ExtraForce) * strength * force_mult
-        local sz       = BASE_PARTICLE_SCALE * size_mult
-
-        local particle = emitter:Add(PARTICLE_MATS[math.random(#PARTICLE_MATS)], emit_pos)
         if particle then
-            particle:SetDieTime(STREAM_LIFETIME * strength)
-            particle:SetStartSize(math.Rand(2.0, 4.0) * sz)
+            particle:SetDieTime(particle_lifetime * effect_self.CurrentStrenght)
+            particle:SetStartSize(math.Rand(1.9, 3.8) * particle_scale)
             particle:SetEndSize(0)
-            particle:SetStartLength(10 * sz)
-            particle:SetEndLength(math.Rand(80, 120) * sz)
-            particle:SetGravity(Vector(0, 0, -BASE_GRAVITY))
-            particle:SetVelocity(dir * speed)
+            particle:SetStartLength(length * particle_scale * particle_start_lengt_mult)
+            particle:SetEndLength(length * particle_scale)
+            particle:SetGravity(Vector(0, 0, -particle_gravity))
+
+            -- Original Hemo direction: GetForward() * -(force)
+            -- This shoots blood BACKWARD from entity forward, like an exit wound
+            local base_velocity = ent:GetForward() * -(particle_force + effect_self.ExtraForce) * effect_self.CurrentStrenght
+
+            particle:SetVelocity(base_velocity)
             particle:SetCollide(true)
             particle:SetCollideCallback(function(_, pos, normal)
-                if state.CurrentStrength > 0.15 then
-                    sound.Play(DRIP_SOUNDS[math.random(#DRIP_SOUNDS)], pos, 60, math.random(90, 115))
-                    local ds = 0.18 * size_mult
-                    util.DecalEx(DECAL_MATS[math.random(#DECAL_MATS)], Entity(0), pos, normal, Color(255,255,255), ds, ds)
+                if (effect_self.CurrentStrenght or min_strenght) > 0.2 then
+                    sound.Play(table.Random(drip_sounds), pos, sound_level, math.Rand(95, 105))
+                    util.DecalEx(table.Random(decals), Entity(0), pos, normal, Color(255, 255, 255), decal_scale, decal_scale)
                 end
             end)
         end
@@ -141,25 +110,20 @@ function EFFECT:Init(data)
         local repsLeft = timer.RepsLeft(timername)
         if repsLeft ~= nil and repsLeft == 0 then
             emitter:Finish()
-            emitter = nil
         end
     end)
 end
 
-function EFFECT:_UpdateExtraForce()
-    local f = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
-    self.ExtraForce = f
-    if self._state then self._state.ExtraForce = f end
+function EFFECT:UpdateExtraForce()
+    self.ExtraForce = particle_pulsate_max_force * (1 + math.sin(CurTime() * particle_pulsate_speed_mult))
 end
 
 function EFFECT:Think()
     if timer.Exists(self.timername) then
         local lifetime = CurTime() - self.StartTime
-        local dietime  = self.reps * TIMER_INTERVAL
-        local strength = math.Clamp(1 - (lifetime / dietime) * (1 - MIN_STRENGTH), 0, 1)
-        self.CurrentStrength = strength
-        if self._state then self._state.CurrentStrength = strength end
-        self:_UpdateExtraForce()
+        local dietime  = self.reps * (1 / particle_fps)
+        self.CurrentStrenght = math.Clamp(1 - (lifetime / dietime) * (1 - min_strenght), 0, 1)
+        self:UpdateExtraForce()
         return true
     end
     return false
@@ -167,5 +131,4 @@ end
 
 function EFFECT:Render() end
 
--- Without this, GMod silently ignores the effect in some contexts
 effects.Register(EFFECT, "gekko_bloodstream")
