@@ -71,7 +71,7 @@ local squrt_sounds = {
 -- ============================================================
 local particle_length_random        = { min = 100, max = 100 }
 local particle_start_lengt_mult     = 0.1
-local particle_scale                = 0.4   -- original value (was wrongly 1.0 in old port)
+local particle_scale                = 0.4
 local particle_gravity              = 1050
 local particle_force                = 200
 local particle_pulsate_max_force    = 100
@@ -98,9 +98,9 @@ function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
-    local flags   = data:GetFlags()
+    local flags     = data:GetFlags()
     local base_reps = (flags == 1) and particle_reps_burst or particle_reps_stream
-    self.reps     = base_reps   -- reps_multiplier is 1 in standalone (no ConVar)
+    self.reps       = base_reps
 
     -- ---- limb multiplier ------------------------------------------
     local boneName = ""
@@ -109,7 +109,7 @@ function EFFECT:Init(data)
     end
     local limb_mult  = GetLimbMultiplierForBone(boneName)
     local force_mult = 1.0 * limb_mult
-    local density    = 1.0 / limb_mult   -- higher limb_mult => more frequent spurts
+    local density    = 1.0 / limb_mult
 
     local spurt_delay = math.Rand(0.5, 5) / (particle_fps * density)
 
@@ -118,7 +118,9 @@ function EFFECT:Init(data)
     self.CurrentStrenght = 1
     self:UpdateExtraForce()
 
-    self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. CurTime()
+    -- Unique timer name: include a random component to avoid collision
+    -- when two blood streams fire in the same tick on the same entity.
+    self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. math.random(1, 999999)
 
     local emitter = ParticleEmitter(self.CurrentPos, false)
     if not emitter then return end
@@ -130,33 +132,40 @@ function EFFECT:Init(data)
     local timername   = self.timername
 
     timer.Create(timername, spurt_delay, reps, function()
-        if not IsValid(ent) or not emitter then
-            if emitter then emitter:Finish() end
+        -- Guard: entity gone or emitter already finished
+        if not IsValid(ent) then
+            if emitter then emitter:Finish() emitter = nil end
             timer.Remove(timername)
             return
         end
 
         sound.Play(table.Random(squrt_sounds), ent:GetPos(), sound_level2, math.Rand(95, 105))
 
-        ent.CurrentPos = ent:GetPos()
+        -- FIX 1: use a local variable, NOT ent.CurrentPos.
+        -- Writing to ent.CurrentPos pollutes the entity table and can
+        -- collide with other concurrent blood stream timers on the same ent.
+        local currentPos = ent:GetPos()
 
         local length   = math.Rand(particle_length_random.min, particle_length_random.max)
-        local particle = emitter:Add(table.Random(particle_mats), ent.CurrentPos)
+        local particle = emitter:Add(table.Random(particle_mats), currentPos)
 
         if particle then
             particle:SetDieTime(particle_lifetime * effect_self.CurrentStrenght)
-            particle:SetStartSize(math.Rand(1.9, 3.8) * particle_scale)  -- size_mult = 1 standalone
+            particle:SetStartSize(math.Rand(1.9, 3.8) * particle_scale)
             particle:SetEndSize(0)
             particle:SetStartLength(length * particle_scale * particle_start_lengt_mult)
             particle:SetEndLength(length * particle_scale)
             particle:SetGravity(Vector(0, 0, -particle_gravity))
 
-            -- Base velocity: backward from entity forward (exit-wound direction)
-            local base_velocity = ent:GetForward() * -(particle_force + effect_self.ExtraForce) * effect_self.CurrentStrenght * force_mult
+            -- FIX 2: velocity must come FROM the hit anchor's forward direction
+            -- (which is set by GekkoDoBloodStream to face outward from the wound).
+            -- The original port negated GetForward() twice (double negative = positive),
+            -- making blood stream INWARD into the model instead of outward.
+            -- Correct: fire in the +forward direction of the anchor entity.
+            local base_velocity = ent:GetForward() * (particle_force + effect_self.ExtraForce) * effect_self.CurrentStrenght * force_mult
 
-            -- Spread (mirrors original spread_angle ConVar default of 5 degrees)
             if stream_spread > 0 then
-                local spread_rad  = math.rad(stream_spread)
+                local spread_rad   = math.rad(stream_spread)
                 local random_pitch = math.Rand(-spread_rad, spread_rad)
                 local random_yaw   = math.Rand(-spread_rad, spread_rad)
 
@@ -168,7 +177,7 @@ function EFFECT:Init(data)
                 spread_dir:Normalize()
 
                 local vel_magnitude = base_velocity:Length()
-                base_velocity = spread_dir * -vel_magnitude
+                base_velocity = spread_dir * vel_magnitude
             end
 
             particle:SetVelocity(base_velocity)
@@ -176,14 +185,17 @@ function EFFECT:Init(data)
             particle:SetCollideCallback(function(_, pos, normal)
                 if math.random(1, impact_chance) == 1 and (effect_self.CurrentStrenght or min_strenght) > 0.2 then
                     sound.Play(table.Random(drip_sounds), pos, sound_level, math.Rand(95, 105))
-                    local decal_size = decal_scale  -- size_mult = 1 standalone
+                    local decal_size = decal_scale
                     util.DecalEx(table.Random(decal_mats), Entity(0), pos, normal, Color(255, 255, 255), decal_size, decal_size)
                 end
             end)
         end
 
-        if timer.RepsLeft(timername) == 0 then
+        -- FIX 3: guard the RepsLeft check — timer may already be gone if
+        -- the entity was removed mid-burst, causing a Lua error.
+        if timer.Exists(timername) and timer.RepsLeft(timername) == 0 then
             emitter:Finish()
+            emitter = nil
         end
     end)
 end
