@@ -17,8 +17,6 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 AddCSLuaFile("muzzleflash_system.lua")
 AddCSLuaFile("bullet_impact_system.lua")
--- FIX: network the effect file to clients so it loads in the effects/ path
-AddCSLuaFile("../lua/effects/gekko_bloodstream.lua")
 include("crush_system.lua")
 include("jump_system.lua")
 include("targeted_jump_system.lua")
@@ -198,6 +196,104 @@ local HEAD_Z_FRACTION        = 0.65
 local BLOOD_DAMAGE_THRESHOLD = 20
 local BLOOD_RANDOM_CHANCE    = 80
 local GROUNDED_BLEED_CHANCE  = 0.85
+
+-- ============================================================
+--  BLOOD STREAM SYSTEM
+--  Exact port of Hemo-fluid-stream addon logic.
+--  On every hit: find closest physics bone, spawn a zero-size
+--  prop_dynamic anchored to that bone via FollowBone, then
+--  fire util.Effect("bloodstreameffectzippy") on it.
+--  This is identical to how the standalone addon works.
+-- ============================================================
+
+-- Physics collision cache (same approach as bloodmod_extensions.lua)
+local GEKKO_COLL_CACHE = {}
+
+local function GekkoGetClosestPhysBone(ent, dmgpos)
+    local mdl = ent:GetModel()
+    if not mdl then return nil end
+
+    local colls = GEKKO_COLL_CACHE[mdl]
+    if not colls then
+        colls = CreatePhysCollidesFromModel(mdl)
+        if not colls then return nil end
+        GEKKO_COLL_CACHE[mdl] = colls
+    end
+
+    local closest_phys_bone = nil
+    local closest_dist = math.huge
+
+    for phys_bone, _ in pairs(colls) do
+        local pb = phys_bone - 1
+        local bone = ent:TranslatePhysBoneToBone(pb)
+        if bone and bone >= 0 then
+            local pos = ent:GetBonePosition(bone)
+            if pos then
+                local dist = pos:DistToSqr(dmgpos)
+                if dist < closest_dist then
+                    closest_dist = dist
+                    closest_phys_bone = pb
+                end
+            end
+        end
+    end
+
+    return closest_phys_bone
+end
+
+local function GekkoDoBloodStream(ent, dmgpos, dmgdir, flags)
+    if not IsValid(ent) then return end
+
+    -- Cooldown: same as original addon (1-2 seconds between streams)
+    if not ent.gekko_next_bloodstream then ent.gekko_next_bloodstream = 0 end
+    if ent.gekko_next_bloodstream > CurTime() then return end
+    ent.gekko_next_bloodstream = CurTime() + math.Rand(1, 2)
+
+    local phys_bone = GekkoGetClosestPhysBone(ent, dmgpos)
+    if not phys_bone then return end
+
+    local bone = ent:TranslatePhysBoneToBone(phys_bone)
+    if not bone or bone < 0 then return end
+
+    local bone_pos, bone_ang = ent:GetBonePosition(bone)
+    if not bone_pos then return end
+
+    -- WorldToLocal: get damage position/angle relative to this bone
+    local lpos, lang = WorldToLocal(dmgpos, dmgdir:Angle(), bone_pos, bone_ang)
+
+    -- Spawn the invisible anchor entity (exact same pattern as the addon)
+    local meme = ents.Create("prop_dynamic")
+    if not IsValid(meme) then return end
+
+    meme:SetModel("models/error.mdl")
+    meme:Spawn()
+    meme:SetModelScale(0)
+    meme:SetNotSolid(true)
+    meme:DrawShadow(false)
+
+    SafeRemoveEntityDelayed(meme, 15)
+
+    meme:FollowBone(ent, bone)
+    meme:SetLocalAngles(lang)
+    meme:SetLocalPos(lpos - lang:Forward() * -8)
+
+    -- Store the bone on the anchor so the effect can read it
+    meme.bloodstream_lastdmgbone = bone
+
+    -- Track for cleanup
+    if not ent.gekko_bloodstream_ents then
+        ent.gekko_bloodstream_ents = {}
+    end
+    table.insert(ent.gekko_bloodstream_ents, meme)
+
+    -- Fire the effect exactly as the original addon does
+    local effectdata = EffectData()
+    effectdata:SetEntity(meme)
+    effectdata:SetFlags(flags)
+    util.Effect("bloodstreameffectzippy", effectdata)
+end
+
+-- ============================================================
 
 local function GekkoVanillaBleed(ent, hitPos, hitDir)
     util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8, ent)
@@ -607,17 +703,22 @@ function ENT:OnTakeDamage(dmginfo)
         or  self:GetForward()
     GekkoVanillaBleed(self, hitPos, hitDir)
 
-    local doSplat
-    if self._gekkoLegsDisabled then
-        doSplat = (math.Rand(0,1) < GROUNDED_BLEED_CHANCE)
-    else
-        doSplat = (math.random(1,BLOOD_RANDOM_CHANCE) == 1) or (rawDmg >= BLOOD_DAMAGE_THRESHOLD)
-    end
-    if doSplat then
-        self._bloodSplatPulse = (self._bloodSplatPulse or 0) + 1
-        local variant = math.random(1,6)
-        -- FIX: pack as pulse*8 + (variant-1) so cl_init unpack of /8 and %8 is correct
-        self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
+    -- Blood stream: trigger on every hit (flags=1 = burst)
+    GekkoDoBloodStream(self, hitPos, dmginfo:GetDamageForce(), 1)
+
+    -- Store last damage bone info for ragdoll (flags=0 = long stream on death)
+    local phys_bone = GekkoGetClosestPhysBone(self, hitPos)
+    if phys_bone then
+        local bone = self:TranslatePhysBoneToBone(phys_bone)
+        if bone and bone >= 0 then
+            local bone_pos, bone_ang = self:GetBonePosition(bone)
+            if bone_pos then
+                local lpos, lang = WorldToLocal(hitPos, dmginfo:GetDamageForce():Angle(), bone_pos, bone_ang)
+                self.bloodstream_lastdmgbone = bone
+                self.bloodstream_lastdmglpos = lpos
+                self.bloodstream_lastdmglang = lang
+            end
+        end
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
@@ -1061,4 +1162,14 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
         }), 511, 100, 2)
         util.BlastDamage(self, attacker, pos, 512, 256)
     end)
+end
+
+-- Cleanup anchor entities when the gekko is removed
+function ENT:OnRemove()
+    if self.gekko_bloodstream_ents then
+        for _, meme in ipairs(self.gekko_bloodstream_ents) do
+            if IsValid(meme) then SafeRemoveEntity(meme) end
+        end
+        self.gekko_bloodstream_ents = nil
+    end
 end
