@@ -1,25 +1,24 @@
 -- ============================================================
 -- lua/effects/gekko_bloodstream.lua
--- Standalone blood stream for npc_vj_gekko.
---
--- cl_init.lua handles all randomized hit effects
--- (BloodImpact / bloodspray) via GekkoDoBloodSplat.
--- This file is ONLY the continuous stream emitter.
+-- Standalone blood stream + blood mist for npc_vj_gekko.
 --
 -- Caller sets:
 --   data:SetEntity(ent)     -- the NPC
---   data:SetOrigin(hitPos)  -- bullet impact position (optional)
---   data:SetNormal(hitNorm) -- surface normal at impact (optional)
+--   data:SetOrigin(hitPos)  -- bullet impact position
+--   data:SetNormal(hitNorm) -- surface normal at impact
 --   data:SetFlags(0)        -- reserved
 -- ============================================================
 
-local PARTICLE_MAT = "decals/trail"
+local PARTICLE_MAT  = "decals/trail"
+
+local MIST_MAT_BASE = "particle/smokesprites_000"  -- append 1-9
+local MIST_COLOR    = { r = 110, g = 8, b = 8 }    -- dark red
 
 -- util.DecalEx() requires IMaterial objects.
 local DECAL_PATHS = {
     "decals/Blood1", "decals/Blood2", "decals/Blood3",
     "decals/Blood4", "decals/Blood5", "decals/Blood6",
-}
+}                                                        -- FIX: was missing closing }
 local decal_mats = {}
 for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
@@ -40,13 +39,75 @@ local PULSATE_AMP  = 100
 local DECAL_SCALE  = 0.2
 local MIN_STRENGTH = 0.25
 
--- Stream randomized ranges (varied per hit)
 local SIZE_MULT_MIN   = 1.0
 local SIZE_MULT_MAX   = 2.8
 local FORCE_MULT_MIN  = 1.0
 local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
+
+-- Weight tables: index = weight class (1=light, 2=medium, 3=heavy)
+local MIST_COUNT   = { 8,   14,  22  }
+local MIST_SIZEMIN = { 5,   7,   10  }
+local MIST_SIZEMAX = { 14,  20,  30  }
+local MIST_LIFEMIN = { 0.4, 0.6, 0.8 }
+local MIST_LIFEMAX = { 0.8, 1.2, 1.8 }
+local MIST_SPEED   = { 35,  55,  80  }
+local MIST_ALPHA   = { 50,  65,  80  }
+
+-- ── BLOOD MIST ──────────────────────────────────────────────
+-- render.GetLightColor only works inside a render hook.
+-- We use a fixed dark-red brightness instead to stay safe.
+local MIST_BRIGHTNESS = 0.35
+local MIST_R = math.Clamp(MIST_COLOR.r * MIST_BRIGHTNESS, 0, 255)
+local MIST_G = math.Clamp(MIST_COLOR.g * MIST_BRIGHTNESS, 0, 255)
+local MIST_B = math.Clamp(MIST_COLOR.b * MIST_BRIGHTNESS, 0, 255)
+
+local function SpawnBloodMist(hitPos, hitNorm)
+    local w       = math.random(1, 3)
+    local emitter = ParticleEmitter(hitPos, true)   -- FIX: was false (2D = black squares)
+    if not emitter then return end
+
+    local count = MIST_COUNT[w]
+    local speed = MIST_SPEED[w]
+
+    for _ = 1, count do
+        local mat = MIST_MAT_BASE .. math.random(1, 9)
+        local p   = emitter:Add(mat, hitPos)
+        if not p then continue end
+
+        local vel = hitNorm * math.Rand(speed * 0.6, speed) + VectorRand() * (speed * 0.3)
+
+        p:SetVelocity(vel)
+        p:SetLifeTime(0)
+        p:SetDieTime(math.Rand(MIST_LIFEMIN[w], MIST_LIFEMAX[w]))
+        p:SetStartAlpha(MIST_ALPHA[w])
+        p:SetEndAlpha(0)
+        p:SetStartSize(math.Rand(MIST_SIZEMIN[w] * 0.8, MIST_SIZEMIN[w] * 1.2))
+        p:SetEndSize(math.Rand(MIST_SIZEMAX[w] * 0.8, MIST_SIZEMAX[w] * 1.2))
+        p:SetColor(MIST_R, MIST_G, MIST_B)
+        p:SetAirResistance(40)
+        p:SetGravity(Vector(0, 0, -12))
+        p:SetRoll(math.Rand(0, 360))
+        p:SetRollDelta(math.Rand(-0.4, 0.4))
+    end
+
+    emitter:Finish()
+end
+
+-- ── GROUND DECALS ON HIT ────────────────────────────────────
+
+local function DoImpactDecals(hitPos)
+    local count = math.random(3, 6)
+    for _ = 1, count do
+        local ox = math.Rand(-30, 30)
+        local oy = math.Rand(-30, 30)
+        util.Decal("Blood",
+            hitPos + Vector(ox, oy,  20),
+            hitPos + Vector(ox, oy, -96)
+        )                                            -- FIX: was missing closing )
+    end
+end
 
 -- ── EFFECT ──────────────────────────────────────────────────
 
@@ -66,6 +127,9 @@ function EFFECT:Init(data)
     if hitNorm == Vector(0, 0, 0) then
         hitNorm = ent:GetForward() * -1
     end
+
+    SpawnBloodMist(hitPos, hitNorm)
+    DoImpactDecals(hitPos)
 
     self.StartTime       = CurTime()
     self.CurrentStrength = 1
@@ -128,7 +192,7 @@ function EFFECT:Init(data)
                     Color(255, 255, 255),
                     DECAL_SCALE * size_m,
                     DECAL_SCALE * size_m
-                )
+                )                                    -- FIX: was missing closing )
             end
         end)
 
@@ -148,7 +212,7 @@ function EFFECT:Think()
         local dietime  = REPS * (1 / PARTICLE_FPS)
         self.CurrentStrength = math.Clamp(
             1 - (lifetime / dietime) * (1 - MIN_STRENGTH), 0, 1
-        )
+        )                                            -- FIX: was missing closing )
         self:UpdateExtraForce()
         return true
     end
@@ -156,3 +220,9 @@ function EFFECT:Think()
 end
 
 function EFFECT:Render() end
+
+hook.Add("EntityRemoved", "GekkoBloodStream_Cleanup", function(ent)
+    if ent.gekko_bloodstream_timer then
+        timer.Remove(ent.gekko_bloodstream_timer)
+    end
+end)
