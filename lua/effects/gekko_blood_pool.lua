@@ -6,11 +6,14 @@
 -- Texture provided by Bombin Base:
 --   particle/AC/Experimental/vfx_bloodpool_alphatest_v2red
 --
--- Differences from the original:
---   - BLOOD_POOL_TEXTURES / BLOOD_POOL_EFFECTS globals removed;
---     texture table is local.
---   - ConVars replaced with hardcoded defaults.
---   - CL_BLOOD_POOL_ITERATION removed; lifetime alone controls cleanup.
+-- Differences from the original (prop_ragdoll compensation):
+--   1. SetLighting(false) on the pool particle so the texture
+--      renders at full brightness instead of being darkened by
+--      env lighting / the Gekko's ignite flame.
+--   2. Settling check uses physics-object velocity (summed over
+--      all bones) instead of ent:GetVelocity(), which always
+--      returns zero for manually-created prop_ragdolls.
+--   3. ConVars / CL_BLOOD_POOL_ITERATION replaced with constants.
 -- ============================================================
 
 -- Mirrors BLOOD_POOL_TEXTURES[BLOOD_COLOR_RED] from the original addon.
@@ -70,12 +73,25 @@ local function GetMaximumPoolSize(pos, normal, limit)
     return limit
 end
 
+-- Returns true when the prop_ragdoll's physics objects have settled.
+-- ent:GetVelocity() is always 0 for manually-created prop_ragdolls;
+-- we must sum the actual phys-object speeds instead.
+local function RagdollSettled(ent)
+    for i = 0, ent:GetPhysicsObjectCount() - 1 do
+        local phys = ent:GetPhysicsObjectNum(i)
+        if IsValid(phys) and phys:GetVelocity():LengthSqr() > 1 then
+            return false
+        end
+    end
+    return true
+end
+
 function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
     local bone  = data:GetAttachment() or 0
-    local flags = data:GetFlags() or 0  -- reserved; 0 = normal mode
+    local flags = data:GetFlags() or 0  -- 1: ttt mode, no fading
 
     if flags == 0 then
         self.LifeTime = CurTime() + POOL_LIFETIME
@@ -123,7 +139,8 @@ function EFFECT:Think()
         if CurTime() >= self.BloodTime and CurTime() < self.MaxBloodTime then
             local tr = util.TraceLine({start=pos + Vector(0,0,32), endpos=pos + Vector(0,0,-128), mask=MASK_DEADSOLID})
 
-            if tr.Hit and ent:GetVelocity():Length() < 0.05 then
+            -- Use physics-object velocity for prop_ragdolls (ent:GetVelocity() is always 0)
+            if tr.Hit and RagdollSettled(ent) then
                 -- pull out of the ground a bit
                 local pos = tr.HitPos + tr.HitNormal * 0.005
                 
@@ -156,6 +173,10 @@ function EFFECT:Think()
                     particle:SetEndAlpha(500)
                     particle:SetPos(pos)
                     particle:SetAngles(ang)
+                    -- Force full-brightness render: the Gekko's ignite flame and
+                    -- environment lighting darken 3D particles, making the pool
+                    -- appear as a shadow instead of red.
+                    particle:SetLighting(false)
 
                     self.BloodPool = particle
                 else
