@@ -3,13 +3,15 @@
 -- Standalone blood stream + blood mist for npc_vj_gekko.
 --
 -- Rates (per hit):
---   Blood mist  :  80%
---   Blood stream:  40%
+--   Blood mist    :  80%
+--   Manhack sparks:  60%
+--   Blood stream  :  40%
 -- ============================================================
 
 local PARTICLE_MAT  = "decals/trail"
 
 local MIST_MAT_BASE = "particle/smokesprites_000"  -- append 1-9
+local SPARK_MAT     = "effects/spark"
 
 local MIST_R = 210
 local MIST_G = 30
@@ -24,6 +26,7 @@ for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
 end
 
+-- Stream constants
 local SPREAD_DEG   = 5
 local REPS         = 300
 local PARTICLE_FPS = 60
@@ -45,9 +48,12 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
+-- Per-hit probabilities (0.0 - 1.0)
 local MIST_CHANCE   = 0.80
+local SPARK_CHANCE  = 0.60
 local STREAM_CHANCE = 0.40
 
+-- Mist weight tables: index = weight class (1=light, 2=medium, 3=heavy)
 local MIST_COUNT   = { 8,   14,  22  }
 local MIST_SIZEMIN = { 5,   7,   10  }
 local MIST_SIZEMAX = { 14,  20,  30  }
@@ -56,7 +62,18 @@ local MIST_LIFEMAX = { 0.8, 1.2, 1.8 }
 local MIST_SPEED   = { 35,  55,  80  }
 local MIST_ALPHA   = { 50,  65,  80  }
 
--- ── BLOOD MIST (80% of hits) ───────────────────────────────
+-- Spark constants
+local SPARK_COUNT_MIN = 12
+local SPARK_COUNT_MAX = 28
+local SPARK_SPEED_MIN = 120
+local SPARK_SPEED_MAX = 380
+local SPARK_LIFE_MIN  = 0.15
+local SPARK_LIFE_MAX  = 0.45
+local SPARK_SIZE_MIN  = 1.2
+local SPARK_SIZE_MAX  = 3.0
+local SPARK_CONE      = 55   -- half-angle degrees of eruption cone
+
+-- ── BLOOD MIST (80% of hits) ──────────────────────────────
 
 local function SpawnBloodMist(hitPos, hitNorm)
     local w       = math.random(1, 3)
@@ -90,7 +107,56 @@ local function SpawnBloodMist(hitPos, hitNorm)
     emitter:Finish()
 end
 
--- ── GROUND DECALS ON HIT ─────────────────────────────────
+-- ── MANHACK SPARKS (60% of hits) ────────────────────────────
+-- Sparks erupt outward from the hit normal like a brief explosion.
+-- Color: bright yellow-white, characteristic of manhack blade sparks.
+
+local function SpawnManhackSparks(hitPos, hitNorm)
+    local emitter = ParticleEmitter(hitPos, true)
+    if not emitter then return end
+
+    local count = math.random(SPARK_COUNT_MIN, SPARK_COUNT_MAX)
+    local sr    = math.rad(SPARK_CONE)
+
+    -- Build a local basis around the hit normal for cone sampling.
+    local fwd   = hitNorm
+    local right = fwd:Cross(Vector(0, 0, 1))
+    if right:LengthSqr() < 0.001 then
+        right = fwd:Cross(Vector(0, 1, 0))
+    end
+    right:Normalize()
+    local up = right:Cross(fwd):GetNormalized()
+
+    for _ = 1, count do
+        local p = emitter:Add(SPARK_MAT, hitPos)
+        if not p then continue end
+
+        -- Sample a direction inside the eruption cone.
+        local dir = (fwd
+            + right * math.sin(math.Rand(-sr, sr))
+            + up    * math.sin(math.Rand(-sr, sr))):GetNormalized()
+
+        local speed = math.Rand(SPARK_SPEED_MIN, SPARK_SPEED_MAX)
+
+        p:SetVelocity(dir * speed)
+        p:SetLifeTime(0)
+        p:SetDieTime(math.Rand(SPARK_LIFE_MIN, SPARK_LIFE_MAX))
+        p:SetStartAlpha(255)
+        p:SetEndAlpha(0)
+        p:SetStartSize(math.Rand(SPARK_SIZE_MIN, SPARK_SIZE_MAX))
+        p:SetEndSize(0)
+        -- Bright yellow-white: full red, high green, low blue.
+        p:SetColor(255, math.random(180, 255), math.random(0, 60))
+        p:SetGravity(Vector(0, 0, -300))
+        p:SetAirResistance(20)
+        p:SetCollide(true)
+        p:SetBounce(0.3)
+    end
+
+    emitter:Finish()
+end
+
+-- ── GROUND DECALS ON HIT ────────────────────────────────
 
 local function DoImpactDecals(hitPos)
     local count = math.random(3, 6)
@@ -104,7 +170,7 @@ local function DoImpactDecals(hitPos)
     end
 end
 
--- ── EFFECT ───────────────────────────────────────────────
+-- ── EFFECT ─────────────────────────────────────────────
 
 function EFFECT:Init(data)
     local ent = data:GetEntity()
@@ -119,10 +185,15 @@ function EFFECT:Init(data)
         hitNorm = ent:GetForward() * -1
     end
 
-    -- Mist: 80% of hits.
+    -- Blood mist: 80% of hits.
     if math.random() <= MIST_CHANCE then
         SpawnBloodMist(hitPos, hitNorm)
         DoImpactDecals(hitPos)
+    end
+
+    -- Manhack sparks: 60% of hits.
+    if math.random() <= SPARK_CHANCE then
+        SpawnManhackSparks(hitPos, hitNorm)
     end
 
     -- Stream: 40% of hits.
