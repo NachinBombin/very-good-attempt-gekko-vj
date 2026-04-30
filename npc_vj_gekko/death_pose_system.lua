@@ -49,5 +49,11 @@ function ENT:GekkoDeath_SpawnRagdoll()
 
     rag:Ignite(FIRE_DURATION, FIRE_SCALE)
     print("[GekkoDeath] Ragdoll spawned + tinted + ignited at " .. tostring(pos))
+
+    -- Notify other systems (e.g. blood pool) that a Gekko ragdoll was created.
+    -- CreateEntityRagdoll never fires for manually-spawned prop_ragdolls,
+    -- so we broadcast our own hook here.
+    hook.Run("GekkoRagdollSpawned", self, rag)
+
     return rag
 end
