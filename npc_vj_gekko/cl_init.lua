@@ -911,7 +911,7 @@ end
 -- ============================================================
 --  BLOOD SPLATTER
 -- ============================================================
-local BLOOD_SIZE   = 3.9
+local BLOOD_SIZE   = 1.0
 local BLOOD_DECAL  = "Blood"
 local BLOOD_DECAL2 = "Blood"
 
@@ -925,7 +925,7 @@ local function RandBiasedDir(dir, bias)
     return (r + dir * bias):GetNormalized()
 end
 
-local function SpawnBloodBlob(pos, dir, speed, scale)
+local function SpawnBloodBlob(pos, dir, speed, scale, ent)
     local s  = BLOOD_SIZE
     local sp = speed * s
 
@@ -944,12 +944,12 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     e2:SetMagnitude(math.Rand(8, 22) * s)
     util.Effect("BloodSpray", e2, false)
 
-  local tr = util.TraceLine({
-    start  = pos,
-    endpos = pos + dir * sp,
-    mask   = MASK_SOLID_BRUSHONLY,
-    filter = ent,   -- ← add this, passing the NPC entity from GekkoDoBloodSplat
-})
+    local tr = util.TraceLine({
+        start  = pos,
+        endpos = pos + dir * sp,
+        mask   = MASK_SOLID_BRUSHONLY,
+        filter = ent,
+    })
 
     if tr.Hit then
         local decalName = (math.random(1, 6) == 1) and BLOOD_DECAL2 or BLOOD_DECAL
@@ -957,7 +957,7 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     end
 end
 
-local function BloodVariant_Geyser(origin)
+local function BloodVariant_Geyser(origin, ent)
     local s     = BLOOD_SIZE
     local count = math.random(18, 32)
 
@@ -974,7 +974,8 @@ local function BloodVariant_Geyser(origin)
             origin + Vector(0, 0, math.Rand(20, 120) * s),
             dir,
             math.Rand(80, 220),
-            math.Rand(8, 22)
+            math.Rand(8, 22),
+        ent
         )
     end
 
@@ -989,7 +990,7 @@ local function BloodVariant_Geyser(origin)
     end
 end
 
-local function BloodVariant_RadialRing(origin)
+local function BloodVariant_RadialRing(origin, ent)
     local s      = BLOOD_SIZE
     local spokes = math.random(20, 36)
     local ringH  = math.Rand(40, 100) * s
@@ -1003,7 +1004,8 @@ local function BloodVariant_RadialRing(origin)
             origin + Vector(0, 0, ringH),
             dir,
             math.Rand(700, 2400),
-            math.Rand(10, 28)
+            math.Rand(10, 28),
+        ent
         )
     end
 
@@ -1017,7 +1019,7 @@ local function BloodVariant_RadialRing(origin)
     end
 end
 
-local function BloodVariant_BurstCloud(origin)
+local function BloodVariant_BurstCloud(origin, ent)
     local s = BLOOD_SIZE
 
     for _ = 1, math.random(28, 50) do
@@ -1025,7 +1027,8 @@ local function BloodVariant_BurstCloud(origin)
             origin + Vector(0, 0, math.Rand(30, 160) * s),
             RandBiasedDir(Vector(0, 0, 0.4), 0),
             math.Rand(600, 2800),
-            math.Rand(10, 30)
+            math.Rand(10, 30),
+        ent
         )
     end
 
@@ -1043,7 +1046,7 @@ local function BloodVariant_BurstCloud(origin)
     end
 end
 
-local function BloodVariant_ArcShower(origin, forwardDir)
+local function BloodVariant_ArcShower(origin, forwardDir, ent)
     local s = BLOOD_SIZE
 
     for _ = 1, math.random(22, 40) do
@@ -1051,7 +1054,8 @@ local function BloodVariant_ArcShower(origin, forwardDir)
             origin + Vector(0, 0, math.Rand(60, 180) * s),
             RandBiasedDir(forwardDir + Vector(0, 0, 0.5), 0.55),
             math.Rand(1000, 3000),
-            math.Rand(8, 24)
+            math.Rand(8, 24),
+        ent
         )
     end
 
@@ -1065,7 +1069,7 @@ local function BloodVariant_ArcShower(origin, forwardDir)
     end
 end
 
-local function BloodVariant_GroundPool(origin)
+local function BloodVariant_GroundPool(origin, ent)
     local s = BLOOD_SIZE
 
     for _ = 1, math.random(20, 38) do
@@ -1077,7 +1081,8 @@ local function BloodVariant_GroundPool(origin)
             origin + Vector(0, 0, math.Rand(5, 40) * s),
             dir,
             math.Rand(600, 2000),
-            math.Rand(14, 36)
+            math.Rand(14, 36),
+        ent
         )
     end
 
@@ -1123,11 +1128,11 @@ local function GekkoDoBloodSplat(ent)
     local forward = ent:GetForward()
 
     if     variant == 0 then BloodVariant_HemoStream(ent)
-    elseif variant == 1 then BloodVariant_Geyser(origin)
-    elseif variant == 2 then BloodVariant_RadialRing(origin)
-    elseif variant == 3 then BloodVariant_BurstCloud(origin)
-    elseif variant == 4 then BloodVariant_ArcShower(origin, forward)
-    elseif variant == 5 then BloodVariant_GroundPool(origin)
+    elseif variant == 1 then BloodVariant_Geyser(origin, ent)
+    elseif variant == 2 then BloodVariant_RadialRing(origin, ent)
+    elseif variant == 3 then BloodVariant_BurstCloud(origin, ent)
+    elseif variant == 4 then BloodVariant_ArcShower(origin, forward, ent)
+    elseif variant == 5 then BloodVariant_GroundPool(origin, ent)
     else                     BloodVariant_HemoStream(ent)
     end
 end
