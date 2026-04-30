@@ -18,22 +18,22 @@ AddCSLuaFile("elastic_cl.lua")
 -- ------------------------------------------------------------
 --  TUNABLES
 -- ------------------------------------------------------------
-local ELASTIC_MAX_RANGE     = 900
-local ELASTIC_COOLDOWN_MIN  = 6
-local ELASTIC_COOLDOWN_MAX  = 12
-local ELASTIC_DAMAGE        = 12
-local ELASTIC_DURATION      = 3.5    -- seconds the pull lasts
+local ELASTIC_MAX_RANGE     = 600
+local ELASTIC_COOLDOWN_MIN  = 30
+local ELASTIC_COOLDOWN_MAX  = 65
+local ELASTIC_DAMAGE        = 5
+local ELASTIC_DURATION      = 2.8    -- seconds the pull lasts
 local ELASTIC_PULL_SPEED    = 420    -- velocity magnitude toward Gekko
 local ELASTIC_PULL_INTERVAL = 0.08   -- how often the velocity kick repeats
-local ELASTIC_ROPE_WIDTH    = 1.5
-local ELASTIC_ROPE_R        = 180
-local ELASTIC_ROPE_G        = 220
-local ELASTIC_ROPE_B        = 80
-local ELASTIC_SNAP_DELAY    = 3.5    -- matches ELASTIC_DURATION
+local ELASTIC_ROPE_WIDTH    = 1.4
+local ELASTIC_ROPE_R        = 0
+local ELASTIC_ROPE_G        = 0
+local ELASTIC_ROPE_B        = 0
+local ELASTIC_SNAP_DELAY    = 2.8    -- matches ELASTIC_DURATION
 local ANCHOR_MODEL          = "models/hunter/blocks/cube025x025x025.mdl"
 
 -- The origin Z offset for the rope / pull.
-local GEKKO_ORIGIN_Z        = 180
+local GEKKO_ORIGIN_Z        = 380
 
 -- Pre-fire delay: shoot sound plays NOW, actual logic starts after.
 local ELASTIC_PREFIRE_DELAY = 0.9
