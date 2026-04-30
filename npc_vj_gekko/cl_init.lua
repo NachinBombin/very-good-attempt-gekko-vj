@@ -911,7 +911,7 @@ end
 -- ============================================================
 --  BLOOD SPLATTER
 -- ============================================================
-local BLOOD_SIZE   = 0.15
+local BLOOD_SIZE   = 1.0
 local BLOOD_DECAL  = "Blood"
 local BLOOD_DECAL2 = "Blood"
 
