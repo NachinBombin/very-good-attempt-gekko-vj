@@ -21,9 +21,7 @@ for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
 end
 
--- Baked-in values matching original Hemo ConVar defaults
-local SIZE_MULT    = 1
-local FORCE_MULT   = 1
+-- Fixed constants
 local SPREAD_DEG   = 5
 local REPS         = 300
 local PARTICLE_FPS = 60
@@ -35,15 +33,27 @@ local P_LEN_MIN    = 100
 local P_LEN_MAX    = 100
 local P_LEN_START  = 0.1
 local PULSATE_AMP  = 100
-local PULSATE_SPD  = 8
 local DECAL_SCALE  = 0.2
 local MIN_STRENGTH = 0.25
+
+-- Randomized per trigger (ranges)
+local SIZE_MULT_MIN   = 1.0
+local SIZE_MULT_MAX   = 2.8
+local FORCE_MULT_MIN  = 1.0
+local FORCE_MULT_MAX  = 2.0
+local PULSATE_SPD_MIN = 6.0
+local PULSATE_SPD_MAX = 10.0
 
 -- ── EFFECT ──────────────────────────────────────────────────
 
 function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
+
+    -- Roll random values once per trigger
+    self.SIZE_MULT   = math.Rand(SIZE_MULT_MIN,   SIZE_MULT_MAX)
+    self.FORCE_MULT  = math.Rand(FORCE_MULT_MIN,  FORCE_MULT_MAX)
+    self.PULSATE_SPD = math.Rand(PULSATE_SPD_MIN, PULSATE_SPD_MAX)
 
     local hitPos = data:GetOrigin()
     if hitPos == Vector(0, 0, 0) then
@@ -75,23 +85,24 @@ function EFFECT:Init(data)
             return
         end
 
-        local spawnPos = ent:GetPos() + effect_self.HitOffset
-        local length   = math.Rand(P_LEN_MIN, P_LEN_MAX)
+        local spawnPos  = ent:GetPos() + effect_self.HitOffset
+        local length    = math.Rand(P_LEN_MIN, P_LEN_MAX)
+        local size_m    = effect_self.SIZE_MULT
+        local force_m   = effect_self.FORCE_MULT
 
-        -- FIXED: pass raw string path, not an IMaterial object.
         local particle = emitter:Add(PARTICLE_MAT, spawnPos)
         if not particle then return end
 
         local strength = effect_self.CurrentStrength or 1
 
         particle:SetDieTime(P_LIFETIME * strength)
-        particle:SetStartSize(math.Rand(1.9, 3.8) * P_SCALE * SIZE_MULT)
+        particle:SetStartSize(math.Rand(1.9, 3.8) * P_SCALE * size_m)
         particle:SetEndSize(0)
-        particle:SetStartLength(length * P_SCALE * P_LEN_START * SIZE_MULT)
-        particle:SetEndLength(length * P_SCALE * SIZE_MULT)
+        particle:SetStartLength(length * P_SCALE * P_LEN_START * size_m)
+        particle:SetEndLength(length * P_SCALE * size_m)
         particle:SetGravity(Vector(0, 0, -P_GRAVITY))
 
-        local base_vel = hitNorm * -(P_FORCE + effect_self.ExtraForce) * strength * FORCE_MULT
+        local base_vel = hitNorm * -(P_FORCE + effect_self.ExtraForce) * strength * force_m
 
         if SPREAD_DEG > 0 then
             local sr    = math.rad(SPREAD_DEG)
@@ -113,8 +124,8 @@ function EFFECT:Init(data)
                     table.Random(decal_mats),
                     Entity(0), pos, normal,
                     Color(255, 255, 255),
-                    DECAL_SCALE * SIZE_MULT,
-                    DECAL_SCALE * SIZE_MULT
+                    DECAL_SCALE * size_m,
+                    DECAL_SCALE * size_m
                 )
             end
         end)
@@ -126,7 +137,7 @@ function EFFECT:Init(data)
 end
 
 function EFFECT:UpdateExtraForce()
-    self.ExtraForce = PULSATE_AMP * (1 + math.sin(CurTime() * PULSATE_SPD))
+    self.ExtraForce = PULSATE_AMP * (1 + math.sin(CurTime() * (self.PULSATE_SPD or 8)))
 end
 
 function EFFECT:Think()
