@@ -1,17 +1,11 @@
 if SERVER then return end
 
--- Pre-cache materials using table constructors (no table.insert, no userdata issues)
+-- FIXED: Store material PATH STRINGS, not IMaterial objects.
+-- ParticleEmitter:Add() requires a string path. Passing an IMaterial
+-- object (returned by Material()) causes Add() to return nil every time,
+-- producing zero particles.
 local particle_mats = {
-    Material("decals/trail"),
-}
-
-local decal_mats = {
-    Material("decals/Blood1"),
-    Material("decals/Blood2"),
-    Material("decals/Blood3"),
-    Material("decals/Blood4"),
-    Material("decals/Blood5"),
-    Material("decals/Blood6"),
+    "decals/trail",
 }
 
 local particle_length_random      = { min = 100, max = 100 }
@@ -40,8 +34,11 @@ function EFFECT:Init(data)
     self.CurrentStrenght = 1
     self:UpdateExtraForce()
 
+    -- FIXED: true = 3D emitter so particles have correct world-space perspective.
+    -- false (2D) made particles render as flat screen-space sprites,
+    -- causing them to appear invisible at most viewing angles.
     self.timername = "GekkoBloodStreamTimer_" .. ent:EntIndex() .. "_" .. CurTime()
-    local emitter  = ParticleEmitter(ent:GetPos(), false)
+    local emitter  = ParticleEmitter(ent:GetPos(), true)
     if not emitter then return end
 
     local effect_self = self
