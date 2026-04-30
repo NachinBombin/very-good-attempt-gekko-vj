@@ -1,6 +1,6 @@
 -- ============================================================
 -- lua/effects/gekko_bloodstream.lua
--- Standalone blood stream for npc_vj_gekko.
+-- Standalone blood stream + blood mist for npc_vj_gekko.
 --
 -- Caller (cl_init.lua / init.lua) sets:
 --   data:SetEntity(ent)       -- the NPC (used to follow movement)
@@ -9,10 +9,17 @@
 --   data:SetFlags(0)          -- stream mode
 -- ============================================================
 
--- ParticleEmitter:Add() requires a raw STRING path, NOT an IMaterial object.
+-- Stream trail: 3D emitter, decals/trail material.
 local PARTICLE_MAT = "decals/trail"
 
--- util.DecalEx() requires an IMaterial object.
+-- Blood mist: smoke sprite sheets colored dark red.
+-- particle/smokesprites_000X have proper alpha channels for
+-- ParticleEmitter coloring. Blood sprites do NOT — they render
+-- as black squares. Smoke sprites colored dark red = blood mist.
+local MIST_MAT_BASE = "particle/smokesprites_000"  -- append 1-9
+local MIST_COLOR    = { r = 110, g = 8, b = 8 }    -- dark red
+
+-- util.DecalEx() requires IMaterial objects.
 local DECAL_PATHS = {
     "decals/Blood1", "decals/Blood2", "decals/Blood3",
     "decals/Blood4", "decals/Blood5", "decals/Blood6",
@@ -22,7 +29,7 @@ for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
 end
 
--- Fixed constants
+-- Stream constants
 local SPREAD_DEG   = 5
 local REPS         = 300
 local PARTICLE_FPS = 60
@@ -37,7 +44,7 @@ local PULSATE_AMP  = 100
 local DECAL_SCALE  = 0.2
 local MIN_STRENGTH = 0.25
 
--- Randomized per trigger (ranges)
+-- Stream randomized ranges
 local SIZE_MULT_MIN   = 1.0
 local SIZE_MULT_MAX   = 2.8
 local FORCE_MULT_MIN  = 1.0
@@ -45,16 +52,70 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
--- ── DECAL SCATTER ON HIT ───────────────────────────────────
--- Fires once per hit inside EFFECT:Init.
--- No ParticleEmitter here — particle/blood* sprites render as black
--- squares in 2D emitter mode. Decals-only is clean and correct.
--- The bloodstream particles (stream emitter below) already handle
--- the sustained visual and place their own decals via SetCollideCallback.
+-- ── BLOOD MIST ──────────────────────────────────────────
+-- Ported from realistic_blood_smoke_mist_final_update.
+-- Standalone: no net messages, no convars, no addon dependency.
+-- Weight class (1/2/3) is randomized per hit, giving variable
+-- size and duration on every bullet impact.
+
+-- Weight tables: index = weight class (1=light, 2=medium, 3=heavy)
+local MIST_COUNT   = { 8,  14,  22  }   -- particle count
+local MIST_SIZEMIN = { 5,  7,   10  }   -- start size
+local MIST_SIZEMAX = { 14, 20,  30  }   -- end size
+local MIST_LIFEMIN = { 0.4, 0.6, 0.8 } -- min die time
+local MIST_LIFEMAX = { 0.8, 1.2, 1.8 } -- max die time
+local MIST_SPEED   = { 35,  55,  80  }  -- spray speed
+local MIST_ALPHA   = { 50,  65,  80  }  -- start alpha
+
+local function SpawnBloodMist(hitPos, hitNorm)
+    -- Randomize weight class on every hit for variable feel.
+    local w = math.random(1, 3)
+
+    local emitter = ParticleEmitter(hitPos, false)
+    if not emitter then return end
+
+    local count = MIST_COUNT[w]
+    local speed = MIST_SPEED[w]
+
+    -- Sample scene lighting at the hit point so the mist
+    -- darkens in shadowed areas, same as the original addon.
+    local light      = render.GetLightColor(hitPos)
+    local brightness = 0.35
+    if light and (light.x + light.y + light.z) > 0 then
+        brightness = math.Clamp((light.x + light.y + light.z) / 3, 0.15, 1.0)
+    end
+    local mr = math.Clamp(MIST_COLOR.r * brightness, 0, 255)
+    local mg = math.Clamp(MIST_COLOR.g * brightness, 0, 255)
+    local mb = math.Clamp(MIST_COLOR.b * brightness, 0, 255)
+
+    for _ = 1, count do
+        local mat = MIST_MAT_BASE .. math.random(1, 9)
+        local p   = emitter:Add(mat, hitPos)
+        if not p then continue end
+
+        -- Spray outward from the hit surface normal with randomness.
+        local vel = hitNorm * math.Rand(speed * 0.6, speed) + VectorRand() * (speed * 0.3)
+
+        p:SetVelocity(vel)
+        p:SetLifeTime(0)
+        p:SetDieTime(math.Rand(MIST_LIFEMIN[w], MIST_LIFEMAX[w]))
+        p:SetStartAlpha(MIST_ALPHA[w])
+        p:SetEndAlpha(0)
+        p:SetStartSize(math.Rand(MIST_SIZEMIN[w] * 0.8, MIST_SIZEMIN[w] * 1.2))
+        p:SetEndSize(math.Rand(MIST_SIZEMAX[w] * 0.8, MIST_SIZEMAX[w] * 1.2))
+        p:SetColor(mr, mg, mb)
+        p:SetAirResistance(40)
+        p:SetGravity(Vector(0, 0, -12))
+        p:SetRoll(math.Rand(0, 360))
+        p:SetRollDelta(math.Rand(-0.4, 0.4))
+    end
+
+    emitter:Finish()
+end
+
+-- ── GROUND DECALS ON HIT ───────────────────────────────
 
 local function DoImpactDecals(hitPos)
-    -- 3-6 ground decals around the impact point.
-    -- util.Decal traces from start to end internally; no custom trace needed.
     local count = math.random(3, 6)
     for _ = 1, count do
         local ox = math.Rand(-30, 30)
@@ -72,7 +133,6 @@ function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
-    -- Roll random values once per trigger
     self.SIZE_MULT   = math.Rand(SIZE_MULT_MIN,   SIZE_MULT_MAX)
     self.FORCE_MULT  = math.Rand(FORCE_MULT_MIN,  FORCE_MULT_MAX)
     self.PULSATE_SPD = math.Rand(PULSATE_SPD_MIN, PULSATE_SPD_MAX)
@@ -86,7 +146,10 @@ function EFFECT:Init(data)
         hitNorm = ent:GetForward() * -1
     end
 
-    -- Scatter ground blood decals on this hit
+    -- Blood mist puff at the hit point
+    SpawnBloodMist(hitPos, hitNorm)
+
+    -- Ground blood decals around the impact
     DoImpactDecals(hitPos)
 
     self.StartTime       = CurTime()
@@ -97,7 +160,6 @@ function EFFECT:Init(data)
     local spurt_delay = math.Rand(0.5, 5) / PARTICLE_FPS
     self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. CurTime()
 
-    -- 3D emitter (true) — 2D mode renders decals/trail as black squares.
     local emitter = ParticleEmitter(hitPos, true)
     if not emitter then return end
 
