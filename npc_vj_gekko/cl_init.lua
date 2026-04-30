@@ -937,13 +937,6 @@ local function SpawnBloodBlob(pos, dir, speed, scale, ent)
     e:SetRadius(math.random(12, 36) * s)
     util.Effect("BloodImpact", e, false)
 
-    local e2 = EffectData()
-    e2:SetOrigin(pos)
-    e2:SetNormal(dir)
-    e2:SetScale(scale * math.Rand(0.6, 1.4) * s)
-    e2:SetMagnitude(math.Rand(8, 22) * s)
-    util.Effect("BloodSpray", e2, false)
-
     local tr = util.TraceLine({
         start  = pos,
         endpos = pos + dir * sp,
@@ -1124,7 +1117,7 @@ local function GekkoDoBloodSplat(ent)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
 
-    local origin  = ent:GetPos() + Vector(0, 0, 60)
+    local origin  = ent:WorldSpaceCenter()
     local forward = ent:GetForward()
 
     -- Variants 1-5: client-side burst/splatter effects
