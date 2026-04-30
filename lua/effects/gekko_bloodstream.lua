@@ -1,160 +1,118 @@
 -- ============================================================
---  gekko_bloodstream.lua  —  VJ Gekko blood stream
---  ParticleEmitter + decals/trail confirmed working on target.
---  Fix: emitter and fallback at torso height, not entity feet.
+--  gekko_bloodstream.lua
+--  This is a DIRECT COPY of Hemo's bloodstreameffectzippy.lua
+--  with only the effect name changed. No other modifications.
+--  decals/trail confirmed working on target system.
 -- ============================================================
 
--- File-scope pre-cache (same as Hemo make_materials)
-local BLOOD_MATS = {
-    Material("decals/trail"),
+local particles = {
+    "decals/trail",
 }
 
-local DECAL_MATS = {
-    Material("decals/Blood1"),
-    Material("decals/Blood2"),
-    Material("decals/Blood3"),
-    Material("decals/Blood4"),
-    Material("decals/Blood5"),
-    Material("decals/Blood6"),
+local decals = {
+    "decals/Blood1",
+    "decals/Blood3",
+    "decals/Blood4",
+    "decals/Blood5",
+    "decals/Blood6",
+    "decals/Blood2",
+    "decals/Blood3",
 }
 
--- ============================================================
---  BONE EMISSION  — random body part per burst
--- ============================================================
-local EMISSION_BONES = {
-    "b_spine3",
-    "b_pelvis",
-    "b_pedestal",
-    "b_r_hippiston1",
-    "b_l_hippiston1",
-}
+local particle_length_random       = {min=100, max=100}
+local particle_start_lengt_mult    = 0.1
+local particle_scale               = 0.4
+local particle_gravity             = 1050
+local particle_force               = 200
+local particle_pulsate_max_force   = 100
+local particle_pulsate_speed_mult  = 8
+local particle_reps_stream         = 300
+local particle_fps                 = 60
+local particle_lifetime            = 8
+local decal_scale                  = 0.2
+local impact_chance                = 1
+local min_strenght                 = 0.25
 
--- Gekko pelvis sits ~100u above origin; 80 is safe mid-body
-local TORSO_Z = 80
-
-local function GetEmissionPos(ent)
-    local boneName = EMISSION_BONES[math.random(#EMISSION_BONES)]
-    local boneIdx  = ent:LookupBone(boneName)
-    if boneIdx and boneIdx >= 0 then
-        local bmat = ent:GetBoneMatrix(boneIdx)
-        if bmat then
-            return bmat:GetTranslation() + Vector(
-                math.Rand(-10, 10),
-                math.Rand(-10, 10),
-                math.Rand(-5,   5)
-            )
-        end
+local function make_materials(tbl)
+    local materials = {}
+    for _, v in ipairs(tbl) do
+        table.insert(materials, Material(v))
     end
-    -- Fallback at mid-body, NOT at feet
-    return ent:GetPos() + Vector(
-        math.Rand(-15, 15),
-        math.Rand(-15, 15),
-        TORSO_Z
-    )
+    return materials
 end
 
--- ============================================================
---  SETTINGS  (matching Hemo defaults)
--- ============================================================
-local PARTICLE_SCALE     = 0.4
-local PARTICLE_GRAVITY   = 1050
-local PARTICLE_FORCE     = 200
-local PARTICLE_LIFETIME  = 8
-local PARTICLE_REPS      = 300
-local PULSATE_MAX_FORCE  = 100
-local PULSATE_SPEED_MULT = 8
-local DECAL_SCALE        = 0.2
-local MIN_STRENGTH       = 0.25
+local decal_mats    = make_materials(decals)
+local particle_mats = make_materials(particles)
 
--- ============================================================
---  EFFECT
--- ============================================================
 function EFFECT:Init(data)
     local ent = data:GetEntity()
-
-    print("[GekkoBloodstream] Init — ent valid: " .. tostring(IsValid(ent)))
-
     if not IsValid(ent) then return end
 
-    self.Ent             = ent
-    self.reps            = PARTICLE_REPS
-    self.StartTime       = CurTime()
-    self.CurrentStrength = 1
-    self.ExtraForce      = 0
-    self:_CalcExtraForce()
+    local flags = data:GetFlags()
 
-    self.TimerName = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. math.floor(CurTime() * 1000)
+    self.reps = (flags == 1 and 150) or (flags == 0 and particle_reps_stream) or particle_reps_stream
 
-    -- Emitter anchored at torso height, matching Hemo's false (2D) mode
-    local emitter = ParticleEmitter(ent:GetPos() + Vector(0, 0, TORSO_Z), false)
-    if not emitter then
-        print("[GekkoBloodstream] ERROR: emitter nil")
-        return
-    end
+    local spurt_delay = math.Rand(0.5, 5) / particle_fps
 
-    local spurt_delay = math.Rand(0.5, 5) / 60
-    local self_ref    = self
-    local reps_count  = self.reps
+    self.StartTime      = CurTime()
+    self.CurrentPos     = ent:GetPos()
+    self.CurrentStrenght = 1
+    self:UpdateExtraForce()
 
-    timer.Create(self.TimerName, spurt_delay, self.reps, function()
-        if not IsValid(ent) then
-            emitter:Finish()
-            timer.Remove(self_ref.TimerName)
+    self.timername = "GekkoBloodStreamTimer_" .. ent:EntIndex() .. "_" .. CurTime()
+    local emitter  = ParticleEmitter(self.CurrentPos, false)
+    if not emitter then return end
+
+    local effect_self = self
+    local reps        = self.reps
+
+    timer.Create(self.timername, spurt_delay, reps, function()
+        if not IsValid(ent) or not emitter then
+            if emitter then emitter:Finish() end
+            timer.Remove(effect_self.timername)
             return
         end
 
-        local emitPos  = GetEmissionPos(ent)
-        local particle = emitter:Add(table.Random(BLOOD_MATS), emitPos)
-        if not particle then return end
+        ent.CurrentPos = ent:GetPos()
 
-        -- No SetColor, no SetAlpha — exactly matching Hemo
-        particle:SetDieTime(PARTICLE_LIFETIME * (self_ref.CurrentStrength or 1))
-        particle:SetStartSize(math.Rand(1.9, 3.8) * PARTICLE_SCALE)
+        local length   = math.Rand(particle_length_random.min, particle_length_random.max)
+        local particle = emitter:Add(table.Random(particle_mats), ent.CurrentPos)
+
+        particle:SetDieTime(particle_lifetime * effect_self.CurrentStrenght)
+        particle:SetStartSize(math.Rand(1.9, 3.8) * particle_scale)
         particle:SetEndSize(0)
-        particle:SetStartLength(4   * PARTICLE_SCALE)
-        particle:SetEndLength(100  * PARTICLE_SCALE)
-        particle:SetGravity(Vector(0, 0, -PARTICLE_GRAVITY))
+        particle:SetStartLength(length * particle_scale * particle_start_lengt_mult)
+        particle:SetEndLength(length * particle_scale)
+        particle:SetGravity(Vector(0, 0, -particle_gravity))
 
-        local fwd   = ent:GetForward()
-        local force = (PARTICLE_FORCE + (self_ref.ExtraForce or 0)) * (self_ref.CurrentStrength or 1)
-        particle:SetVelocity(
-            fwd * -force +
-            Vector(
-                math.Rand(-50, 50),
-                math.Rand(-50, 50),
-                math.Rand(10,  90)
-            )
-        )
+        local base_velocity = ent:GetForward() * -(particle_force + effect_self.ExtraForce) * effect_self.CurrentStrenght
+        particle:SetVelocity(base_velocity)
 
         particle:SetCollide(true)
         particle:SetCollideCallback(function(_, pos, normal)
-            util.DecalEx(
-                DECAL_MATS[math.random(#DECAL_MATS)],
-                Entity(0), pos, normal,
-                Color(255, 255, 255),
-                DECAL_SCALE, DECAL_SCALE
-            )
+            if math.random(1, impact_chance) == 1 and (effect_self.CurrentStrenght or min_strenght) > 0.2 then
+                util.DecalEx(table.Random(decal_mats), Entity(0), pos, normal,
+                    Color(255,255,255), decal_scale, decal_scale)
+            end
         end)
 
-        reps_count = reps_count - 1
-        if reps_count <= 0 then emitter:Finish() end
+        if timer.RepsLeft(effect_self.timername) == 0 then emitter:Finish() end
     end)
 end
 
-function EFFECT:_CalcExtraForce()
-    self.ExtraForce = PULSATE_MAX_FORCE * (1 + math.sin(CurTime() * PULSATE_SPEED_MULT))
+function EFFECT:UpdateExtraForce()
+    self.ExtraForce = particle_pulsate_max_force * (1 + math.sin(CurTime() * particle_pulsate_speed_mult))
 end
 
 function EFFECT:Think()
-    if not timer.Exists(self.TimerName) then return false end
-    local elapsed = CurTime() - self.StartTime
-    local dietime = self.reps / 60
-    self.CurrentStrength = math.Clamp(
-        1 - (elapsed / dietime) * (1 - MIN_STRENGTH),
-        MIN_STRENGTH, 1
-    )
-    self:_CalcExtraForce()
-    return true
+    if timer.Exists(self.timername) then
+        local lifetime = CurTime() - self.StartTime
+        local dietime  = self.reps * (1 / particle_fps)
+        self.CurrentStrenght = math.Clamp(1 - (lifetime / dietime) * (1 - min_strenght), 0, 1)
+        self:UpdateExtraForce()
+        return true
+    end
+    return false
 end
 
 function EFFECT:Render() end
