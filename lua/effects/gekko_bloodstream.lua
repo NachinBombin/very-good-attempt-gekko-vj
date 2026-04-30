@@ -46,31 +46,48 @@ local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
 -- ── VANILLA BLOOD IMPACT (40% chance) + DECAL SCATTER ───────
--- Fires once at the moment of the hit, not on every particle tick.
+-- Fires once per hit, not on every particle tick.
+
+local function PlaceBloodDecal(from, to)
+    -- Traces onto MASK_SOLID_BRUSHONLY so decals land on world
+    -- geometry, not on the NPC model (which doesn't accept decals).
+    local tr = util.TraceLine({
+        start  = from,
+        endpos = to,
+        mask   = MASK_SOLID_BRUSHONLY,
+    })
+    if tr.Hit then
+        util.Decal("Blood", tr.HitPos + tr.HitNormal, tr.HitPos - tr.HitNormal * 4)
+    end
+end
 
 local function DoVanillaBlood(hitPos, hitNorm)
-    -- 40 % chance: bloodspray effect at exact impact point
+    -- 40% chance: BloodImpact particle effect at the exact hit position.
+    -- "BloodImpact" is the valid registered HL2/GMod effect name.
+    -- "bloodspray" does not exist and silently does nothing.
     if math.random() < 0.4 then
         local e = EffectData()
         e:SetOrigin(hitPos)
         e:SetNormal(hitNorm)
-        e:SetScale(math.Rand(0.5, 1.2))
-        e:SetMagnitude(math.Rand(1, 3))
-        e:SetRadius(math.Rand(4, 10))
-        util.Effect("bloodspray", e, false)
+        e:SetScale(math.Rand(0.5, 1.5))
+        e:SetMagnitude(math.Rand(1, 4))
+        e:SetRadius(math.Rand(4, 12))
+        util.Effect("BloodImpact", e, false)
     end
 
-    -- Always: impact decal directly on the hit surface
-    util.Decal("Blood", hitPos + hitNorm * 2, hitPos - hitNorm * 8)
+    -- Decal on the surface behind the hit point (along the normal).
+    PlaceBloodDecal(hitPos + hitNorm * 2, hitPos - hitNorm * 24)
 
-    -- Scatter 2-5 extra blood decals around the impact point,
-    -- traced onto whatever geometry is nearby (walls, floor, NPC).
-    local scatter_count = math.random(2, 5)
-    for _ = 1, scatter_count do
-        local offset = VectorRand() * math.Rand(6, 22)
-        local from   = hitPos + offset + hitNorm * 4
-        local to     = hitPos + offset - hitNorm * 12
-        util.Decal("Blood", from, to)
+    -- Ground splatter: trace straight down from above the hit,
+    -- offset horizontally so drops spread around the feet.
+    local scatter = math.random(3, 6)
+    for _ = 1, scatter do
+        local ox = math.Rand(-28, 28)
+        local oy = math.Rand(-28, 28)
+        PlaceBloodDecal(
+            hitPos + Vector(ox, oy,  20),
+            hitPos + Vector(ox, oy, -96)
+        )
     end
 end
 
