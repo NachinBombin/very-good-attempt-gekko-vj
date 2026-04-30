@@ -2,14 +2,24 @@
 -- lua/effects/gekko_bloodstream.lua
 -- Standalone blood stream for npc_vj_gekko.
 --
--- Caller (cl_init.lua / init.lua) sets:
+-- Caller (init.lua server-side) sets:
 --   data:SetEntity(ent)       -- the NPC (used to follow movement)
+--   data:SetOrigin(hitPos)    -- REQUIRED: actual bullet/damage hit position
+--   data:SetNormal(hitNorm)   -- direction away from attacker
 --   data:SetFlags(0)          -- stream mode
+--
+-- IMPORTANT (server init.lua):
+--   Use dmginfo:GetDamagePosition() or tr.HitPos for SetOrigin.
+--   Do NOT use self:GetPos() -- that places the stream at the feet.
 -- ============================================================
 
 -- ParticleEmitter:Add() requires a raw STRING path, NOT an IMaterial object.
--- Keep this as a plain string table.
-local PARTICLE_MAT = "decals/trail"
+local PARTICLES = {
+    "particle/blood1",
+    "particle/blood2",
+    "particle/blood3",
+    "particle/blood4",
+}
 
 -- util.DecalEx() requires an IMaterial object, so these ARE pre-cached correctly.
 local DECAL_PATHS = {
@@ -21,18 +31,18 @@ for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
 end
 
--- Baked-in values matching original Hemo ConVar defaults
+-- Tuning
 local SIZE_MULT    = 1
 local FORCE_MULT   = 1
 local SPREAD_DEG   = 5
-local REPS         = 300
+local REPS         = 80          -- ~1.3 s per trigger at 60fps (was 300 = 5 s, causing stacking)
 local PARTICLE_FPS = 60
-local P_LIFETIME   = 8
+local P_LIFETIME   = 5
 local P_SCALE      = 0.4
 local P_FORCE      = 200
 local P_GRAVITY    = 1050
-local P_LEN_MIN    = 100
-local P_LEN_MAX    = 100
+local P_LEN_MIN    = 80
+local P_LEN_MAX    = 120
 local P_LEN_START  = 0.1
 local PULSATE_AMP  = 100
 local PULSATE_SPD  = 8
@@ -45,11 +55,14 @@ function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
-    local hitPos = data:GetOrigin()
+    local hitPos  = data:GetOrigin()
+    local hitNorm = data:GetNormal()
+
+    -- Fallback if server forgot to set origin: use WorldSpaceCenter.
+    -- NOTE: this fallback will still look wrong. The real fix is in init.lua.
     if hitPos == Vector(0, 0, 0) then
         hitPos = ent:WorldSpaceCenter()
     end
-    local hitNorm = data:GetNormal()
     if hitNorm == Vector(0, 0, 0) then
         hitNorm = ent:GetForward() * -1
     end
@@ -59,27 +72,29 @@ function EFFECT:Init(data)
     self.HitOffset       = hitPos - ent:GetPos()
     self:UpdateExtraForce()
 
-    local spurt_delay = math.Rand(0.5, 5) / PARTICLE_FPS
-    self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. CurTime()
+    local spurt_delay = math.Rand(0.5, 3) / PARTICLE_FPS
 
-    -- 3D emitter (true) — 2D mode renders decals/trail as black squares.
-    local emitter = ParticleEmitter(hitPos, true)
+    -- FIXED: timer name is fixed per-entity (no CurTime suffix).
+    -- This means a new trigger REPLACES the old stream instead of stacking.
+    self.timername = "GekkoBloodStream_" .. ent:EntIndex()
+
+    -- 2D emitter required for particle/blood* sprite materials.
+    local emitter = ParticleEmitter(hitPos, false)
     if not emitter then return end
 
     local effect_self = self
 
     timer.Create(self.timername, spurt_delay, REPS, function()
-        if not IsValid(ent) or not emitter then
+        if not IsValid(ent) then
             if emitter then emitter:Finish() end
-            timer.Remove(effect_self.timername)
             return
         end
 
         local spawnPos = ent:GetPos() + effect_self.HitOffset
         local length   = math.Rand(P_LEN_MIN, P_LEN_MAX)
 
-        -- FIXED: pass raw string path, not an IMaterial object.
-        local particle = emitter:Add(PARTICLE_MAT, spawnPos)
+        -- FIXED: raw string path (not IMaterial) to prevent black squares.
+        local particle = emitter:Add(PARTICLES[math.random(#PARTICLES)], spawnPos)
         if not particle then return end
 
         local strength = effect_self.CurrentStrength or 1
@@ -90,6 +105,8 @@ function EFFECT:Init(data)
         particle:SetStartLength(length * P_SCALE * P_LEN_START * SIZE_MULT)
         particle:SetEndLength(length * P_SCALE * SIZE_MULT)
         particle:SetGravity(Vector(0, 0, -P_GRAVITY))
+        particle:SetColor(200, 0, 0)
+        particle:SetLighting(false)
 
         local base_vel = hitNorm * -(P_FORCE + effect_self.ExtraForce) * strength * FORCE_MULT
 
@@ -145,7 +162,6 @@ end
 function EFFECT:Render() end
 
 hook.Add("EntityRemoved", "GekkoBloodStream_Cleanup", function(ent)
-    if ent.gekko_bloodstream_timer then
-        timer.Remove(ent.gekko_bloodstream_timer)
-    end
+    if not IsValid(ent) then return end
+    timer.Remove("GekkoBloodStream_" .. ent:EntIndex())
 end)
