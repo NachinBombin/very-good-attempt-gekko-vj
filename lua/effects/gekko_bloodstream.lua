@@ -7,11 +7,19 @@
 --   data:SetFlags(0)          -- stream mode
 -- ============================================================
 
-local PARTICLES = { "decals/trail" }
-local DECALS = {
+-- ParticleEmitter:Add() requires a raw STRING path, NOT an IMaterial object.
+-- Keep this as a plain string table.
+local PARTICLE_MAT = "decals/trail"
+
+-- util.DecalEx() requires an IMaterial object, so these ARE pre-cached correctly.
+local DECAL_PATHS = {
     "decals/Blood1", "decals/Blood2", "decals/Blood3",
     "decals/Blood4", "decals/Blood5", "decals/Blood6",
 }
+local decal_mats = {}
+for _, v in ipairs(DECAL_PATHS) do
+    decal_mats[#decal_mats + 1] = Material(v)
+end
 
 -- Baked-in values matching original Hemo ConVar defaults
 local SIZE_MULT    = 1
@@ -31,30 +39,18 @@ local PULSATE_SPD  = 8
 local DECAL_SCALE  = 0.2
 local MIN_STRENGTH = 0.25
 
-local function PrecacheMats(tbl)
-    local out = {}
-    for _, v in ipairs(tbl) do out[#out+1] = Material(v) end
-    return out
-end
-local particle_mats = PrecacheMats(PARTICLES)
-local decal_mats    = PrecacheMats(DECALS)
-
 -- ── EFFECT ──────────────────────────────────────────────────
 
 function EFFECT:Init(data)
-    local ent     = data:GetEntity()
-
+    local ent = data:GetEntity()
     if not IsValid(ent) then return end
 
-    -- Derive a plausible wound position from the NPC's center.
-    -- Server no longer needs to set SetOrigin or SetNormal;
-    -- we build them here so the effect is self-contained.
-    local hitPos  = data:GetOrigin()
-    if hitPos == Vector(0,0,0) then
+    local hitPos = data:GetOrigin()
+    if hitPos == Vector(0, 0, 0) then
         hitPos = ent:WorldSpaceCenter()
     end
     local hitNorm = data:GetNormal()
-    if hitNorm == Vector(0,0,0) then
+    if hitNorm == Vector(0, 0, 0) then
         hitNorm = ent:GetForward() * -1
     end
 
@@ -66,7 +62,7 @@ function EFFECT:Init(data)
     local spurt_delay = math.Rand(0.5, 5) / PARTICLE_FPS
     self.timername = "GekkoBloodStream_" .. ent:EntIndex() .. "_" .. CurTime()
 
-    -- FIX: use 3D emitter (true). 2D mode renders decals/trail as black squares.
+    -- 3D emitter (true) — 2D mode renders decals/trail as black squares.
     local emitter = ParticleEmitter(hitPos, true)
     if not emitter then return end
 
@@ -80,15 +76,12 @@ function EFFECT:Init(data)
         end
 
         local spawnPos = ent:GetPos() + effect_self.HitOffset
+        local length   = math.Rand(P_LEN_MIN, P_LEN_MAX)
 
-        local length = math.Rand(P_LEN_MIN, P_LEN_MAX)
-
-        local particle = emitter:Add(table.Random(particle_mats), spawnPos)
+        -- FIXED: pass raw string path, not an IMaterial object.
+        local particle = emitter:Add(PARTICLE_MAT, spawnPos)
         if not particle then return end
 
-        -- FIX: guard CurrentStrength with 'or 1' so closures that outlive
-        -- the EFFECT object (garbage-collected after Think returns false)
-        -- never compare nil with a number (was line 105 crash).
         local strength = effect_self.CurrentStrength or 1
 
         particle:SetDieTime(P_LIFETIME * strength)
@@ -101,24 +94,25 @@ function EFFECT:Init(data)
         local base_vel = hitNorm * -(P_FORCE + effect_self.ExtraForce) * strength * FORCE_MULT
 
         if SPREAD_DEG > 0 then
-            local sr  = math.rad(SPREAD_DEG)
+            local sr    = math.rad(SPREAD_DEG)
             local fwd   = hitNorm
-            local right = fwd:Cross(Vector(0,0,1)):GetNormalized()
+            local right = fwd:Cross(Vector(0, 0, 1)):GetNormalized()
             local up    = right:Cross(fwd):GetNormalized()
-            local spread_dir = (fwd + right * math.sin(math.Rand(-sr,sr)) + up * math.sin(math.Rand(-sr,sr))):GetNormalized()
+            local spread_dir = (fwd
+                + right * math.sin(math.Rand(-sr, sr))
+                + up    * math.sin(math.Rand(-sr, sr))):GetNormalized()
             base_vel = spread_dir * -base_vel:Length()
         end
 
         particle:SetVelocity(base_vel)
         particle:SetCollide(true)
         particle:SetCollideCallback(function(_, pos, normal)
-            -- FIX: guard against nil after effect object is destroyed
             local s = effect_self.CurrentStrength or 0
             if s > 0.2 then
                 util.DecalEx(
                     table.Random(decal_mats),
                     Entity(0), pos, normal,
-                    Color(255,255,255),
+                    Color(255, 255, 255),
                     DECAL_SCALE * SIZE_MULT,
                     DECAL_SCALE * SIZE_MULT
                 )
