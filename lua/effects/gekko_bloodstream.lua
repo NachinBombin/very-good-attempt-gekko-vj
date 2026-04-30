@@ -7,18 +7,26 @@
 --   data:SetOrigin(hitPos)  -- bullet impact position
 --   data:SetNormal(hitNorm) -- surface normal at impact
 --   data:SetFlags(0)        -- reserved
+--
+-- Rates (per hit):
+--   Blood mist  : 100%
+--   Blood stream:  40%
 -- ============================================================
 
 local PARTICLE_MAT  = "decals/trail"
 
 local MIST_MAT_BASE = "particle/smokesprites_000"  -- append 1-9
-local MIST_COLOR    = { r = 110, g = 8, b = 8 }    -- dark red
+
+-- Lighter, clearer red for the mist.
+local MIST_R = 210
+local MIST_G = 30
+local MIST_B = 30
 
 -- util.DecalEx() requires IMaterial objects.
 local DECAL_PATHS = {
     "decals/Blood1", "decals/Blood2", "decals/Blood3",
     "decals/Blood4", "decals/Blood5", "decals/Blood6",
-}                                                        -- FIX: was missing closing }
+}
 local decal_mats = {}
 for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
@@ -46,6 +54,9 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
+-- Probability that a hit spawns a blood stream (0.0 - 1.0)
+local STREAM_CHANCE = 0.40
+
 -- Weight tables: index = weight class (1=light, 2=medium, 3=heavy)
 local MIST_COUNT   = { 8,   14,  22  }
 local MIST_SIZEMIN = { 5,   7,   10  }
@@ -55,17 +66,11 @@ local MIST_LIFEMAX = { 0.8, 1.2, 1.8 }
 local MIST_SPEED   = { 35,  55,  80  }
 local MIST_ALPHA   = { 50,  65,  80  }
 
--- ── BLOOD MIST ──────────────────────────────────────────────
--- render.GetLightColor only works inside a render hook.
--- We use a fixed dark-red brightness instead to stay safe.
-local MIST_BRIGHTNESS = 0.35
-local MIST_R = math.Clamp(MIST_COLOR.r * MIST_BRIGHTNESS, 0, 255)
-local MIST_G = math.Clamp(MIST_COLOR.g * MIST_BRIGHTNESS, 0, 255)
-local MIST_B = math.Clamp(MIST_COLOR.b * MIST_BRIGHTNESS, 0, 255)
+-- ── BLOOD MIST (100% of hits) ────────────────────────────────
 
 local function SpawnBloodMist(hitPos, hitNorm)
     local w       = math.random(1, 3)
-    local emitter = ParticleEmitter(hitPos, true)   -- FIX: was false (2D = black squares)
+    local emitter = ParticleEmitter(hitPos, true)
     if not emitter then return end
 
     local count = MIST_COUNT[w]
@@ -105,7 +110,7 @@ local function DoImpactDecals(hitPos)
         util.Decal("Blood",
             hitPos + Vector(ox, oy,  20),
             hitPos + Vector(ox, oy, -96)
-        )                                            -- FIX: was missing closing )
+        )
     end
 end
 
@@ -114,10 +119,6 @@ end
 function EFFECT:Init(data)
     local ent = data:GetEntity()
     if not IsValid(ent) then return end
-
-    self.SIZE_MULT   = math.Rand(SIZE_MULT_MIN,   SIZE_MULT_MAX)
-    self.FORCE_MULT  = math.Rand(FORCE_MULT_MIN,  FORCE_MULT_MAX)
-    self.PULSATE_SPD = math.Rand(PULSATE_SPD_MIN, PULSATE_SPD_MAX)
 
     local hitPos = data:GetOrigin()
     if hitPos == Vector(0, 0, 0) then
@@ -128,8 +129,16 @@ function EFFECT:Init(data)
         hitNorm = ent:GetForward() * -1
     end
 
+    -- Mist and decals: every hit.
     SpawnBloodMist(hitPos, hitNorm)
     DoImpactDecals(hitPos)
+
+    -- Stream: only 40% of hits.
+    if math.random() > STREAM_CHANCE then return end
+
+    self.SIZE_MULT   = math.Rand(SIZE_MULT_MIN,   SIZE_MULT_MAX)
+    self.FORCE_MULT  = math.Rand(FORCE_MULT_MIN,  FORCE_MULT_MAX)
+    self.PULSATE_SPD = math.Rand(PULSATE_SPD_MIN, PULSATE_SPD_MAX)
 
     self.StartTime       = CurTime()
     self.CurrentStrength = 1
@@ -192,7 +201,7 @@ function EFFECT:Init(data)
                     Color(255, 255, 255),
                     DECAL_SCALE * size_m,
                     DECAL_SCALE * size_m
-                )                                    -- FIX: was missing closing )
+                )
             end
         end)
 
@@ -212,7 +221,7 @@ function EFFECT:Think()
         local dietime  = REPS * (1 / PARTICLE_FPS)
         self.CurrentStrength = math.Clamp(
             1 - (lifetime / dietime) * (1 - MIN_STRENGTH), 0, 1
-        )                                            -- FIX: was missing closing )
+        )
         self:UpdateExtraForce()
         return true
     end
