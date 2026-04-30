@@ -911,7 +911,7 @@ end
 -- ============================================================
 --  BLOOD SPLATTER
 -- ============================================================
-local BLOOD_SIZE   = 1.0
+local BLOOD_SIZE   = 3.9
 local BLOOD_DECAL  = "Blood"
 local BLOOD_DECAL2 = "Blood"
 
@@ -944,11 +944,12 @@ local function SpawnBloodBlob(pos, dir, speed, scale)
     e2:SetMagnitude(math.Rand(8, 22) * s)
     util.Effect("BloodSpray", e2, false)
 
-    local tr = util.TraceLine({
-        start  = pos,
-        endpos = pos + dir * sp,
-        mask   = MASK_SOLID_BRUSHONLY,
-    })
+  local tr = util.TraceLine({
+    start  = pos,
+    endpos = pos + dir * sp,
+    mask   = MASK_SOLID_BRUSHONLY,
+    filter = ent,   -- ← add this, passing the NPC entity from GekkoDoBloodSplat
+})
 
     if tr.Hit then
         local decalName = (math.random(1, 6) == 1) and BLOOD_DECAL2 or BLOOD_DECAL
