@@ -10,13 +10,7 @@
 -- ============================================================
 
 -- ParticleEmitter:Add() requires a raw STRING path, NOT an IMaterial object.
-local PARTICLE_MAT  = "decals/trail"
-local BURST_MATS    = {
-    "particle/blood1",
-    "particle/blood2",
-    "particle/blood3",
-    "particle/blood4",
-}
+local PARTICLE_MAT = "decals/trail"
 
 -- util.DecalEx() requires an IMaterial object.
 local DECAL_PATHS = {
@@ -51,53 +45,18 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
--- ── IMPACT BURST + DECAL SCATTER ───────────────────────────
+-- ── DECAL SCATTER ON HIT ───────────────────────────────────
 -- Fires once per hit inside EFFECT:Init.
---
--- NOTE: util.Effect("BloodImpact") reads GetBloodColor() from the entity.
--- The Gekko sets BLOOD_COLOR_NONE in init.lua to suppress VJ base blood,
--- which causes BloodImpact to render nothing silently.
--- We use a ParticleEmitter burst instead — same system as the stream,
--- guaranteed to work regardless of blood color settings.
+-- No ParticleEmitter here — particle/blood* sprites render as black
+-- squares in 2D emitter mode. Decals-only is clean and correct.
+-- The bloodstream particles (stream emitter below) already handle
+-- the sustained visual and place their own decals via SetCollideCallback.
 
-local function DoImpactBurst(hitPos, hitNorm)
-    -- 40% chance: short burst of blood drops at the impact point.
-    if math.random() < 0.4 then
-        local emitter = ParticleEmitter(hitPos, false)
-        if emitter then
-            local count = math.random(10, 20)
-            for _ = 1, count do
-                local mat = BURST_MATS[math.random(#BURST_MATS)]
-                local p   = emitter:Add(mat, hitPos)
-                if p then
-                    -- Spread outward from the hit normal with randomness
-                    local dir = (hitNorm + VectorRand() * 0.7):GetNormalized()
-                    p:SetVelocity(dir * math.Rand(80, 280))
-                    p:SetGravity(Vector(0, 0, -700))
-                    p:SetLifeTime(0)
-                    p:SetDieTime(math.Rand(0.25, 0.7))
-                    p:SetStartAlpha(240)
-                    p:SetEndAlpha(0)
-                    p:SetStartSize(math.Rand(3, 11))
-                    p:SetEndSize(0)
-                    p:SetColor(200, 0, 0)
-                    p:SetRoll(math.Rand(0, 360))
-                    p:SetCollide(true)
-                    -- Each burst drop that lands places a blood decal.
-                    p:SetCollideCallback(function(_, pos, norm)
-                        util.Decal("Blood", pos + norm, pos - norm * 4)
-                    end)
-                end
-            end
-            emitter:Finish()
-        end
-    end
-
-    -- Scatter ground decals directly: util.Decal does its own internal
-    -- trace from start to end and places the decal where it hits geometry.
-    -- Trace straight down from around the hit point to land on the floor.
-    local scatter = math.random(3, 6)
-    for _ = 1, scatter do
+local function DoImpactDecals(hitPos)
+    -- 3-6 ground decals around the impact point.
+    -- util.Decal traces from start to end internally; no custom trace needed.
+    local count = math.random(3, 6)
+    for _ = 1, count do
         local ox = math.Rand(-30, 30)
         local oy = math.Rand(-30, 30)
         util.Decal("Blood",
@@ -127,8 +86,8 @@ function EFFECT:Init(data)
         hitNorm = ent:GetForward() * -1
     end
 
-    -- Fire impact burst + ground decals on this hit
-    DoImpactBurst(hitPos, hitNorm)
+    -- Scatter ground blood decals on this hit
+    DoImpactDecals(hitPos)
 
     self.StartTime       = CurTime()
     self.CurrentStrength = 1
