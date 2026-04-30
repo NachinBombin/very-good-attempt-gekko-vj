@@ -2,12 +2,6 @@
 -- lua/effects/gekko_bloodstream.lua
 -- Standalone blood stream + blood mist for npc_vj_gekko.
 --
--- Caller sets:
---   data:SetEntity(ent)     -- the NPC
---   data:SetOrigin(hitPos)  -- bullet impact position
---   data:SetNormal(hitNorm) -- surface normal at impact
---   data:SetFlags(0)        -- reserved
---
 -- Rates (per hit):
 --   Blood mist  : 100%
 --   Blood stream:  40%
@@ -17,12 +11,10 @@ local PARTICLE_MAT  = "decals/trail"
 
 local MIST_MAT_BASE = "particle/smokesprites_000"  -- append 1-9
 
--- Lighter, clearer red for the mist.
 local MIST_R = 210
 local MIST_G = 30
 local MIST_B = 30
 
--- util.DecalEx() requires IMaterial objects.
 local DECAL_PATHS = {
     "decals/Blood1", "decals/Blood2", "decals/Blood3",
     "decals/Blood4", "decals/Blood5", "decals/Blood6",
@@ -32,7 +24,6 @@ for _, v in ipairs(DECAL_PATHS) do
     decal_mats[#decal_mats + 1] = Material(v)
 end
 
--- Stream constants
 local SPREAD_DEG   = 5
 local REPS         = 300
 local PARTICLE_FPS = 60
@@ -54,10 +45,8 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
--- Probability that a hit spawns a blood stream (0.0 - 1.0)
 local STREAM_CHANCE = 0.40
 
--- Weight tables: index = weight class (1=light, 2=medium, 3=heavy)
 local MIST_COUNT   = { 8,   14,  22  }
 local MIST_SIZEMIN = { 5,   7,   10  }
 local MIST_SIZEMAX = { 14,  20,  30  }
@@ -66,7 +55,7 @@ local MIST_LIFEMAX = { 0.8, 1.2, 1.8 }
 local MIST_SPEED   = { 35,  55,  80  }
 local MIST_ALPHA   = { 50,  65,  80  }
 
--- ── BLOOD MIST (100% of hits) ────────────────────────────────
+-- ── BLOOD MIST (100% of hits) ──────────────────────────────
 
 local function SpawnBloodMist(hitPos, hitNorm)
     local w       = math.random(1, 3)
@@ -100,7 +89,7 @@ local function SpawnBloodMist(hitPos, hitNorm)
     emitter:Finish()
 end
 
--- ── GROUND DECALS ON HIT ────────────────────────────────────
+-- ── GROUND DECALS ON HIT ──────────────────────────────────
 
 local function DoImpactDecals(hitPos)
     local count = math.random(3, 6)
@@ -114,7 +103,7 @@ local function DoImpactDecals(hitPos)
     end
 end
 
--- ── EFFECT ──────────────────────────────────────────────────
+-- ── EFFECT ────────────────────────────────────────────────
 
 function EFFECT:Init(data)
     local ent = data:GetEntity()
@@ -216,6 +205,8 @@ function EFFECT:UpdateExtraForce()
 end
 
 function EFFECT:Think()
+    -- timername is nil when the stream was skipped (60% of hits) — guard required.
+    if not self.timername then return false end
     if timer.Exists(self.timername) then
         local lifetime = CurTime() - self.StartTime
         local dietime  = REPS * (1 / PARTICLE_FPS)
