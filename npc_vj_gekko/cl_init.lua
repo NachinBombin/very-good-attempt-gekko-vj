@@ -1127,13 +1127,13 @@ local function GekkoDoBloodSplat(ent)
     local origin  = ent:GetPos() + Vector(0, 0, 60)
     local forward = ent:GetForward()
 
-    if     variant == 0 then BloodVariant_HemoStream(ent)
-    elseif variant == 1 then BloodVariant_Geyser(origin, ent)
+    -- Variants 1-5: client-side burst/splatter effects
+    -- Variant 0 / stream: fired server-side (gekko_bloodstream effect) with correct hit origin
+    if     variant == 1 then BloodVariant_Geyser(origin, ent)
     elseif variant == 2 then BloodVariant_RadialRing(origin, ent)
     elseif variant == 3 then BloodVariant_BurstCloud(origin, ent)
     elseif variant == 4 then BloodVariant_ArcShower(origin, forward, ent)
     elseif variant == 5 then BloodVariant_GroundPool(origin, ent)
-    else                     BloodVariant_HemoStream(ent)
     end
 end
 

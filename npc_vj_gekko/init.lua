@@ -203,12 +203,24 @@ local GROUNDED_BLEED_CHANCE  = 0.85
 --  cl_init reads the pulse change and fires the visual effect.
 --  Packed format: pulse * 8  (matches cl_init math.floor(x/8))
 -- ============================================================
-local function GekkoSignalBloodHit(ent)
+local function GekkoSignalBloodHit(ent, hitPos, hitNormal)
     if not IsValid(ent) then return end
     ent._bloodSplatPulse = (ent._bloodSplatPulse or 0) + 1
-   
-local variant = math.random(0, 5)
-ent:SetNWInt("GekkoBloodSplat", ent._bloodSplatPulse * 8 + variant)
+
+    -- Variants 1-5: client-side burst/splatter dispatched via NWInt
+    local variant = math.random(1, 5)
+    ent:SetNWInt("GekkoBloodSplat", ent._bloodSplatPulse * 8 + variant)
+
+    -- Stream effect fired directly from server with exact hit position.
+    -- Mirrors original Hemo-fluid-stream: origin = wound location on the NPC.
+    local ed = EffectData()
+    ed:SetEntity(ent)
+    ed:SetOrigin(hitPos)
+    ed:SetNormal(hitNormal)
+    ed:SetFlags(0)
+    ed:SetScale(1)
+    ed:SetMagnitude(1)
+    util.Effect("gekko_bloodstream", ed)
 end
 
 -- ============================================================
@@ -622,7 +634,7 @@ function ENT:OnTakeDamage(dmginfo)
 
     -- Signal cl_init to fire blood stream effect
     if dmginfo:IsBulletDamage() then
-        GekkoSignalBloodHit(self)
+        GekkoSignalBloodHit(self, hitPos, hitDir)
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
