@@ -910,203 +910,51 @@ end
 
 -- ============================================================
 --  BLOOD SPLATTER
+--  Randomized blood impacts using only known working effects.
+--  Variant 0 remains the already-working blood trail/stream.
+--  Variants 1-5 now use only BloodImpact and bloodspray.
 -- ============================================================
-local BLOOD_SIZE   = 1.0
-local BLOOD_DECAL  = "Blood"
-local BLOOD_DECAL2 = "Blood"
+local BLOOD_SIZE = 1.0
 
-local function RandBiasedDir(dir, bias)
-    local r = Vector(
-        (math.random() - 0.5) * 2,
-        (math.random() - 0.5) * 2,
-        (math.random() - 0.5) * 2
-    )
-    r:Normalize()
-    return (r + dir * bias):GetNormalized()
-end
-
-local function SpawnBloodBlob(pos, dir, speed, scale, ent)
-    local s  = BLOOD_SIZE
-    local sp = speed * s
-
-    local e = EffectData()
-    e:SetOrigin(pos)
-    e:SetNormal(dir)
-    e:SetScale(scale * s)
-    e:SetMagnitude(sp * 0.05)
-    e:SetRadius(math.random(12, 36) * s)
-    util.Effect("BloodImpact", e, false)
-
-    local tr = util.TraceLine({
-        start  = pos,
-        endpos = pos + dir * sp,
-        mask   = MASK_SOLID_BRUSHONLY,
-        filter = ent,
-    })
-
-    if tr.Hit then
-        local decalName = (math.random(1, 6) == 1) and BLOOD_DECAL2 or BLOOD_DECAL
-        util.Decal(decalName, tr.HitPos + tr.HitNormal, tr.HitPos - tr.HitNormal)
-    end
-end
-
-local function BloodVariant_Geyser(origin, ent)
-    local s     = BLOOD_SIZE
-    local count = math.random(18, 32)
-
-    for _ = 1, count do
-        local spread = math.Rand(0.0, 0.35)
-        local dir    = Vector(
-            (math.random() - 0.5) * 2 * spread,
-            (math.random() - 0.5) * 2 * spread,
-            math.Rand(0.7, 1.0)
-        )
-        dir:Normalize()
-
-        SpawnBloodBlob(
-            origin + Vector(0, 0, math.Rand(20, 120) * s),
-            dir,
-            math.Rand(80, 220),
-            math.Rand(8, 22),
-        ent
-        )
-    end
-
-    for _ = 1, math.random(4, 8) do
-        local e = EffectData()
-        e:SetOrigin(origin + Vector((math.random()-0.5)*80*s, (math.random()-0.5)*80*s, 4))
-        e:SetNormal(Vector(0, 0, 1))
-        e:SetScale(math.Rand(12, 28) * s)
-        
-        e:SetMagnitude(math.Rand(10, 30) * s)
-        util.Effect("BloodImpact", e, false)
-    end
-end
-
-local function BloodVariant_RadialRing(origin, ent)
-    local s      = BLOOD_SIZE
-    local spokes = math.random(20, 36)
-    local ringH  = math.Rand(40, 100) * s
-
-    for i = 1, spokes do
-        local angle = (i / spokes) * math.pi * 2
-        local dir   = Vector(math.cos(angle), math.sin(angle), math.Rand(-0.15, 0.35))
-        dir:Normalize()
-
-        SpawnBloodBlob(
-            origin + Vector(0, 0, ringH),
-            dir,
-            math.Rand(700, 2400),
-            math.Rand(10, 28),
-        ent
-        )
-    end
-
-    for _ = 1, math.random(6, 12) do
-        local e = EffectData()
-        e:SetOrigin(origin + Vector(0, 0, ringH))
-        e:SetNormal(RandBiasedDir(Vector(0, 0, 1), 0.3))
-        e:SetScale(math.Rand(15, 35) * s)
-        e:SetMagnitude(math.Rand(15, 40) * s)
-        util.Effect("BloodImpact", e, false)
-    end
-end
-
-local function BloodVariant_BurstCloud(origin, ent)
+local function DoRandomizedBloodBurst(origin, forward, ent)
     local s = BLOOD_SIZE
 
-    for _ = 1, math.random(28, 50) do
-        SpawnBloodBlob(
-            origin + Vector(0, 0, math.Rand(30, 160) * s),
-            RandBiasedDir(Vector(0, 0, 0.4), 0),
-            math.Rand(600, 2800),
-            math.Rand(10, 30),
-        ent
-        )
+    local impactCount = math.random(3, 6)
+    for _ = 1, impactCount do
+        local e = EffectData()
+        e:SetOrigin(origin + VectorRand() * math.Rand(4, 18) * s + Vector(0, 0, math.Rand(8, 40) * s))
+        e:SetNormal((forward + VectorRand() * 0.45 + Vector(0, 0, 0.35)):GetNormalized())
+        e:SetScale(math.Rand(0.6, 1.4) * s)
+        e:SetMagnitude(math.Rand(8, 20) * s)
+        e:SetRadius(math.Rand(6, 18) * s)
+        util.Effect("BloodImpact", e, false)
     end
 
-    for _ = 1, math.random(8, 16) do
+    local sprayCount = math.random(2, 4)
+    for _ = 1, sprayCount do
         local e = EffectData()
-        e:SetOrigin(origin + Vector(
-            (math.random()-0.5) * 120 * s,
-            (math.random()-0.5) * 120 * s,
-            math.Rand(10, 180) * s
-        ))
-        e:SetNormal(RandBiasedDir(Vector(0, 0, 1), 0.2))
-        e:SetScale(math.Rand(18, 40) * s)
-        e:SetMagnitude(math.Rand(20, 50) * s)
-        util.Effect("BloodImpact", e, false)
+        e:SetOrigin(origin + VectorRand() * math.Rand(2, 10) * s + Vector(0, 0, math.Rand(6, 24) * s))
+        e:SetNormal((forward + VectorRand() * 0.6 + Vector(0, 0, 0.2)):GetNormalized())
+        e:SetScale(math.Rand(0.8, 1.6) * s)
+        e:SetMagnitude(math.Rand(12, 28) * s)
+        e:SetRadius(math.Rand(8, 20) * s)
+        util.Effect("bloodspray", e, false)
     end
 end
 
-local function BloodVariant_ArcShower(origin, forwardDir, ent)
-    local s = BLOOD_SIZE
-
-    for _ = 1, math.random(22, 40) do
-        SpawnBloodBlob(
-            origin + Vector(0, 0, math.Rand(60, 180) * s),
-            RandBiasedDir(forwardDir + Vector(0, 0, 0.5), 0.55),
-            math.Rand(1000, 3000),
-            math.Rand(8, 24),
-        ent
-        )
-    end
-
-    for _ = 1, math.random(4, 10) do
-        local e = EffectData()
-        e:SetOrigin(origin + Vector(0, 0, math.Rand(30, 100) * s))
-        e:SetNormal(RandBiasedDir(Vector((math.random()-0.5)*2, (math.random()-0.5)*2, 0.1), 0.1))
-        e:SetScale(math.Rand(12, 32) * s)
-        e:SetMagnitude(math.Rand(12, 35) * s)
-        util.Effect("BloodImpact", e, false)
-    end
-end
-
-local function BloodVariant_GroundPool(origin, ent)
-    local s = BLOOD_SIZE
-
-    for _ = 1, math.random(20, 38) do
-        local angle = math.Rand(0, math.pi * 2)
-        local dir   = Vector(math.cos(angle), math.sin(angle), math.Rand(-0.05, 0.25))
-        dir:Normalize()
-
-        SpawnBloodBlob(
-            origin + Vector(0, 0, math.Rand(5, 40) * s),
-            dir,
-            math.Rand(600, 2000),
-            math.Rand(14, 36),
-        ent
-        )
-    end
-
-    for _ = 1, math.random(5, 10) do
-        local e = EffectData()
-        e:SetOrigin(origin + Vector(
-            (math.random()-0.5) * 100 * s,
-            (math.random()-0.5) * 100 * s,
-            2
-        ))
-        e:SetNormal(Vector(0, 0, 1))
-        e:SetScale(math.Rand(20, 50) * s)
-        e:SetMagnitude(math.Rand(20, 55) * s)
-        util.Effect("BloodImpact", e, false)
-    end
-end
 -- ============================================================
 --  BLOOD VARIANT 6 — HEMO STREAM  (Hemo-fluid-stream port)
 --  Fires the gekko_bloodstream effect with randomized
 --  size_mult (SetScale) and force_mult (SetMagnitude).
 -- ============================================================
-
 local function BloodVariant_HemoStream(ent)
     local effectdata = EffectData()
     effectdata:SetEntity(ent)
-    effectdata:SetFlags(0)       -- 0 = full stream, always
-    effectdata:SetScale(1)       -- fixed size, matches original Hemo
-    effectdata:SetMagnitude(1)   -- fixed force, matches original Hemo
+    effectdata:SetFlags(0)
+    effectdata:SetScale(1)
+    effectdata:SetMagnitude(1)
     util.Effect("gekko_bloodstream", effectdata, false)
 end
-
 
 local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
@@ -1120,13 +968,10 @@ local function GekkoDoBloodSplat(ent)
     local origin  = ent:WorldSpaceCenter()
     local forward = ent:GetForward()
 
-    -- Variants 1-5: client-side burst/splatter effects
-    -- Variant 0 / stream: fired server-side (gekko_bloodstream effect) with correct hit origin
-    if     variant == 1 then BloodVariant_Geyser(origin, ent)
-    elseif variant == 2 then BloodVariant_RadialRing(origin, ent)
-    elseif variant == 3 then BloodVariant_BurstCloud(origin, ent)
-    elseif variant == 4 then BloodVariant_ArcShower(origin, forward, ent)
-    elseif variant == 5 then BloodVariant_GroundPool(origin, ent)
+    -- Variant 0 = already-working blood trail/stream (fired server-side).
+    -- Variants 1-5 = randomized BloodImpact + bloodspray burst.
+    if variant >= 1 and variant <= 5 then
+        DoRandomizedBloodBurst(origin, forward, ent)
     end
 end
 
