@@ -910,43 +910,9 @@ end
 
 -- ============================================================
 --  BLOOD SPLATTER
---  Randomized blood impacts using only known working effects.
---  Variant 0 remains the already-working blood trail/stream.
---  Variants 1-5 now use only BloodImpact and bloodspray.
+--  Bloodstream only. All randomized variants removed.
 -- ============================================================
-local BLOOD_SIZE = 1.0
 
-local function DoRandomizedBloodBurst(origin, forward, ent)
-    local s = BLOOD_SIZE
-
-    local impactCount = math.random(3, 6)
-    for _ = 1, impactCount do
-        local e = EffectData()
-        e:SetOrigin(origin + VectorRand() * math.Rand(4, 18) * s + Vector(0, 0, math.Rand(8, 40) * s))
-        e:SetNormal((forward + VectorRand() * 0.45 + Vector(0, 0, 0.35)):GetNormalized())
-        e:SetScale(math.Rand(0.6, 1.4) * s)
-        e:SetMagnitude(math.Rand(8, 20) * s)
-        e:SetRadius(math.Rand(6, 18) * s)
-        util.Effect("BloodImpact", e, false)
-    end
-
-    local sprayCount = math.random(2, 4)
-    for _ = 1, sprayCount do
-        local e = EffectData()
-        e:SetOrigin(origin + VectorRand() * math.Rand(2, 10) * s + Vector(0, 0, math.Rand(6, 24) * s))
-        e:SetNormal((forward + VectorRand() * 0.6 + Vector(0, 0, 0.2)):GetNormalized())
-        e:SetScale(math.Rand(0.8, 1.6) * s)
-        e:SetMagnitude(math.Rand(12, 28) * s)
-        e:SetRadius(math.Rand(8, 20) * s)
-        util.Effect("bloodspray", e, false)
-    end
-end
-
--- ============================================================
---  BLOOD VARIANT 6 — HEMO STREAM  (Hemo-fluid-stream port)
---  Fires the gekko_bloodstream effect with randomized
---  size_mult (SetScale) and force_mult (SetMagnitude).
--- ============================================================
 local function BloodVariant_HemoStream(ent)
     local effectdata = EffectData()
     effectdata:SetEntity(ent)
@@ -960,19 +926,11 @@ local function GekkoDoBloodSplat(ent)
     local packed = ent:GetNWInt("GekkoBloodSplat", 0)
     if packed == 0 then return end
 
-    local pulse   = math.floor(packed / 8)
-    local variant = packed % 8
+    local pulse = math.floor(packed / 8)
     if pulse == (ent._lastBloodPulse or 0) then return end
     ent._lastBloodPulse = pulse
 
-    local origin  = ent:WorldSpaceCenter()
-    local forward = ent:GetForward()
-
-    -- Variant 0 = already-working blood trail/stream (fired server-side).
-    -- Variants 1-5 = randomized BloodImpact + bloodspray burst.
-    if variant >= 1 and variant <= 5 then
-        DoRandomizedBloodBurst(origin, forward, ent)
-    end
+    BloodVariant_HemoStream(ent)
 end
 
 -- ============================================================
