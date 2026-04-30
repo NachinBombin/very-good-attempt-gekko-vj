@@ -4,14 +4,15 @@
 --
 -- Caller (cl_init.lua / init.lua) sets:
 --   data:SetEntity(ent)       -- the NPC (used to follow movement)
+--   data:SetOrigin(hitPos)    -- bullet impact position
+--   data:SetNormal(hitNorm)   -- surface normal at impact
 --   data:SetFlags(0)          -- stream mode
 -- ============================================================
 
 -- ParticleEmitter:Add() requires a raw STRING path, NOT an IMaterial object.
--- Keep this as a plain string table.
 local PARTICLE_MAT = "decals/trail"
 
--- util.DecalEx() requires an IMaterial object, so these ARE pre-cached correctly.
+-- util.DecalEx() requires an IMaterial object.
 local DECAL_PATHS = {
     "decals/Blood1", "decals/Blood2", "decals/Blood3",
     "decals/Blood4", "decals/Blood5", "decals/Blood6",
@@ -44,6 +45,35 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
+-- ── VANILLA BLOOD IMPACT (40% chance) + DECAL SCATTER ───────
+-- Fires once at the moment of the hit, not on every particle tick.
+
+local function DoVanillaBlood(hitPos, hitNorm)
+    -- 40 % chance: bloodspray effect at exact impact point
+    if math.random() < 0.4 then
+        local e = EffectData()
+        e:SetOrigin(hitPos)
+        e:SetNormal(hitNorm)
+        e:SetScale(math.Rand(0.5, 1.2))
+        e:SetMagnitude(math.Rand(1, 3))
+        e:SetRadius(math.Rand(4, 10))
+        util.Effect("bloodspray", e, false)
+    end
+
+    -- Always: impact decal directly on the hit surface
+    util.Decal("Blood", hitPos + hitNorm * 2, hitPos - hitNorm * 8)
+
+    -- Scatter 2-5 extra blood decals around the impact point,
+    -- traced onto whatever geometry is nearby (walls, floor, NPC).
+    local scatter_count = math.random(2, 5)
+    for _ = 1, scatter_count do
+        local offset = VectorRand() * math.Rand(6, 22)
+        local from   = hitPos + offset + hitNorm * 4
+        local to     = hitPos + offset - hitNorm * 12
+        util.Decal("Blood", from, to)
+    end
+end
+
 -- ── EFFECT ──────────────────────────────────────────────────
 
 function EFFECT:Init(data)
@@ -63,6 +93,9 @@ function EFFECT:Init(data)
     if hitNorm == Vector(0, 0, 0) then
         hitNorm = ent:GetForward() * -1
     end
+
+    -- Fire vanilla blood on this hit
+    DoVanillaBlood(hitPos, hitNorm)
 
     self.StartTime       = CurTime()
     self.CurrentStrength = 1
@@ -85,10 +118,10 @@ function EFFECT:Init(data)
             return
         end
 
-        local spawnPos  = ent:GetPos() + effect_self.HitOffset
-        local length    = math.Rand(P_LEN_MIN, P_LEN_MAX)
-        local size_m    = effect_self.SIZE_MULT
-        local force_m   = effect_self.FORCE_MULT
+        local spawnPos = ent:GetPos() + effect_self.HitOffset
+        local length   = math.Rand(P_LEN_MIN, P_LEN_MAX)
+        local size_m   = effect_self.SIZE_MULT
+        local force_m  = effect_self.FORCE_MULT
 
         local particle = emitter:Add(PARTICLE_MAT, spawnPos)
         if not particle then return end
