@@ -47,10 +47,22 @@ local ANIM_WALK_SPEED = 184
 local ANIM_RUN_SPEED = 20
 local RUN_ENGAGE_DIST = 2300
 local RUN_DISENGAGE_DIST = 1600
--- NOTE: RATE_SMOOTH_SPEED removed. Lerp on SetPlaybackRate was causing
--- VJBase's internal ResetSequence (called on state changes) to reset
--- playback rate to 1.0 faster than the Lerp could converge, making
--- every speed value completely ineffective. Direct assignment is correct.
+
+-- ============================================================
+-- CLOSE-RANGE SPRINT BURST SYSTEM
+-- When enemy is within SPRINT_ENGAGE_DIST the Gekko will
+-- randomly break into a full sprint for 2-4 s, then settle
+-- back to its normal walk state. Cooldown between bursts is
+-- randomized so it feels unpredictable.
+-- ============================================================
+local SPRINT_ENGAGE_DIST    = 1500   -- units; must be closer than this to trigger
+local SPRINT_DUR_MIN        = 2.0    -- seconds, min sprint burst length
+local SPRINT_DUR_MAX        = 4.0    -- seconds, max sprint burst length
+local SPRINT_COOLDOWN_MIN   = 4.0    -- seconds, min wait between bursts
+local SPRINT_COOLDOWN_MAX   = 9.0    -- seconds, max wait between bursts
+local SPRINT_MOVE_SPEED     = 420    -- MoveSpeed during sprint
+local SPRINT_RUN_SPEED      = 420    -- RunSpeed during sprint
+local SPRINT_WALK_SPEED     = 420    -- WalkSpeed during sprint
 
 local MG_ROUNDS_MIN = 11
 local MG_ROUNDS_MAX = 36
@@ -210,17 +222,12 @@ local GROUNDED_BLEED_CHANCE = 0.85
 
 -- ============================================================
 -- BLOOD SIGNAL (ORIGINAL)
--- Increments GekkoBloodSplat NWInt on bullet damage.
--- cl_init reads the pulse change and fires the visual effect.
--- Packed format: pulse * 8 (matches cl_init math.floor(x/8))
 -- ============================================================
 local function GekkoSignalBloodHit(ent, hitPos, hitNormal)
     if not IsValid(ent) then return end
     ent._bloodSplatPulse = (ent._bloodSplatPulse or 0) + 1
-
     local variant = math.random(1, 5)
     ent:SetNWInt("GekkoBloodSplat", ent._bloodSplatPulse * 8 + variant)
-
     local ed = EffectData()
     ed:SetEntity(ent)
     ed:SetOrigin(hitPos)
@@ -418,12 +425,92 @@ local function SendSonarLock(enemy)
     net.Start("GekkoSonarLock"); net.Send(enemy)
 end
 
+-- ============================================================
+-- SPRINT SYSTEM
+-- ============================================================
+
+-- Apply sprint speeds, force run animation state, arm the end timer.
+local function GekkoSprint_Begin(ent)
+    if not IsValid(ent) then return end
+    if ent._gekkoDead then return end
+    -- Don't sprint while jumping or crouching
+    local js = ent:GetGekkoJumpState()
+    if js == ent.JUMP_RISING or js == ent.JUMP_FALLING or js == ent.JUMP_LAND then
+        ent._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+        return
+    end
+    if ent._gekkoCrouching then
+        ent._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+        return
+    end
+
+    ent._gekkoSprinting    = true
+    ent._gekkoSprintEndT   = CurTime() + math.Rand(SPRINT_DUR_MIN, SPRINT_DUR_MAX)
+    ent._gekkoRunning      = true
+
+    -- Swap to sprint speeds (save originals if not already saved)
+    if not ent._preSprint_MoveSpeed then
+        ent._preSprint_MoveSpeed = ent.MoveSpeed
+        ent._preSprint_RunSpeed  = ent.RunSpeed
+        ent._preSprint_WalkSpeed = ent.WalkSpeed
+    end
+    ent.MoveSpeed = SPRINT_MOVE_SPEED
+    ent.RunSpeed  = SPRINT_RUN_SPEED
+    ent.WalkSpeed = SPRINT_WALK_SPEED
+
+    print(string.format("[GekkoSprint] BEGIN | dur=%.1fs", ent._gekkoSprintEndT - CurTime()))
+end
+
+-- Restore normal speeds and schedule next burst cooldown.
+local function GekkoSprint_End(ent)
+    if not IsValid(ent) then return end
+    ent._gekkoSprinting = false
+
+    if ent._preSprint_MoveSpeed then
+        ent.MoveSpeed = ent._preSprint_MoveSpeed
+        ent.RunSpeed  = ent._preSprint_RunSpeed
+        ent.WalkSpeed = ent._preSprint_WalkSpeed
+        ent._preSprint_MoveSpeed = nil
+        ent._preSprint_RunSpeed  = nil
+        ent._preSprint_WalkSpeed = nil
+    end
+
+    -- Let GekkoUpdateAnimation's normal dist logic decide _gekkoRunning next tick
+    ent._gekkoRunning    = false
+    ent._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+    print("[GekkoSprint] END")
+end
+
+-- Called every OnThink tick. Manages the sprint state machine.
+local function GekkoSprint_Think(ent)
+    if ent._gekkoDead then return end
+    local now = CurTime()
+
+    -- If currently sprinting, check if the burst has expired
+    if ent._gekkoSprinting then
+        if now >= ent._gekkoSprintEndT then
+            GekkoSprint_End(ent)
+        end
+        return  -- don't try to start a new sprint while one is active
+    end
+
+    -- Wait for cooldown
+    if now < (ent._gekkoSprintNextT or 0) then return end
+
+    -- Check enemy distance eligibility
+    local enemy = GetActiveEnemy(ent)
+    if not IsValid(enemy) then return end
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist > SPRINT_ENGAGE_DIST then return end
+
+    -- All conditions met — begin sprint
+    GekkoSprint_Begin(ent)
+end
+
 function ENT:AnimApply()
     -- Only suppress VJBase's animation system during active airborne states.
     -- Do NOT gate on _gekkoSuppressActivity here — that blocks VJBase from
     -- applying RunSpeed/WalkSpeed to nav locomotion every tick.
-    -- GekkoUpdateAnimation's own _gekkoSuppressActivity guard still prevents
-    -- wrong sequences from playing while suppressed.
     local js = self:GetGekkoJumpState()
     if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then return true end
     return false
@@ -466,9 +553,6 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
     if now < (self._gekkoSuppressActivity or 0) then return end
-    -- FIX: Removed _gekkoSkipAnimTick check. It was skipping ticks and
-    -- letting VJBase call ResetSequence unchecked, which reset SetPlaybackRate
-    -- back to 1.0 every frame, making speed values have no effect.
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING or jumpState == self.JUMP_FALLING or jumpState == self.JUMP_LAND
         or (self._gekkoJustJumped and now < self._gekkoJustJumped) then
@@ -484,8 +568,11 @@ function ENT:GekkoUpdateAnimation()
     elseif self._gekkoLastEnemyDist then
         dist = self._gekkoLastEnemyDist
     end
-    if dist > RUN_ENGAGE_DIST    then self._gekkoRunning = true  end
-    if dist < RUN_DISENGAGE_DIST then self._gekkoRunning = false end
+    -- Long-range run logic (only touches _gekkoRunning when NOT sprinting)
+    if not self._gekkoSprinting then
+        if dist > RUN_ENGAGE_DIST    then self._gekkoRunning = true  end
+        if dist < RUN_DISENGAGE_DIST then self._gekkoRunning = false end
+    end
     local targetSeq, arate
     if vel > 5 then
         if self._gekkoRunning then
@@ -499,11 +586,6 @@ function ENT:GekkoUpdateAnimation()
         targetSeq = self.GekkoSeq_Idle; arate = 1.0
     end
     arate = math.Clamp(arate, 0.5, 3.0)
-    -- FIX: Call ResetSequence every tick unconditionally (mirrors B/C branch
-    -- SafeResetSequence behaviour). The old _gekkoCurrentLocoSeq guard only
-    -- called ResetSequence once on sequence change, then VJBase won every
-    -- subsequent tick with its own ResetSequence, overwriting SetPlaybackRate
-    -- back to 1.0 and making speed tuning completely ineffective.
     if targetSeq and targetSeq ~= -1 then
         self:ResetSequence(targetSeq)
     end
@@ -511,9 +593,6 @@ function ENT:GekkoUpdateAnimation()
     elseif targetSeq == self.GekkoSeq_Walk then self.Gekko_LastSeqName = "walk"
     else                                        self.Gekko_LastSeqName = "idle" end
     self.Gekko_LastSeqIdx  = targetSeq
-    -- FIX: Direct assignment — no Lerp. The old Lerp(FrameTime()*RATE_SMOOTH_SPEED,
-    -- GetPlaybackRate(), target) was non-functional because VJBase's own
-    -- ResetSequence calls reset the rate to 1.0 before the Lerp converged.
     self:SetPlaybackRate(arate)
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
@@ -555,6 +634,13 @@ function ENT:Init()
     self._lastWeaponChoice        = ""
     self._glSparkCounter          = 0
     self._gekkoDead               = false
+    -- Sprint system state
+    self._gekkoSprinting          = false
+    self._gekkoSprintEndT         = 0
+    self._gekkoSprintNextT        = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+    self._preSprint_MoveSpeed     = nil
+    self._preSprint_RunSpeed      = nil
+    self._preSprint_WalkSpeed     = nil
     self:SetNWBool("GekkoMGFiring",      false)
     self:SetNWInt("GekkoJumpDust",       0)
     self:SetNWInt("GekkoLandDust",       0)
@@ -609,19 +695,7 @@ end
 
 -- ============================================================
 -- OnTakeDamage: INTEGRATED WITH JUICY BLEEDING
--- GekkoTriggerJuicyBleed is a GLOBAL defined in
--- lua/autorun/server/gekko_juicy_bleeding.lua.
--- It is always available by the time this hook fires.
---
--- FIX: Previously bleeding only triggered on IsBulletDamage().
--- It now triggers on ALL organic damage types so that explosions,
--- melee, fire, and buckshot also produce a blood stream.
--- DMG_GENERIC, DMG_CRUSH, and DMG_BLAST are excluded because
--- those map to physics/world interactions with no flesh contact.
 -- ============================================================
-
--- Damage types that represent physical flesh damage and should
--- produce a juicy blood stream.
 local BLEED_DMG_TYPES = {
     DMG_BULLET,
     DMG_BUCKSHOT,
@@ -635,9 +709,7 @@ local BLEED_DMG_TYPES = {
 }
 
 local function ShouldJuicyBleed(dmginfo)
-    -- Always bleed on bullet damage (original behaviour).
     if dmginfo:IsBulletDamage() then return true end
-    -- Also bleed on the additional flesh-contact types above.
     for _, dtype in ipairs(BLEED_DMG_TYPES) do
         if dmginfo:IsDamageType(dtype) then return true end
     end
@@ -678,13 +750,9 @@ function ENT:OnTakeDamage(dmginfo)
     GekkoVanillaBleed(self, hitPos, hitDir)
 
     if dmginfo:IsBulletDamage() then
-        -- Signal cl_init to render the blood-stream effect (original system).
         GekkoSignalBloodHit(self, hitPos, hitDir)
     end
 
-    -- FIX: Trigger juicy PCF bleeding on all flesh-contact damage types,
-    -- not just bullets. GekkoTriggerJuicyBleed is the global API defined
-    -- in lua/autorun/server/gekko_juicy_bleeding.lua.
     if ShouldJuicyBleed(dmginfo) and GekkoTriggerJuicyBleed then
         GekkoTriggerJuicyBleed(self, dmginfo)
     end
@@ -705,6 +773,7 @@ function ENT:OnThink()
     self:GekkoJump_Think()
     self:GekkoTargetJump_Think()
     self:GekkoElastic_Think()
+    GekkoSprint_Think(self)
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
     if CurTime() > self.Gekko_NextDebugT then
@@ -719,9 +788,10 @@ function ENT:OnThink()
             dist = -1; src = "none"
         end
         print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s dead=%s",
+            "[GekkoDBG] vel=%.1f seq=%s run=%s sprint=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s dead=%s",
             self:GetNWFloat("GekkoSpeed", 0), tostring(self.Gekko_LastSeqName),
-            tostring(self._gekkoRunning), dist, src, self.MoveSpeed or 0,
+            tostring(self._gekkoRunning), tostring(self._gekkoSprinting),
+            dist, src, self.MoveSpeed or 0,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
             tostring(self._lastWeaponChoice), tostring(self._gekkoDead)
@@ -1103,6 +1173,12 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
     if self._gekkoDead then return end
 
     self._gekkoDead = true
+
+    -- Clean up sprint state so speeds are restored before death processing
+    if self._gekkoSprinting then
+        GekkoSprint_End(self)
+    end
+
     local attacker  = IsValid(dmginfo:GetAttacker()) and dmginfo:GetAttacker() or self
     local pos       = self:GetPos()
 
@@ -1126,4 +1202,8 @@ function ENT:OnDeath(dmginfo, hitgroup, status)
 end
 
 function ENT:OnRemove()
+    -- Restore speeds if removed mid-sprint (e.g. map cleanup)
+    if self._gekkoSprinting then
+        GekkoSprint_End(self)
+    end
 end
