@@ -1,24 +1,24 @@
 -- ============================================================
--- FILE: lua/autorun/server/sv_gekko_bloodpool.lua
--- PURPOSE: Blood pool spawning for Gekko ragdolls.
--- SCOPE: Server autorun
--- NOTE: GetHitPhysBone is on the DMGINFO metatable, loaded by
---       gekko_juicy_bleeding.lua via extensions.lua (same file).
---       Both server autorun files load at the same time; hook
---       fires later, so the metatable extension is always ready.
+-- lua/autorun/server/sv_gekko_bloodpool.lua
+-- Gekko blood pool - server side.
+--
+-- The original addon's blood pools come from PCF particle
+-- effects ("blood_pool_MysterAC_v2" etc.) fired via
+-- ParticleEffect() inside CreateBloodPoolForRagdoll().
+-- The blood_pool.lua EFFECT file is a secondary fallback system.
+--
+-- We call CreateBloodPoolForRagdoll() directly so the Gekko
+-- gets the exact same PCF pool visuals as any other NPC.
 -- ============================================================
+
 if not SERVER then return end
 
--- Track the last-hit physics bone + local hit offset per Gekko NPC,
--- mirroring bloodpool_lastdmgbone / bloodpool_lastdmglpos in the
--- original addon.
+-- Track last hit bone + local hit position per Gekko,
+-- mirroring the original addon's bloodpool_lastdmgbone /
+-- bloodpool_lastdmglpos approach.
 hook.Add("EntityTakeDamage", "GekkoBloodPool_TrackBone", function(ent, dmginfo)
     if not IsValid(ent) then return end
     if ent:GetClass() ~= "npc_vj_gekko" then return end
-
-    -- GetHitPhysBone defined by extensions.lua
-    local mt = FindMetaTable("CTakeDamageInfo")
-    if not mt or not mt.GetHitPhysBone then return end
 
     local physBone = dmginfo:GetHitPhysBone(ent)
     if not physBone or physBone < 0 then return end
@@ -27,33 +27,35 @@ hook.Add("EntityTakeDamage", "GekkoBloodPool_TrackBone", function(ent, dmginfo)
     if not bone or bone < 0 then return end
 
     ent.gekko_pool_lastbone = bone
-
+    -- Local-space offset of hit position relative to the bone
+    -- (same as bloodpool_lastdmglpos in the original addon)
     local bonePos = ent:GetBonePosition(bone)
     if bonePos then
-        -- FIX: angle_zero is a VJ Base global and is not guaranteed to exist
-        -- in vanilla GMod. Use Angle(0,0,0) which is always available.
         ent.gekko_pool_lastlpos = WorldToLocal(
-            dmginfo:GetDamagePosition(), Angle(0, 0, 0), bonePos, Angle(0, 0, 0)
+            dmginfo:GetDamagePosition(), angle_zero, bonePos, angle_zero
         )
     end
 end)
 
--- Called by death_pose_system.lua after prop_ragdoll is spawned
--- via the GekkoRagdollSpawned hook.
+-- Fired by death_pose_system.lua after the prop_ragdoll is spawned.
 hook.Add("GekkoRagdollSpawned", "GekkoBloodPool_Spawn", function(npc, rag)
     if not IsValid(rag) then return end
 
+    -- Bone + local hit pos captured while npc may still be valid.
     local bone = (IsValid(npc) and npc.gekko_pool_lastbone) or 0
     local lpos = (IsValid(npc) and npc.gekko_pool_lastlpos) or Vector(0, 0, 0)
 
+    -- Call the original addon's function directly so the pool uses
+    -- the exact same PCF particles (blood_pool_MysterAC_v2 etc.)
+    -- and settling logic as every other NPC in the game.
     if CreateBloodPoolForRagdoll then
-        -- Original addon present: use its PCF blood pool directly.
         timer.Simple(0.05, function()
             if not IsValid(rag) then return end
             CreateBloodPoolForRagdoll(rag, bone, lpos, BLOOD_COLOR_RED, 0)
         end)
     else
-        -- Fallback: poll until ragdoll settles, then fire a PCF pool.
+        -- Fallback if original addon is not loaded: wait for ragdoll
+        -- to settle then fire the first available PCF pool effect.
         local tname    = "gekko_bpool_" .. rag:EntIndex()
         local physBone = rag:TranslateBoneToPhysBone(bone)
         local phys     = rag:GetPhysicsObjectNum(physBone or 0)
@@ -66,7 +68,7 @@ hook.Add("GekkoRagdollSpawned", "GekkoBloodPool_Spawn", function(npc, rag)
             if phys:GetVelocity():LengthSqr() > 10 then return end
             timer.Remove(tname)
             ParticleEffect("blood_pool_MysterAC_v2",
-                phys:LocalToWorld(lpos), Angle(0, 0, 0))
+                phys:LocalToWorld(lpos), angle_zero)
         end)
     end
 end)
