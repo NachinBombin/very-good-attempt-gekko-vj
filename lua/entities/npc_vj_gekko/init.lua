@@ -47,7 +47,10 @@ local ANIM_WALK_SPEED = 184
 local ANIM_RUN_SPEED = 20
 local RUN_ENGAGE_DIST = 2300
 local RUN_DISENGAGE_DIST = 1600
-local RATE_SMOOTH_SPEED = 8.0
+-- NOTE: RATE_SMOOTH_SPEED removed. Lerp on SetPlaybackRate was causing
+-- VJBase's internal ResetSequence (called on state changes) to reset
+-- playback rate to 1.0 faster than the Lerp could converge, making
+-- every speed value completely ineffective. Direct assignment is correct.
 
 local MG_ROUNDS_MIN = 11
 local MG_ROUNDS_MAX = 36
@@ -496,7 +499,7 @@ function ENT:GekkoUpdateAnimation()
         targetSeq = self.GekkoSeq_Idle; arate = 1.0
     end
     arate = math.Clamp(arate, 0.5, 3.0)
-    -- FIX: Call ResetSequence every tick unconditionally (mirrors B branch
+    -- FIX: Call ResetSequence every tick unconditionally (mirrors B/C branch
     -- SafeResetSequence behaviour). The old _gekkoCurrentLocoSeq guard only
     -- called ResetSequence once on sequence change, then VJBase won every
     -- subsequent tick with its own ResetSequence, overwriting SetPlaybackRate
@@ -508,9 +511,10 @@ function ENT:GekkoUpdateAnimation()
     elseif targetSeq == self.GekkoSeq_Walk then self.Gekko_LastSeqName = "walk"
     else                                        self.Gekko_LastSeqName = "idle" end
     self.Gekko_LastSeqIdx  = targetSeq
-    self._gekkoTargetRate  = arate
-    local smoothed = Lerp(FrameTime() * RATE_SMOOTH_SPEED, self:GetPlaybackRate(), self._gekkoTargetRate)
-    self:SetPlaybackRate(smoothed)
+    -- FIX: Direct assignment — no Lerp. The old Lerp(FrameTime()*RATE_SMOOTH_SPEED,
+    -- GetPlaybackRate(), target) was non-functional because VJBase's own
+    -- ResetSequence calls reset the rate to 1.0 before the Lerp converged.
+    self:SetPlaybackRate(arate)
     self:SetNWEntity("GekkoEnemy", IsValid(enemy) and enemy or NULL)
 end
 
@@ -550,7 +554,6 @@ function ENT:Init()
     self._gibCooldownT            = 0
     self._lastWeaponChoice        = ""
     self._glSparkCounter          = 0
-    self._gekkoTargetRate         = 1.0
     self._gekkoDead               = false
     self:SetNWBool("GekkoMGFiring",      false)
     self:SetNWInt("GekkoJumpDust",       0)
