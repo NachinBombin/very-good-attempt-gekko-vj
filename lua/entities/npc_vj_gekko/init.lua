@@ -416,10 +416,11 @@ local function SendSonarLock(enemy)
 end
 
 function ENT:AnimApply()
-    -- Option B fix: Only suppress VJBase's animation system during active airborne states.
-    -- Do NOT gate on _gekkoSuppressActivity here — that was blocking VJBase from applying
-    -- RunSpeed/WalkSpeed to the NPC nav locomotion every tick, making speed values have no effect.
-    -- GekkoUpdateAnimation()'s own _gekkoSuppressActivity guard still prevents wrong sequences.
+    -- Only suppress VJBase's animation system during active airborne states.
+    -- Do NOT gate on _gekkoSuppressActivity here — that blocks VJBase from
+    -- applying RunSpeed/WalkSpeed to nav locomotion every tick.
+    -- GekkoUpdateAnimation's own _gekkoSuppressActivity guard still prevents
+    -- wrong sequences from playing while suppressed.
     local js = self:GetGekkoJumpState()
     if js == self.JUMP_RISING or js == self.JUMP_FALLING or js == self.JUMP_LAND then return true end
     return false
@@ -462,7 +463,9 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
     if now < (self._gekkoSuppressActivity or 0) then return end
-    if self._gekkoSkipAnimTick then self._gekkoSkipAnimTick = false return end
+    -- FIX: Removed _gekkoSkipAnimTick check. It was skipping ticks and
+    -- letting VJBase call ResetSequence unchecked, which reset SetPlaybackRate
+    -- back to 1.0 every frame, making speed values have no effect.
     local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING or jumpState == self.JUMP_FALLING or jumpState == self.JUMP_LAND
         or (self._gekkoJustJumped and now < self._gekkoJustJumped) then
@@ -493,11 +496,13 @@ function ENT:GekkoUpdateAnimation()
         targetSeq = self.GekkoSeq_Idle; arate = 1.0
     end
     arate = math.Clamp(arate, 0.5, 3.0)
+    -- FIX: Call ResetSequence every tick unconditionally (mirrors B branch
+    -- SafeResetSequence behaviour). The old _gekkoCurrentLocoSeq guard only
+    -- called ResetSequence once on sequence change, then VJBase won every
+    -- subsequent tick with its own ResetSequence, overwriting SetPlaybackRate
+    -- back to 1.0 and making speed tuning completely ineffective.
     if targetSeq and targetSeq ~= -1 then
-        if self._gekkoCurrentLocoSeq ~= targetSeq then
-            self._gekkoCurrentLocoSeq = targetSeq
-            self:ResetSequence(targetSeq)
-        end
+        self:ResetSequence(targetSeq)
     end
     if     targetSeq == self.GekkoSeq_Run  then self.Gekko_LastSeqName = "run"
     elseif targetSeq == self.GekkoSeq_Walk then self.Gekko_LastSeqName = "walk"
@@ -540,13 +545,11 @@ function ENT:Init()
     self._gekkoLastPos            = self:GetPos()
     self._gekkoLastTime           = CurTime() - 0.1
     self._gekkoSuppressActivity   = 0
-    self._gekkoSkipAnimTick       = false
     self._crushHitTimes           = {}
     self._bloodSplatPulse         = 0
     self._gibCooldownT            = 0
     self._lastWeaponChoice        = ""
     self._glSparkCounter          = 0
-    self._gekkoCurrentLocoSeq     = -1
     self._gekkoTargetRate         = 1.0
     self._gekkoDead               = false
     self:SetNWBool("GekkoMGFiring",      false)
@@ -574,7 +577,6 @@ function ENT:Init()
         selfRef.GekkoSeq_Walk = (walkSeq and walkSeq ~= -1) and walkSeq or 0
         selfRef.GekkoSeq_Run  = (runSeq  and runSeq  ~= -1) and runSeq  or 0
         selfRef.GekkoSeq_Idle = (idleSeq and idleSeq ~= -1) and idleSeq or 0
-        selfRef._gekkoCurrentLocoSeq = -1
         selfRef:GeckoCrouch_CacheSeqs()
         selfRef:SetAnimationTranslations()
         selfRef.GekkoSpineBone  = selfRef:LookupBone("b_spine4")    or -1
