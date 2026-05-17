@@ -1,59 +1,59 @@
 -- ============================================================
 -- npc_vj_gekko / init.lua
--- INTEGRATED WITH: Juicy Bleeding System (gekko_juicy_bleeding.lua)
---                  Leg Disable System    (leg_disable_system.lua)
---                  Gib System            (gib_system.lua)
--- SCOPE: Server-only
+-- ============================================================
+-- Weapon list:
+--   1. "Midas Veil" (MG + missile)
+--   2. "Midas Veil" (MG only)
+--   3. "Midas Veil" (missile only)
+--   4. Melee only (stomp + kick)
 -- ============================================================
 if CLIENT then return end
 
 include("shared.lua")
 include("leg_disable_system.lua")
 include("gib_system.lua")
-
--- ============================================================
--- VJ BASE KEYS
--- ============================================================
-ENT.Model                   = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
-ENT.StartHealth             = 600
-ENT.HullType                = HULL_HUMAN_SMASH
-ENT.MoveType_SNPC           = MOVETYPE_STEP
-ENT.VJ_IsHumanNPC           = false
-ENT.HasDeathAnimation       = false
-ENT.AllowedToDissolve       = false
-ENT.AllowedToFreeze         = false
-ENT.BloodColor              = BLOOD_COLOR_RED
-ENT.BloodParticle           = "blood_impact_red_01"
-ENT.CanBeFollowedByPlayer   = false
-ENT.PrimaryWeapon           = "none"
-ENT.HasMeleeAttack          = true
-ENT.IsMeleeAttacking        = false
-ENT.MeleeAttackDamage       = 40
-ENT.MeleeAttackDamageType   = DMG_CLUB
-ENT.MeleeAttackKnockBack    = 700
-ENT.MeleeDistanceOverride   = 200
-ENT.HasRangeAttack          = true
-ENT.IsRangeAttacking        = false
-ENT.RangeDistance           = 2200
-ENT.Bleeds                  = false   -- VJ vanilla bleed is overridden by juicy system
-ENT.VJ_ID_Liquid            = FCONTENTS_WATER
-ENT.ControllerVars          = {
-    ["gekko_juicy_bleeding_enabled"] = 1,
-    ["gekko_juicy_bleeding_cooldown"] = 0.15,
-    ["gekko_juicy_bleeding_maxactive"] = 8,
-    ["gekko_juicy_bleeding_darker"] = 0,
-}
+include("jump_system.lua")
+include("targeted_jump_system.lua")
+include("crouch_system.lua")
+include("crush_system.lua")
+include("elastic_system.lua")
+include("flinch_system.lua")
+include("muzzleflash_system.lua")
+include("bullet_impact_system.lua")
+include("death_pose_system.lua")
 
 -- ============================================================
 -- CONVARS
 -- ============================================================
-CreateConVar("gekko_juicy_bleeding_enabled",  "1",    FCVAR_ARCHIVE, "Enable Gekko juicy bleeding", 0, 1)
-CreateConVar("gekko_juicy_bleeding_cooldown", "0.15", FCVAR_ARCHIVE, "Min seconds between bleeds", 0.0, 5.0)
-CreateConVar("gekko_juicy_bleeding_maxactive","8",    FCVAR_ARCHIVE, "Max concurrent bleed streams", 1, 20)
-CreateConVar("gekko_juicy_bleeding_darker",   "0",    FCVAR_ARCHIVE, "Use darker blood variant", 0, 1)
+CreateConVar("gekko_juicy_bleeding_enabled",   "1",    FCVAR_ARCHIVE, "Enable Gekko juicy bleeding", 0, 1)
+CreateConVar("gekko_juicy_bleeding_cooldown",  "0.15", FCVAR_ARCHIVE, "Min seconds between bleeds", 0.0, 5.0)
+CreateConVar("gekko_juicy_bleeding_maxactive", "8",    FCVAR_ARCHIVE, "Max concurrent bleed streams", 1, 20)
+CreateConVar("gekko_juicy_bleeding_darker",    "0",    FCVAR_ARCHIVE, "Use darker blood variant", 0, 1)
 
 -- ============================================================
--- BONE LIST DEBUGGER  (run once, prints to console)
+-- SPRINT CONFIGURATION
+-- ============================================================
+-- When the Gekko has a clear line-of-sight and is within
+-- randomly break into a full sprint for 2-4 s, then settle
+-- back to normal walk/run speed.
+-- Distance thresholds (in Hammer units):
+local SPRINT_MIN_DIST       = 400   -- don't sprint if already close
+local SPRINT_MAX_DIST       = 1500  -- too far away → don't sprint either
+local SPRINT_DUR_MIN        = 2.0   -- seconds, min sprint burst length
+local SPRINT_DUR_MAX        = 4.0   -- seconds, max sprint burst length
+local SPRINT_COOLDOWN_MIN   = 3.0   -- seconds before next sprint can trigger
+local SPRINT_COOLDOWN_MAX   = 7.0   -- seconds before next sprint can trigger
+local SPRINT_MOVE_SPEED     = 420   -- MoveSpeed during sprint
+local SPRINT_RUN_SPEED      = 420   -- RunSpeed during sprint
+local SPRINT_WALK_SPEED     = 420   -- WalkSpeed during sprint
+
+-- ============================================================
+-- LOCAL HELPERS
+-- ============================================================
+local funcGetTable = debug.getregistry()["Entity"].GetTable
+
+-- ============================================================
+-- BONE LIST DEBUGGER  (fires once per NPC on spawn)
 -- ============================================================
 local boneListPrinted = false
 local function GekkoDebugBoneList(ent)
@@ -71,100 +71,210 @@ local function GekkoDebugBoneList(ent)
 end
 
 -- ============================================================
--- LOCAL AI STATE
+-- WEAPON / LOADOUT SYSTEM
 -- ============================================================
-local MELEE_RANGE        = 200
-local MG_BURST_BULLETS   = 12
-local MG_BULLET_DELAY    = 0.065
-local MG_BURST_COOLDOWN  = 1.8
-local SPRINT_SPEED       = 420
-local WALK_SPEED         = 200
-local SOUND_PAIN_COOLDOWN = 0.6
+-- Loadout table – each entry is a set of VJ-Base weapon keys
+-- that get merged into ENT when a loadout is chosen.
+local LOADOUTS = {
+    -- 1: Full Midas Veil  (MG + missile)
+    {
+        HasRangeAttack             = true,
+        RangeAttackEntityDamage    = 18,
+        RangeAttackDamage          = 18,
+        AnimationTranslations      = {},
+        RangeAttackBulletCount     = 1,
+        RangeAttackBulletSpread    = Vector(0.025, 0.025, 0),
+        RangeAttackTracerName      = "Tracer",
+        HasSecondaryRangeAttack    = true,
+        SecondaryRangeAttackDamage = 90,
+        SecondaryRangeAttackType   = "Projectile",
+    },
+    -- 2: MG only
+    {
+        HasRangeAttack             = true,
+        RangeAttackEntityDamage    = 18,
+        RangeAttackDamage          = 18,
+        RangeAttackBulletCount     = 1,
+        RangeAttackBulletSpread    = Vector(0.025, 0.025, 0),
+        RangeAttackTracerName      = "Tracer",
+        HasSecondaryRangeAttack    = false,
+    },
+    -- 3: Missile only
+    {
+        HasRangeAttack             = false,
+        HasSecondaryRangeAttack    = true,
+        SecondaryRangeAttackDamage = 90,
+        SecondaryRangeAttackType   = "Projectile",
+    },
+    -- 4: Melee only
+    {
+        HasRangeAttack             = false,
+        HasSecondaryRangeAttack    = false,
+    },
+}
 
-local function GekkoSprint_Start(ent)
-    ent._gekkoSprinting = true
-    ent:SetMovementActivity(ACT_RUN)
-    ent:SetMaxSpeed(SPRINT_SPEED)
-    ent:SetMoveSpeed(SPRINT_SPEED)
-    ent:SetNWFloat("GekkoSpeed", SPRINT_SPEED)
+-- Returns a random loadout index (1–4)
+local function RollWeapon()
+    return math.random(1, #LOADOUTS)
+end
+
+-- Apply a loadout index to an entity, skipping key if value is nil
+local function ApplyLoadout(ent, idx)
+    local loadout = LOADOUTS[idx]
+    if not loadout then return end
+    for k, v in pairs(loadout) do
+        ent[k] = v
+    end
+end
+
+-- Re-roll a loadout, guaranteeing it is different from `exclude`
+local function RerollLoadout(ent, exclude)
+    local reroll
+    repeat reroll = RollWeapon() until reroll ~= exclude
+    ApplyLoadout(ent, reroll)
+    ent._currentLoadout = reroll
+end
+
+-- ============================================================
+-- SPRINT STATE MACHINE
+-- ============================================================
+
+-- Apply sprint speeds, force run animation state, arm the end timer.
+local function GekkoSprint_Begin(ent)
+    -- Guard: don't sprint while in a jump or crouch
+    local js = ent:GetGekkoJumpState()
+    if js and js ~= "none" then
+        ent._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+        return
+    end
+    if ent._gekkoCrouching then
+        ent._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+        return
+    end
+
+    ent._gekkoSprinting    = true
+    ent._gekkoSprintEndT   = CurTime() + math.Rand(SPRINT_DUR_MIN, SPRINT_DUR_MAX)
+
+    -- Swap to sprint speeds (save originals if not already saved)
+    if not ent._preSprint_MoveSpeed then
+        ent._preSprint_MoveSpeed = ent.MoveSpeed
+        ent._preSprint_RunSpeed  = ent.RunSpeed
+        ent._preSprint_WalkSpeed = ent.WalkSpeed
+    end
+    ent.MoveSpeed  = SPRINT_MOVE_SPEED
+    ent.RunSpeed   = SPRINT_RUN_SPEED
+    ent.WalkSpeed  = SPRINT_WALK_SPEED
+
+    print(string.format("[GekkoSprint] BEGIN | dur=%.1fs", ent._gekkoSprintEndT - CurTime()))
 end
 
 local function GekkoSprint_End(ent)
     ent._gekkoSprinting = false
-    ent:SetMaxSpeed(WALK_SPEED)
-    ent:SetMoveSpeed(WALK_SPEED)
-    ent:SetNWFloat("GekkoSpeed", WALK_SPEED)
+
+    if ent._preSprint_MoveSpeed then
+        ent.MoveSpeed = ent._preSprint_MoveSpeed
+        ent.RunSpeed  = ent._preSprint_RunSpeed
+        ent.WalkSpeed = ent._preSprint_WalkSpeed
+        ent._preSprint_MoveSpeed = nil
+        ent._preSprint_RunSpeed  = nil
+        ent._preSprint_WalkSpeed = nil
+    end
+
+    ent._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+    print("[GekkoSprint] END")
+end
+
+-- Called every OnThink tick. Manages the sprint state machine.
+local function GekkoSprint_Think(ent)
+    if not IsValid(ent) then return end
+
+    -- If currently sprinting, check if the burst has expired
+    if ent._gekkoSprinting then
+        if CurTime() >= ent._gekkoSprintEndT then
+            GekkoSprint_End(ent)
+        end
+        return  -- don't re-evaluate while already sprinting
+    end
+
+    -- Cooldown: too soon to consider another sprint
+    if CurTime() < (ent._gekkoSprintNextT or 0) then return end
+
+    local enemy = ent:GetEnemy()
+    if not IsValid(enemy) then return end
+
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist < SPRINT_MIN_DIST or dist > SPRINT_MAX_DIST then return end
+
+    -- 30 % chance per evaluation window to begin a sprint
+    if math.random() < 0.30 then
+        GekkoSprint_Begin(ent)
+    else
+        -- Delay next evaluation by a shorter window
+        ent._gekkoSprintNextT = CurTime() + math.Rand(1.0, 2.5)
+    end
 end
 
 -- ============================================================
--- SOUND TABLE
+-- VJ BASE ENTITY KEYS
 -- ============================================================
-local SND_PAIN = {
-    "npc/vj_gekko/pain1.wav",
-    "npc/vj_gekko/pain2.wav",
-    "npc/vj_gekko/pain3.wav",
-}
-local SND_ALERT = {
-    "npc/vj_gekko/alert1.wav",
-    "npc/vj_gekko/alert2.wav",
-}
-local SND_DEATH = {
-    "npc/vj_gekko/death1.wav",
-    "npc/vj_gekko/death2.wav",
-}
-local SND_MG   = "npc/vj_gekko/mg_fire.wav"
-local SND_FOOT = {
-    "npc/vj_gekko/step1.wav",
-    "npc/vj_gekko/step2.wav",
-    "npc/vj_gekko/step3.wav",
-}
+ENT.Model           = {"models/metal_gear_solid_4/enemies/gekko.mdl"}
+ENT.StartHealth     = 600
+ENT.HasDeathAnimation = false
+ENT.VJ_ID_Liquid    = FCONTENTS_WATER
+ENT.Bleeds          = false   -- vanilla VJ bleed suppressed; juicy system takes over
+
+-- Melee
+ENT.HasMeleeAttack          = true
+ENT.MeleeAttackDamage       = 65
+ENT.MeleeAttackDamageType   = DMG_CLUB
+ENT.MeleeAttackKnockBack    = 800
+
+-- Range (defaults; overridden by loadout on spawn)
+ENT.HasRangeAttack          = true
+ENT.RangeAttackEntityDamage = 18
+ENT.RangeAttackDamage       = 18
+ENT.RangeAttackBulletCount  = 1
+ENT.RangeAttackBulletSpread = Vector(0.025, 0.025, 0)
+ENT.RangeAttackTracerName   = "Tracer"
+
+-- Secondary (missile) defaults
+ENT.HasSecondaryRangeAttack    = true
+ENT.SecondaryRangeAttackDamage = 90
 
 -- ============================================================
--- VJ BASE OVERRIDES
+-- INITIALIZE
 -- ============================================================
 function ENT:OnEntityInfo()
     GekkoDebugBoneList(self)
-    self:SetMaxSpeed(WALK_SPEED)
-    self:SetMoveSpeed(WALK_SPEED)
-    self:SetNWFloat("GekkoSpeed", WALK_SPEED)
-    self:SetNWEntity("GekkoEnemy", NULL)
-    self:SetNWBool("GekkoLegsDisabled", false)
-    self:SetNWBool("GekkoMGFiring", false)
-    self:SetNWInt("GekkoHitReactPulse", 0)
+
+    -- Pick a random loadout for this spawn
+    local roll = RollWeapon()
+    ApplyLoadout(self, roll)
+    self._currentLoadout = roll
+
+    -- Sprint state
+    self._gekkoSprinting   = false
+    self._gekkoSprintEndT  = 0
+    self._gekkoSprintNextT = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
+
+    -- NW vars for client
+    self:SetNWInt   ("GekkoHitReactPulse", 0)
     self:SetNW2String("GekkoHitBoneName", "b_spine3")
-    self:SetNW2Vector("GekkoHitDir", Vector(0,1,0))
-    self:SetNW2Bool("GekkoHitLarge", false)
-    self._mgBurstActive   = false
-    self._mgBurstEndT     = 0
-    self._mgNextBurst     = 0
-    self._lastPainSnd     = 0
-    self._gekkoSprinting  = false
+    self:SetNW2Vector("GekkoHitDir",      Vector(0,1,0))
+    self:SetNW2Bool  ("GekkoHitLarge",    false)
+
     print("[GekkoAI] AI enabled, state ACTIVE")
 end
 
+-- ============================================================
+-- THINK HOOK  (called by VJ Base every server tick)
+-- ============================================================
 function ENT:VJ_OnThink()
-    self:GekkoLegs_Think()
-
-    -- MG burst firing
-    if self._mgBurstActive and CurTime() > self._mgBurstEndT then
-        self._mgBurstActive = false
-        self:SetNWBool("GekkoMGFiring", false)
-    end
-
-    -- Sprint toward enemy when far
-    local enemy = self:GetEnemy()
-    if IsValid(enemy) then
-        self:SetNWEntity("GekkoEnemy", enemy)
-        local dist = self:GetPos():Distance(enemy:GetPos())
-        if dist > 600 and not self._gekkoSprinting then
-            GekkoSprint_Start(self)
-        elseif dist <= 600 and self._gekkoSprinting then
-            GekkoSprint_End(self)
-        end
-    else
-        self:SetNWEntity("GekkoEnemy", NULL)
-        if self._gekkoSprinting then GekkoSprint_End(self) end
-    end
+    GekkoSprint_Think(self)
+    self:GekkoJump_Think()
+    self:GekkoTargetedJump_Think()
+    self:GekkoCrouch_Think()
+    self:GekkoElastic_Think()
 end
 
 -- ============================================================
@@ -191,11 +301,11 @@ end
 -- SHOULD WE JUICY-BLEED THIS HIT?
 -- ============================================================
 local function ShouldJuicyBleed(dmginfo)
-    if dmginfo:IsDamageType(DMG_BURN)     then return false end
-    if dmginfo:IsDamageType(DMG_DROWN)    then return false end
-    if dmginfo:IsDamageType(DMG_DISSOLVE) then return false end
-    if dmginfo:IsDamageType(DMG_RADIATION)then return false end
-    if dmginfo:GetDamage() <= 0           then return false end
+    if dmginfo:IsDamageType(DMG_BURN)      then return false end
+    if dmginfo:IsDamageType(DMG_DROWN)     then return false end
+    if dmginfo:IsDamageType(DMG_DISSOLVE)  then return false end
+    if dmginfo:IsDamageType(DMG_RADIATION) then return false end
+    if dmginfo:GetDamage() <= 0            then return false end
     return true
 end
 
@@ -203,27 +313,19 @@ end
 -- ON TAKE DAMAGE
 -- ORDER OF OPS:
 --   1. save/zero damage force (prevent VJ knockback on MOVETYPE_STEP)
---   2. early-exit: death spiral guard, head zone, hitPos guard
+--   2. early-exit guards
 --   3. compute hitDir BEFORE force is zeroed
---   4. GekkoVanillaBleed  (decals/effects)
+--   4. GekkoVanillaBleed + GekkoSignalBloodHit
 --   5. GekkoLegs_OnDamage, GekkoGib_OnDamage
---   6. restore force, call BaseClass  <- VJ writes GetLastDamageHitGroup here
+--   6. restore force → BaseClass.OnTakeDamage
+--      VJ Base writes GetLastDamageHitGroup() during step 6
 --   7. GekkoTriggerJuicyBleed(self, dmginfo, hitDir, hitgroup)
---      hitDir   = already computed in step 3
---      hitgroup = GetLastDamageHitGroup() valid ONLY after step 6
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    if self._dyingGuard then return end
     if not self:IsAlive() then return end
 
     local savedForce = dmginfo:GetDamageForce()
     dmginfo:SetDamageForce(Vector(0,0,0))
-
-    -- Early exits that need force restored first
-    local function bailout()
-        dmginfo:SetDamageForce(savedForce)
-        self.BaseClass.OnTakeDamage(self, dmginfo)
-    end
 
     local hitPos = dmginfo:GetDamagePosition()
     if hitPos == vector_origin then
@@ -231,35 +333,32 @@ function ENT:OnTakeDamage(dmginfo)
         if IsValid(inflictor) then
             hitPos = inflictor:GetPos()
         else
-            bailout(); return
+            dmginfo:SetDamageForce(savedForce)
+            self.BaseClass.OnTakeDamage(self, dmginfo)
+            return
         end
     end
 
-    -- Head zone damage reduction
+    -- Head zone damage reduction (above collar)
     local headZ = self:GetPos().z + 155
     if hitPos.z > headZ then dmginfo:ScaleDamage(1 / 3) end
 
     local rawDmg   = dmginfo:GetDamage()
     local attacker = dmginfo:GetAttacker()
-    -- Compute hitDir NOW - before any zeroing logic - from world positions
-    local hitDir   = IsValid(attacker)
+
+    -- Compute hitDir NOW before anything zeroes it further
+    local hitDir = IsValid(attacker)
         and (hitPos - attacker:GetPos()):GetNormalized()
         or self:GetForward()
 
     GekkoVanillaBleed(self, hitPos, hitDir)
 
-    if rawDmg >= 30 then
-        GekkoSignalBloodHit(self, hitPos, -hitDir)
+    if dmginfo:IsBulletDamage() then
+        GekkoSignalBloodHit(self, hitPos, hitDir)
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
-
-    -- Pain sound with cooldown
-    if CurTime() > (self._lastPainSnd or 0) then
-        self._lastPainSnd = CurTime() + SOUND_PAIN_COOLDOWN
-        self:EmitSound(SND_PAIN[math.random(#SND_PAIN)], 75, math.random(95,110))
-    end
 
     dmginfo:SetDamageForce(savedForce)
     self.BaseClass.OnTakeDamage(self, dmginfo)
@@ -269,92 +368,11 @@ function ENT:OnTakeDamage(dmginfo)
     end
 end
 
-function ENT:OnThink()
-    if self._gekkoLegsDisabled then self:GekkoLegs_Think() end
-    if self._mgBurstActive and CurTime() > self._mgBurstEndT then
-        self._mgBurstActive = false
-        self:SetNWBool("GekkoMGFiring", false)
-    end
-    if self._gekkoSprinting then
-        local enemy = self:GetEnemy()
-        if not IsValid(enemy) then GekkoSprint_End(self) end
-    end
-end
-
--- ============================================================
--- MELEE ATTACK
--- ============================================================
-function ENT:MeleeAttack_NormalDamage_Distance()
-    return MELEE_RANGE
-end
-
-function ENT:OnCallMeleeAttack(traceres)
-    if not IsValid(traceres.Entity) then return end
-    local dmg = DamageInfo()
-    dmg:SetDamage(self.MeleeAttackDamage)
-    dmg:SetAttacker(self)
-    dmg:SetInflictor(self)
-    dmg:SetDamageType(self.MeleeAttackDamageType)
-    local dir = (traceres.Entity:GetPos() - self:GetPos()):GetNormalized()
-    dmg:SetDamageForce(dir * self.MeleeAttackKnockBack * 100)
-    dmg:SetDamagePosition(traceres.HitPos)
-    traceres.Entity:TakeDamageInfo(dmg)
-end
-
--- ============================================================
--- RANGE ATTACK  (machine gun burst)
--- ============================================================
-function ENT:HasRangeAttack_Check()
-    if self._mgBurstActive then return false end
-    if CurTime() < self._mgNextBurst then return false end
-    local enemy = self:GetEnemy()
-    if not IsValid(enemy) then return false end
-    return self:GetPos():Distance(enemy:GetPos()) <= self.RangeDistance
-end
-
-function ENT:OnCallRangeAttack()
-    local enemy = self:GetEnemy()
-    if not IsValid(enemy) then return end
-    self._mgBurstActive = true
-    self._mgBurstEndT   = CurTime() + MG_BURST_BULLETS * MG_BULLET_DELAY
-    self._mgNextBurst   = self._mgBurstEndT + MG_BURST_COOLDOWN
-    self:SetNWBool("GekkoMGFiring", true)
-    self:EmitSound(SND_MG, 75, 100)
-    for i = 1, MG_BURST_BULLETS do
-        timer.Simple((i - 1) * MG_BULLET_DELAY, function()
-            if not IsValid(self) then return end
-            if not IsValid(self:GetEnemy()) then return end
-            self:FireBullets({
-                Attacker  = self,
-                Damage    = 8,
-                Force     = 600,
-                Num       = 1,
-                Spread    = Vector(0.05, 0.05, 0),
-                Tracer    = 1,
-                Dir       = (self:GetEnemy():EyePos() - self:GetShootPos()):GetNormalized(),
-                Src       = self:GetShootPos(),
-            })
-        end)
-    end
-end
-
--- ============================================================
--- FOOTSTEP SOUNDS
--- ============================================================
-function ENT:OnFootstepSound()
-    self:EmitSound(SND_FOOT[math.random(#SND_FOOT)], 70, math.random(90,115))
-end
-
 -- ============================================================
 -- DEATH
 -- ============================================================
 function ENT:OnDeath(dmginfo, hitgroup, status)
-    self._dyingGuard = true
     if self._gekkoSprinting then GekkoSprint_End(self) end
-    self:SetNWBool("GekkoMGFiring", false)
-    self:EmitSound(SND_DEATH[math.random(#SND_DEATH)], 80, math.random(95, 110))
-
-    -- Allow the server ragdoll to receive bleed handoff via hooks
-    -- hook.Call("GekkoRagdollSpawned") is fired by CreateEntityRagdoll
-    -- listener already in gekko_juicy_bleeding.lua
+    -- Ragdoll bleed handoff is handled by the CreateEntityRagdoll hook
+    -- in gekko_juicy_bleeding.lua — no manual hook.Call needed here.
 end
