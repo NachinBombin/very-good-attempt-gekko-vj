@@ -322,7 +322,7 @@ end
 --   7. GekkoTriggerJuicyBleed(self, dmginfo, hitDir, hitgroup)
 -- ============================================================
 function ENT:OnTakeDamage(dmginfo)
-    if not self:IsAlive() then return end
+    if not IsValid(self) or not self:Alive() then return end
 
     local savedForce = dmginfo:GetDamageForce()
     dmginfo:SetDamageForce(Vector(0,0,0))
