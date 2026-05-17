@@ -15,59 +15,47 @@ include("gekko_juicy_bleeding/extensions.lua")
 local active_bloodstreams = {}
 
 -- ============================================================
--- HIT REACTION
--- Applies a physics impulse to the physbone closest to the
--- anim bone that was hit, in the same direction as the
--- damage force vector. This makes the Gekko's body react
--- physically to the impact direction.
+-- HIT REACTION  (client-side ManipulateBoneAngles via NW2)
 --
--- Scale: tuned so bullet hits cause a visible but not
--- exaggerated nudge on a large mech. Adjust IMPULSE_SCALE
--- and IMPULSE_SCALE_LARGE to taste.
+-- WHY NOT ApplyForceCenter:
+--   Live NPCs are MOVETYPE_STEP. Their physics object is a
+--   single BBOX controlled by AI locomotion every tick.
+--   Any physics force applied is immediately overridden.
+--
+-- HITGROUP -> BONE MAP  (Gekko 72-bone skeleton)
+--   HITGROUP_GENERIC (0)  -> b_spine3
+--   HITGROUP_HEAD    (1)  -> b_spine4
+--   HITGROUP_CHEST   (2)  -> b_spine3
+--   HITGROUP_STOMACH (3)  -> b_spine2
+--   HITGROUP_LEFTARM (4)  -> b_l_shoulder
+--   HITGROUP_RIGHTARM(5)  -> b_r_shoulder
+--   HITGROUP_LEFTLEG (6)  -> b_l_hippiston1
+--   HITGROUP_RIGHTLEG(7)  -> b_r_hippiston1
+--   HITGROUP_GEAR    (8)  -> b_spine3
 -- ============================================================
-local IMPULSE_SCALE       = 8     -- multiplier for normal hits
-local IMPULSE_SCALE_LARGE = 18    -- multiplier for heavy hits (buckshot, sniper, high dmg)
-local IMPULSE_MAX         = 12000 -- cap so nothing flies off
+local HITGROUP_BONE_MAP = {
+    [0] = "b_spine3",
+    [1] = "b_spine4",
+    [2] = "b_spine3",
+    [3] = "b_spine2",
+    [4] = "b_l_shoulder",
+    [5] = "b_r_shoulder",
+    [6] = "b_l_hippiston1",
+    [7] = "b_r_hippiston1",
+    [8] = "b_spine3",
+}
 
-local function GekkoApplyBoneImpulse(ent, animbone, dmgdir, islarge)
+local function GekkoBroadcastHitReact(ent, hitDir, hitgroup, islarge)
     if not IsValid(ent) then return end
-
-    -- Normalize the damage direction and scale it.
-    local dir = dmgdir:GetNormalized()
-    local scale = islarge and IMPULSE_SCALE_LARGE or IMPULSE_SCALE
-    local impulse = dir * math.min(dmgdir:Length() * scale, IMPULSE_MAX)
-
-    -- Translate the anim bone to its corresponding physics bone index.
-    -- TranslateBoneToPhysBone returns -1 if there is no direct mapping;
-    -- in that case we walk up the bone parent chain to find the nearest
-    -- physbone that exists (e.g. a finger anim bone maps to the hand physbone).
-    local physbone = ent:TranslateBoneToPhysBone(animbone)
-
-    if physbone == -1 then
-        -- Walk up anim bone parents to find one with a physbone.
-        local parent = ent:GetBoneParent(animbone)
-        local limit = 8
-        while parent ~= -1 and limit > 0 do
-            physbone = ent:TranslateBoneToPhysBone(parent)
-            if physbone ~= -1 then break end
-            parent = ent:GetBoneParent(parent)
-            limit = limit - 1
-        end
-    end
-
-    if physbone == -1 then
-        -- Fallback: apply to the root physics object.
-        local phys = ent:GetPhysicsObject()
-        if IsValid(phys) then
-            phys:ApplyForceCenter(impulse)
-        end
-        return
-    end
-
-    local phys = ent:GetPhysicsObjectNum(physbone)
-    if IsValid(phys) then
-        phys:ApplyForceCenter(impulse)
-    end
+    local boneName = HITGROUP_BONE_MAP[hitgroup] or "b_spine3"
+    local dir = (isvector(hitDir) and hitDir:LengthSqr() > 0)
+        and hitDir:GetNormalized()
+        or Vector(0,1,0)
+    ent:SetNW2String("GekkoHitBoneName", boneName)
+    ent:SetNW2Vector("GekkoHitDir",      dir)
+    ent:SetNW2Bool  ("GekkoHitLarge",    islarge or false)
+    local pulse = (ent:GetNWInt("GekkoHitReactPulse", 0) + 1) % 32768
+    ent:SetNWInt("GekkoHitReactPulse", pulse)
 end
 
 local function OFBleeding_CleanUp()
@@ -152,46 +140,57 @@ end
 -- ============================================================
 -- PUBLIC API
 -- ============================================================
-function GekkoTriggerJuicyBleed(ent, dmginfo)
+-- GekkoTriggerJuicyBleed
+--   ent      : the Gekko NPC entity
+--   dmginfo  : CTakeDamageInfo
+--   hitDir   : world-space hit direction (normalized Vector),
+--              passed explicitly from OnTakeDamage because the
+--              Gekko zeroes GetDamageForce() before calling VJ
+--   hitgroup : HITGROUP_* enum (from GetLastDamageHitGroup)
+-- ============================================================
+function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
     if not IsValid(ent) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
     if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
 
     local dmgpos = dmginfo:GetDamagePosition()
-    local dmgdir = dmginfo:GetDamageForce()
-    if not isvector(dmgpos) then return end
-    if not isvector(dmgdir) or dmgdir:LengthSqr() <= 0 then
-        dmgdir = ent:GetForward()
-    end
+    if not isvector(dmgpos) or dmgpos == vector_origin then return end
 
-    local bone = dmginfo:GetAnimBone(ent)
-    if not bone then return end
+    -- Use explicitly passed hitDir; fall back to entity forward
+    local dmgdir = (isvector(hitDir) and hitDir:LengthSqr() > 0)
+        and hitDir
+        or ent:GetForward()
+
+    -- Map hitgroup -> named bone -> bone index using the real skeleton
+    local boneName = HITGROUP_BONE_MAP[hitgroup or 0] or "b_spine3"
+    local bone = ent:LookupBone(boneName)
+    if not bone or bone < 0 then bone = ent:LookupBone("b_spine3") end
+    if not bone or bone < 0 then bone = ent:LookupBone("b_spine2") end
+    if not bone or bone < 0 then bone = ent:LookupBone("b_pelvis") end
+    if not bone or bone < 0 then return end
 
     local bone_pos, bone_ang = ent:GetBonePosition(bone)
     if not isvector(bone_pos) then return end
     bone_ang = bone_ang or Angle(0, 0, 0)
 
-    local lpos, lang = WorldToLocal(dmgpos, dmgdir:Angle(), bone_pos, bone_ang)
+    local lpos, lang = WorldToLocal(dmgpos, Angle(0,0,0), bone_pos, bone_ang)
 
     local lnum = dmginfo:GetDamage()
-    local islarge = lnum and lnum >= 40
-    if dmginfo:IsDamageType(DMG_BUCKSHOT)
-    or dmginfo:IsDamageType(DMG_SNIPER)
-    or dmginfo:IsDamageType(DMG_NEVERGIB) then
-        islarge = true
-    end
+    local islarge = (lnum and lnum >= 40)
+        or dmginfo:IsDamageType(DMG_BUCKSHOT)
+        or dmginfo:IsDamageType(DMG_SNIPER)
+        or dmginfo:IsDamageType(DMG_NEVERGIB)
 
     local bleed_type = 0
     if ent:IsRagdoll() then
         bleed_type = 2
-    elseif lnum >= ent:Health() then
+    elseif lnum and lnum >= ent:Health() then
         bleed_type = 3
     end
 
-    -- Apply bone impulse in the damage direction.
-    -- Only on the live NPC (bleed_type 0 or 3), not on ragdoll hits (2).
+    -- Broadcast hit reaction to client bone driver (skip on ragdoll hits)
     if bleed_type ~= 2 then
-        GekkoApplyBoneImpulse(ent, bone, dmgdir, islarge)
+        GekkoBroadcastHitReact(ent, dmgdir, hitgroup or 0, islarge)
     end
 
     OFBleeding_DO(lpos, lang, bone, ent, islarge, bleed_type)
