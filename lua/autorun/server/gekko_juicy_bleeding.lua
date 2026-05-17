@@ -14,6 +14,62 @@ include("gekko_juicy_bleeding/extensions.lua")
 
 local active_bloodstreams = {}
 
+-- ============================================================
+-- HIT REACTION
+-- Applies a physics impulse to the physbone closest to the
+-- anim bone that was hit, in the same direction as the
+-- damage force vector. This makes the Gekko's body react
+-- physically to the impact direction.
+--
+-- Scale: tuned so bullet hits cause a visible but not
+-- exaggerated nudge on a large mech. Adjust IMPULSE_SCALE
+-- and IMPULSE_SCALE_LARGE to taste.
+-- ============================================================
+local IMPULSE_SCALE       = 8     -- multiplier for normal hits
+local IMPULSE_SCALE_LARGE = 18    -- multiplier for heavy hits (buckshot, sniper, high dmg)
+local IMPULSE_MAX         = 12000 -- cap so nothing flies off
+
+local function GekkoApplyBoneImpulse(ent, animbone, dmgdir, islarge)
+    if not IsValid(ent) then return end
+
+    -- Normalize the damage direction and scale it.
+    local dir = dmgdir:GetNormalized()
+    local scale = islarge and IMPULSE_SCALE_LARGE or IMPULSE_SCALE
+    local impulse = dir * math.min(dmgdir:Length() * scale, IMPULSE_MAX)
+
+    -- Translate the anim bone to its corresponding physics bone index.
+    -- TranslateBoneToPhysBone returns -1 if there is no direct mapping;
+    -- in that case we walk up the bone parent chain to find the nearest
+    -- physbone that exists (e.g. a finger anim bone maps to the hand physbone).
+    local physbone = ent:TranslateBoneToPhysBone(animbone)
+
+    if physbone == -1 then
+        -- Walk up anim bone parents to find one with a physbone.
+        local parent = ent:GetBoneParent(animbone)
+        local limit = 8
+        while parent ~= -1 and limit > 0 do
+            physbone = ent:TranslateBoneToPhysBone(parent)
+            if physbone ~= -1 then break end
+            parent = ent:GetBoneParent(parent)
+            limit = limit - 1
+        end
+    end
+
+    if physbone == -1 then
+        -- Fallback: apply to the root physics object.
+        local phys = ent:GetPhysicsObject()
+        if IsValid(phys) then
+            phys:ApplyForceCenter(impulse)
+        end
+        return
+    end
+
+    local phys = ent:GetPhysicsObjectNum(physbone)
+    if IsValid(phys) then
+        phys:ApplyForceCenter(impulse)
+    end
+end
+
 local function OFBleeding_CleanUp()
     for i = #active_bloodstreams, 1, -1 do
         if not IsValid(active_bloodstreams[i]) then
@@ -55,7 +111,6 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
     hiddenmodel:SetLocalAngles(ang)
     hiddenmodel:SetLocalPos(pos)
 
-    -- Use the ORIGINAL particle system names stored inside the PCF binaries.
     local use_darker = GetConVar("gekko_juicy_bleeding_darker"):GetBool()
     local effect_name
     if use_darker then
@@ -94,6 +149,9 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
     rag._active_bloodstream_points = keep
 end
 
+-- ============================================================
+-- PUBLIC API
+-- ============================================================
 function GekkoTriggerJuicyBleed(ent, dmginfo)
     if not IsValid(ent) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
@@ -128,6 +186,12 @@ function GekkoTriggerJuicyBleed(ent, dmginfo)
         bleed_type = 2
     elseif lnum >= ent:Health() then
         bleed_type = 3
+    end
+
+    -- Apply bone impulse in the damage direction.
+    -- Only on the live NPC (bleed_type 0 or 3), not on ragdoll hits (2).
+    if bleed_type ~= 2 then
+        GekkoApplyBoneImpulse(ent, bone, dmgdir, islarge)
     end
 
     OFBleeding_DO(lpos, lang, bone, ent, islarge, bleed_type)
