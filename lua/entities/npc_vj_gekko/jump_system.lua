@@ -19,16 +19,15 @@ local JUMP_MAX_ENEMY_DIST = 99400
 
 local JUMP_RISING_TIMEOUT    = 1.5
 local JUMP_LAND_SUPPRESS_PAD = 1.1
-
 local JUMP_POST_LAND_COOLDOWN = 3.0
 
--- ── Stuck-Z recovery ─────────────────────────────────────────────────────────
+-- ── Stuck-Z recovery ───────────────────────────────────────────────────
 local JUMP_STUCK_Z_THRESHOLD  = 8.0
 local JUMP_STUCK_Z_WINDOW     = 0.6
 local JUMP_UNSTUCK_NUDGE      = 28
 local JUMP_STUCK_MAX_ATTEMPTS = 2
 
--- ── Jet FX / Land impact tuning ──────────────────────────────────────────────
+-- ── Jet FX / Land impact tuning ──────────────────────────────────────────
 local JET_PARTICLE      = "astw2_nightfire_thruster_small"
 local LAND_PARTICLE     = "astw2_nightfire_explosion_ground"
 local LAND_BLAST_RADIUS = 220
@@ -98,7 +97,6 @@ function ENT:GekkoJump_Init()
     self._jumpCooldown        = 0
     self._gekkoJustJumped     = 0
     self._jetAttachments      = {}
-    self._jetParticles        = {}
     self._jetsRunning         = false
     self._seqJump             = -1
     self._seqFall             = -1
@@ -132,17 +130,20 @@ end
 
 -- ============================================================
 --  GekkoJump_ScanAttachments
---  GMod's entity API does not expose GetNumAttachments().
---  The standard pattern is to call GetAttachmentName(i) starting
---  at index 1 and stop when it returns nil or an empty string.
+--
+--  Correct GMod API for iterating model attachments:
+--    Entity:GetAttachmentInfo(index) -> table { name=string, id=number }
+--                                    -> nil when index is out of range
+--
+--  There is NO GetNumAttachments() or GetAttachmentName() in GMod Lua.
 -- ============================================================
 function ENT:GekkoJump_ScanAttachments()
     self._jetAttachments = {}
     local i = 1
     while true do
-        local name = self:GetAttachmentName(i)
-        if not name or name == "" then break end
-        if string.find(name, "MainJet", 1, true) then
+        local info = self:GetAttachmentInfo(i)
+        if not info then break end             -- nil = past last attachment
+        if string.find(info.name, "MainJet", 1, true) then
             self._jetAttachments[#self._jetAttachments + 1] = i
         end
         i = i + 1
@@ -374,7 +375,7 @@ function ENT:GekkoJump_Think()
         self._jumpThinkPrint = now + 0.2
     end
 
-    -- ── RISING ────────────────────────────────────────────────
+    -- ── RISING ───────────────────────────────────────────────
     if state == JUMP_RISING then
         if vel.z > 50 then self._jumpDidLiftoff = true end
 
@@ -419,10 +420,9 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING ───────────────────────────────────────────────
+    -- ── FALLING ──────────────────────────────────────────────
     if state == JUMP_FALLING then
         if self:GekkoJump_CheckStuckZ(vel.z, now) then return end
-
         if self._seqFall ~= -1 then
             if self:GetSequence() ~= self._seqFall then
                 self:ResetSequence(self._seqFall)
@@ -432,7 +432,7 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING → LAND ────────────────────────────────────────
+    -- ── FALLING → LAND ───────────────────────────────────────
     if state == JUMP_FALLING and grounded then
         SetLocalState(self, JUMP_LAND)
         self._jumpLastState = JUMP_LAND
@@ -456,7 +456,7 @@ function ENT:GekkoJump_Think()
         return
     end
 
-    -- ── LAND → NONE ───────────────────────────────────────────
+    -- ── LAND → NONE ─────────────────────────────────────────
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         SetLocalState(self, JUMP_NONE)
         self._jumpLastState         = JUMP_NONE
