@@ -6,14 +6,13 @@
 -- ============================================================
 if not SERVER then return end
 
--- CRITICAL: Load extensions from the correct absolute GMod path.
--- This registers DMGINFO:GetHitPhysBone and DMGINFO:GetAnimBone
--- on the shared metatable. Must happen before any hook fires.
-include("gekko_juicy_bleeding/extensions.lua")
-
--- Also send extensions to client so ragdoll-phase client hooks
--- that call GetAnimBone don't error silently.
+-- CRITICAL: AddCSLuaFile MUST come before include() so the file
+-- is networked to the client before the server-side include runs.
+-- Reversed order caused the client to never receive extensions.lua,
+-- making DMGINFO:GetAnimBone nil on the client and silently
+-- breaking the ragdoll bleed path.
 AddCSLuaFile("gekko_juicy_bleeding/extensions.lua")
+include("gekko_juicy_bleeding/extensions.lua")
 
 local active_bloodstreams = {}
 

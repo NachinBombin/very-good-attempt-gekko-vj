@@ -30,8 +30,10 @@ hook.Add("EntityTakeDamage", "GekkoBloodPool_TrackBone", function(ent, dmginfo)
 
     local bonePos = ent:GetBonePosition(bone)
     if bonePos then
+        -- FIX: angle_zero is a VJ Base global and is not guaranteed to exist
+        -- in vanilla GMod. Use Angle(0,0,0) which is always available.
         ent.gekko_pool_lastlpos = WorldToLocal(
-            dmginfo:GetDamagePosition(), angle_zero, bonePos, angle_zero
+            dmginfo:GetDamagePosition(), Angle(0, 0, 0), bonePos, Angle(0, 0, 0)
         )
     end
 end)
@@ -64,7 +66,7 @@ hook.Add("GekkoRagdollSpawned", "GekkoBloodPool_Spawn", function(npc, rag)
             if phys:GetVelocity():LengthSqr() > 10 then return end
             timer.Remove(tname)
             ParticleEffect("blood_pool_MysterAC_v2",
-                phys:LocalToWorld(lpos), angle_zero)
+                phys:LocalToWorld(lpos), Angle(0, 0, 0))
         end)
     end
 end)

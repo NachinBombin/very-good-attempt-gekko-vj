@@ -604,7 +604,38 @@ end
 -- GekkoTriggerJuicyBleed is a GLOBAL defined in
 -- lua/autorun/server/gekko_juicy_bleeding.lua.
 -- It is always available by the time this hook fires.
+--
+-- FIX: Previously bleeding only triggered on IsBulletDamage().
+-- It now triggers on ALL organic damage types so that explosions,
+-- melee, fire, and buckshot also produce a blood stream.
+-- DMG_GENERIC, DMG_CRUSH, and DMG_BLAST are excluded because
+-- those map to physics/world interactions with no flesh contact.
 -- ============================================================
+
+-- Damage types that represent physical flesh damage and should
+-- produce a juicy blood stream.
+local BLEED_DMG_TYPES = {
+    DMG_BULLET,
+    DMG_BUCKSHOT,
+    DMG_SLASH,
+    DMG_CLUB,
+    DMG_BURN,
+    DMG_PLASMA,
+    DMG_ENERGYBEAM,
+    DMG_SNIPER,
+    DMG_NEVERGIB,
+}
+
+local function ShouldJuicyBleed(dmginfo)
+    -- Always bleed on bullet damage (original behaviour).
+    if dmginfo:IsBulletDamage() then return true end
+    -- Also bleed on the additional flesh-contact types above.
+    for _, dtype in ipairs(BLEED_DMG_TYPES) do
+        if dmginfo:IsDamageType(dtype) then return true end
+    end
+    return false
+end
+
 function ENT:OnTakeDamage(dmginfo)
     if self._gekkoDead then
         dmginfo:SetDamage(0)
@@ -641,14 +672,13 @@ function ENT:OnTakeDamage(dmginfo)
     if dmginfo:IsBulletDamage() then
         -- Signal cl_init to render the blood-stream effect (original system).
         GekkoSignalBloodHit(self, hitPos, hitDir)
+    end
 
-        -- NEW: Juicy PCF particle bleeding (Hemo-fluid-stream port).
-        -- GekkoTriggerJuicyBleed is the global API defined in
-        -- lua/autorun/server/gekko_juicy_bleeding.lua.
-        -- No SERVER guard needed here - init.lua is server-only.
-        if GekkoTriggerJuicyBleed then
-            GekkoTriggerJuicyBleed(self, dmginfo)
-        end
+    -- FIX: Trigger juicy PCF bleeding on all flesh-contact damage types,
+    -- not just bullets. GekkoTriggerJuicyBleed is the global API defined
+    -- in lua/autorun/server/gekko_juicy_bleeding.lua.
+    if ShouldJuicyBleed(dmginfo) and GekkoTriggerJuicyBleed then
+        GekkoTriggerJuicyBleed(self, dmginfo)
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
