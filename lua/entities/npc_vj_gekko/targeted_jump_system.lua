@@ -59,6 +59,15 @@ local TJ_GROUND_DIST        = 24
 -- Small XY jitter so the Gekko does not land pixel-perfectly every time.
 local TJ_JITTER_XY          = 5
 
+-- ── Stuck-Z recovery ─────────────────────────────────────────────────────────
+-- Mirrors the logic in jump_system.lua; uses TJ_-prefixed constants to stay
+-- independently tunable.
+local TJ_STUCK_Z_THRESHOLD  = 8.0   -- units/s  – velZ change below this = frozen
+local TJ_STUCK_Z_WINDOW     = 0.6   -- seconds  – how long velZ must stay frozen
+local TJ_UNSTUCK_NUDGE      = 28    -- units    – push distance away from wall
+local TJ_STUCK_MAX_ATTEMPTS = 2     -- give up after this many nudge attempts
+-- ─────────────────────────────────────────────────────────────────────────────
+
 -- ============================================================
 --  Internal helpers (prefixed TJ_ to avoid colliding with
 --  the identically-named helpers in jump_system.lua)
@@ -97,6 +106,33 @@ local function TJ_ForceSeq(ent, seq, rate, suppressDur, label)
     ent._gekkoSuppressActivity = CurTime() + suppressDur
     ent.VJ_IsMoving            = false
     ent.VJ_CanMoveThink        = false
+end
+
+-- Returns a nudge direction (Vector, XY only) away from the nearest wall,
+-- or nil if no wall is found within TJ_UNSTUCK_NUDGE units.
+local function TJ_FindNudgeDir(ent)
+    local pos  = ent:GetPos()
+    local dirs = {
+        Vector( 1,  0, 0), Vector(-1,  0, 0),
+        Vector( 0,  1, 0), Vector( 0, -1, 0),
+        Vector( 1,  1, 0):GetNormalized(), Vector(-1, -1, 0):GetNormalized(),
+        Vector( 1, -1, 0):GetNormalized(), Vector(-1,  1, 0):GetNormalized(),
+    }
+    local bestDir  = nil
+    local bestDist = math.huge
+    for _, d in ipairs(dirs) do
+        local tr = util.TraceLine({
+            start  = pos,
+            endpos = pos + d * TJ_UNSTUCK_NUDGE,
+            filter = ent,
+            mask   = MASK_SOLID_BRUSHONLY,
+        })
+        if tr.Hit and tr.Fraction < bestDist then
+            bestDist = tr.Fraction
+            bestDir  = -tr.HitNormal
+        end
+    end
+    return bestDir
 end
 
 -- ============================================================
@@ -175,6 +211,12 @@ function ENT:GekkoTargetJump_Init()
     self._tjDidLiftoff      = false
     self._tjLastState       = JUMP_NONE
     self._tjThinkPrint      = 0
+
+    -- Stuck-Z watchdog state
+    self._tjStuckZLastVelZ  = 0
+    self._tjStuckZSince     = 0
+    self._tjStuckAttempts   = 0
+
     -- _seqJump / _seqFall / _seqLand are set by GekkoJump_Activate() in
     -- jump_system.lua; no separate lookup needed here.
     print("[GekkoTargetJump] Init() called")
@@ -247,6 +289,11 @@ function ENT:GekkoTargetJump_Execute()
     self._tjDidLiftoff      = false
     self._tjLandCooldown    = 0
 
+    -- Reset stuck-Z watchdog for this new jump
+    self._tjStuckZLastVelZ  = vel.z
+    self._tjStuckZSince     = CurTime()
+    self._tjStuckAttempts   = 0
+
     -- Animations -- reuse sequences from jump_system.lua's Activate().
     if self._seqJump and self._seqJump ~= -1 then
         TJ_ForceSeq(self, self._seqJump, 1.0, 0.5, "jump")
@@ -261,6 +308,105 @@ function ENT:GekkoTargetJump_Execute()
         "[GekkoTargetJump] LAUNCH | vz=%.0f vxy=%.0f tof=%.2fs dZ=%.0f",
         sol.vz, sol.vxy, sol.tof, aimPos.z - self:GetPos().z
     ))
+end
+
+-- ============================================================
+--  Stuck-Z recovery helper  (called from Think during RISING/FALLING)
+--  Returns true if recovery was applied (caller should return early).
+-- ============================================================
+function ENT:GekkoTargetJump_CheckStuckZ(velZ, now)
+    -- Reset baseline when velZ is actually changing fast enough.
+    if math.abs(velZ - self._tjStuckZLastVelZ) > TJ_STUCK_Z_THRESHOLD then
+        self._tjStuckZLastVelZ = velZ
+        self._tjStuckZSince    = now
+        return false
+    end
+
+    -- Not yet stuck long enough.
+    if (now - self._tjStuckZSince) < TJ_STUCK_Z_WINDOW then
+        return false
+    end
+
+    print(string.format(
+        "[GekkoTargetJump] STUCK-Z detected | velZ=%.1f  attempts=%d",
+        velZ, self._tjStuckAttempts
+    ))
+
+    -- Too many attempts → abort.
+    if self._tjStuckAttempts >= TJ_STUCK_MAX_ATTEMPTS then
+        print("[GekkoTargetJump] STUCK-Z: giving up, aborting jump")
+        TJ_SetLocalState(self, JUMP_NONE)
+        self._tjLastState           = JUMP_NONE
+        self:SetGekkoJumpTimer(0)
+        self:SetMoveType(MOVETYPE_STEP)
+        self:SetVelocity(Vector(0, 0, 0))
+        self.Gekko_LastSeqIdx       = -1
+        self.Gekko_LastSeqName      = ""
+        self._gekkoSuppressActivity = now + 0.15
+        self.VJ_CanMoveThink        = true
+        self._tjCooldown            = now + TJ_COOLDOWN_MAX * 2
+        self._tjLandCooldown        = now + TJ_POST_LAND_COOLDOWN
+        self:GekkoJump_StopJetFX()
+        if self._gekkoCrouching then self._gekkoCrouchJustEntered = true end
+        return true
+    end
+
+    self._tjStuckAttempts = self._tjStuckAttempts + 1
+
+    -- Nudge away from the nearest wall.
+    local nudgeDir = TJ_FindNudgeDir(self)
+    if nudgeDir then
+        nudgeDir.z = 0
+        local newPos = self:GetPos() + nudgeDir * TJ_UNSTUCK_NUDGE
+        self:SetPos(newPos)
+        print(string.format(
+            "[GekkoTargetJump] STUCK-Z: nudged %.0f units  dir=(%.2f,%.2f)",
+            TJ_UNSTUCK_NUDGE, nudgeDir.x, nudgeDir.y
+        ))
+    else
+        print("[GekkoTargetJump] STUCK-Z: no wall found, applying vertical kick")
+    end
+
+    -- Re-solve ballistics from the new position.
+    local enemy = self:GetEnemy()
+    local aimPos
+    if IsValid(enemy) then
+        aimPos = enemy:GetPos() + Vector(
+            math.Rand(-TJ_JITTER_XY, TJ_JITTER_XY),
+            math.Rand(-TJ_JITTER_XY, TJ_JITTER_XY),
+            40
+        )
+    end
+
+    local sol = aimPos and TJ_Solve(self:GetPos(), aimPos) or nil
+    if sol then
+        local fwd = (aimPos - self:GetPos())
+        fwd.z = 0
+        fwd:Normalize()
+        local newVel    = fwd * sol.vxy
+        newVel.z        = sol.vz
+        self:SetVelocity(newVel)
+        self:SetMoveType(MOVETYPE_FLYGRAVITY)
+        self._tjStuckZLastVelZ = newVel.z
+        print(string.format(
+            "[GekkoTargetJump] STUCK-Z: re-solved | vz=%.0f vxy=%.0f",
+            sol.vz, sol.vxy
+        ))
+    else
+        -- Fallback: random kick upward.
+        local newVel = self:GetForward() * TJ_VXY_MIN
+        newVel.z     = TJ_VZ_DESCENDING
+        self:SetVelocity(newVel)
+        self:SetMoveType(MOVETYPE_FLYGRAVITY)
+        self._tjStuckZLastVelZ = newVel.z
+        print("[GekkoTargetJump] STUCK-Z: fallback kick applied")
+    end
+
+    self._tjStuckZSince = now
+    TJ_SetLocalState(self, JUMP_RISING)
+    self._tjLastState = JUMP_RISING
+
+    return true
 end
 
 -- ============================================================
@@ -341,6 +487,11 @@ function ENT:GekkoTargetJump_Think()
             return
         end
 
+        -- ── Stuck-Z watchdog (RISING) ─────────────────────────
+        if self._tjDidLiftoff then
+            if self:GekkoTargetJump_CheckStuckZ(vel.z, now) then return end
+        end
+
         -- Loop the middle of the jump sequence while ascending.
         if self._seqJump and self._seqJump ~= -1 then
             if self:GetSequence() ~= self._seqJump then
@@ -364,6 +515,9 @@ function ENT:GekkoTargetJump_Think()
 
     -- ── FALLING ─────────────────────────────────────────────────
     if state == JUMP_FALLING then
+        -- ── Stuck-Z watchdog (FALLING) ────────────────────────
+        if self:GekkoTargetJump_CheckStuckZ(vel.z, now) then return end
+
         if self._seqFall and self._seqFall ~= -1 then
             if self:GetSequence() ~= self._seqFall then
                 self:ResetSequence(self._seqFall)

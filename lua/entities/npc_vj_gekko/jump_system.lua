@@ -24,6 +24,17 @@ local JUMP_LAND_SUPPRESS_PAD = 1.1
 -- Prevents ShouldJump from firing the instant the land anim finishes.
 local JUMP_POST_LAND_COOLDOWN = 3.0
 
+-- ── Stuck-Z recovery ─────────────────────────────────────────────────────────
+-- If velZ changes by less than JUMP_STUCK_Z_THRESHOLD over JUMP_STUCK_Z_WINDOW
+-- seconds the NPC is considered geometry-trapped.
+-- Recovery: nudge JUMP_UNSTUCK_NUDGE units away from the nearest wall, then
+-- re-attempt the jump.  If nudging also fails, abort cleanly to JUMP_NONE.
+local JUMP_STUCK_Z_THRESHOLD  = 8.0   -- units/s  – below this means "not moving vertically"
+local JUMP_STUCK_Z_WINDOW     = 0.6   -- seconds  – how long velZ must stay frozen before acting
+local JUMP_UNSTUCK_NUDGE      = 28    -- units    – how far to push away from the wall
+local JUMP_STUCK_MAX_ATTEMPTS = 2     -- give up after this many nudge attempts per jump
+-- ─────────────────────────────────────────────────────────────────────────────
+
 -- ============================================================
 --  Internal helpers
 -- ============================================================
@@ -50,6 +61,34 @@ local function GekkoIsGrounded(ent)
     return tr.Hit
 end
 
+-- Returns a Vector that points away from the nearest solid wall within
+-- JUMP_UNSTUCK_NUDGE units, or nil if no wall is found.
+local function GekkoJump_FindNudgeDir(ent)
+    local pos  = ent:GetPos()
+    local dirs = {
+        Vector( 1,  0, 0), Vector(-1,  0, 0),
+        Vector( 0,  1, 0), Vector( 0, -1, 0),
+        Vector( 1,  1, 0):GetNormalized(), Vector(-1, -1, 0):GetNormalized(),
+        Vector( 1, -1, 0):GetNormalized(), Vector(-1,  1, 0):GetNormalized(),
+    }
+    local bestDir  = nil
+    local bestDist = math.huge
+    for _, d in ipairs(dirs) do
+        local tr = util.TraceLine({
+            start  = pos,
+            endpos = pos + d * JUMP_UNSTUCK_NUDGE,
+            filter = ent,
+            mask   = MASK_SOLID_BRUSHONLY,
+        })
+        if tr.Hit and tr.Fraction < bestDist then
+            bestDist = tr.Fraction
+            -- Push away from the hit normal
+            bestDir  = -tr.HitNormal
+        end
+    end
+    return bestDir
+end
+
 -- ============================================================
 function ENT:GekkoJump_Init()
     self._jumpStateLOCAL      = JUMP_NONE
@@ -66,6 +105,11 @@ function ENT:GekkoJump_Init()
     self._jumpLandCooldown    = CurTime() + JUMP_POST_LAND_COOLDOWN
     -- Track the last state we entered so we only apply one-shot flags on transition.
     self._jumpLastState       = JUMP_NONE
+
+    -- Stuck-Z state
+    self._jumpStuckZLastVelZ  = 0
+    self._jumpStuckZSince     = 0
+    self._jumpStuckAttempts   = 0
 
     self.JUMP_NONE    = JUMP_NONE
     self.JUMP_RISING  = JUMP_RISING
@@ -165,6 +209,11 @@ function ENT:GekkoJump_Execute()
     self._jumpDidLiftoff      = false
     self._jumpLandCooldown    = 0
 
+    -- Reset stuck-Z watchdog for this new jump
+    self._jumpStuckZLastVelZ  = vel.z
+    self._jumpStuckZSince     = CurTime()
+    self._jumpStuckAttempts   = 0
+
     if self._seqJump ~= -1 then
         ForceSeq(self, self._seqJump, 1.0, 0.5, "jump")
     end
@@ -172,6 +221,87 @@ function ENT:GekkoJump_Execute()
     self:GeckoCrush_LaunchBlast()
     self:SetNWInt("GekkoJumpDust", (self:GetNWInt("GekkoJumpDust", 0) + 1) % 255)
     self:GekkoJump_StartJetFX()
+end
+
+-- ============================================================
+--  Stuck-Z recovery helper (called from Think during RISING/FALLING)
+--  Returns true if recovery was applied (caller should return early).
+-- ============================================================
+function ENT:GekkoJump_CheckStuckZ(velZ, now)
+    -- Update the baseline when velZ is actually changing fast enough.
+    if math.abs(velZ - self._jumpStuckZLastVelZ) > JUMP_STUCK_Z_THRESHOLD then
+        self._jumpStuckZLastVelZ = velZ
+        self._jumpStuckZSince    = now
+        return false
+    end
+
+    -- velZ has been flat for long enough → we are stuck in geometry.
+    if (now - self._jumpStuckZSince) < JUMP_STUCK_Z_WINDOW then
+        return false
+    end
+
+    print(string.format(
+        "[GekkoJump] STUCK-Z detected | velZ=%.1f  attempts=%d",
+        velZ, self._jumpStuckAttempts
+    ))
+
+    -- Too many attempts → abort jump entirely.
+    if self._jumpStuckAttempts >= JUMP_STUCK_MAX_ATTEMPTS then
+        print("[GekkoJump] STUCK-Z: giving up, aborting jump")
+        SetLocalState(self, JUMP_NONE)
+        self._jumpLastState         = JUMP_NONE
+        self:SetGekkoJumpTimer(0)
+        self:SetMoveType(MOVETYPE_STEP)
+        self:SetVelocity(Vector(0, 0, 0))
+        self.Gekko_LastSeqIdx       = -1
+        self.Gekko_LastSeqName      = ""
+        self._gekkoSuppressActivity = now + 0.15
+        self.VJ_CanMoveThink        = true
+        self._jumpCooldown          = now + JUMP_COOLDOWN_MAX * 2
+        self._jumpLandCooldown      = now + JUMP_POST_LAND_COOLDOWN
+        self:GekkoJump_StopJetFX()
+        if self._gekkoCrouching then self._gekkoCrouchJustEntered = true end
+        return true
+    end
+
+    self._jumpStuckAttempts = self._jumpStuckAttempts + 1
+
+    -- Try to find a wall-away direction and nudge.
+    local nudgeDir = GekkoJump_FindNudgeDir(self)
+    if nudgeDir then
+        nudgeDir.z = 0
+        local newPos = self:GetPos() + nudgeDir * JUMP_UNSTUCK_NUDGE
+        self:SetPos(newPos)
+        print(string.format(
+            "[GekkoJump] STUCK-Z: nudged %.0f units  dir=(%.2f,%.2f)",
+            JUMP_UNSTUCK_NUDGE, nudgeDir.x, nudgeDir.y
+        ))
+    else
+        -- No wall found – just give the NPC a fresh upward kick instead.
+        print("[GekkoJump] STUCK-Z: no wall found, applying vertical kick")
+    end
+
+    -- Re-apply launch velocity so the physics solver has a real chance.
+    local enemy = self:GetEnemy()
+    local fwd   = IsValid(enemy)
+                  and (enemy:GetPos() - self:GetPos()):GetNormalized()
+                  or  self:GetForward()
+    fwd.z = 0
+    fwd:Normalize()
+
+    local newVel    = fwd * JUMP_FORWARD_FORCE
+    newVel.z        = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
+    self:SetVelocity(newVel)
+    self:SetMoveType(MOVETYPE_FLYGRAVITY)
+
+    -- Reset the stuck watchdog with the new velocity.
+    self._jumpStuckZLastVelZ = newVel.z
+    self._jumpStuckZSince    = now
+    -- Force back to RISING so the state machine tracks the new arc correctly.
+    SetLocalState(self, JUMP_RISING)
+    self._jumpLastState = JUMP_RISING
+
+    return true
 end
 
 -- ============================================================
@@ -251,6 +381,11 @@ function ENT:GekkoJump_Think()
             return
         end
 
+        -- ── Stuck-Z watchdog (RISING) ─────────────────────────
+        if self._jumpDidLiftoff then
+            if self:GekkoJump_CheckStuckZ(vel.z, now) then return end
+        end
+
         if self._seqJump ~= -1 then
             if self:GetSequence() ~= self._seqJump then
                 self:ResetSequence(self._seqJump)
@@ -274,6 +409,9 @@ function ENT:GekkoJump_Think()
 
     -- ── FALLING ───────────────────────────────────────────────
     if state == JUMP_FALLING then
+        -- ── Stuck-Z watchdog (FALLING) ────────────────────────
+        if self:GekkoJump_CheckStuckZ(vel.z, now) then return end
+
         if self._seqFall ~= -1 then
             if self:GetSequence() ~= self._seqFall then
                 self:ResetSequence(self._seqFall)
@@ -308,7 +446,6 @@ function ENT:GekkoJump_Think()
         end
 
         self._jumpLandCooldown = now + JUMP_LAND_LOCKOUT + JUMP_POST_LAND_COOLDOWN
-
         self:GekkoJump_LandImpact()
         return
     end
@@ -321,7 +458,7 @@ function ENT:GekkoJump_Think()
         self.Gekko_LastSeqIdx  = -1
         self.Gekko_LastSeqName = ""
         self._gekkoSuppressActivity = now + 0.08
-        self._gekkoSkipAnimTick     = true
+        self._gekkoSkipAnimTick = true
         if self.GekkoSeq_Idle and self.GekkoSeq_Idle ~= -1 then
             self:ResetSequence(self.GekkoSeq_Idle)
             self:SetPlaybackRate(1.0)
@@ -329,10 +466,7 @@ function ENT:GekkoJump_Think()
             self.Gekko_LastSeqName = "idle"
         end
         self.VJ_CanMoveThink = true
-
-        if self._gekkoCrouching then
-            self._gekkoCrouchJustEntered = true
-        end
+        if self._gekkoCrouching then self._gekkoCrouchJustEntered = true end
     end
 end
 
@@ -340,46 +474,4 @@ end
 function ENT:GekkoJump_IsAirborne()
     local s = GetLocalState(self)
     return s == JUMP_RISING or s == JUMP_FALLING
-end
-
--- ============================================================
-function ENT:GekkoJump_StartJetFX()
-    if not self._jetAttachments or #self._jetAttachments == 0 then return end
-    for _, attIdx in ipairs(self._jetAttachments) do
-        local attData = self:GetAttachment(attIdx)
-        if attData then
-            local eff = EffectData()
-            eff:SetOrigin(attData.Pos)
-            eff:SetAngles(attData.Ang)
-            eff:SetEntity(self)
-            eff:SetScale(1)
-            util.Effect("GekkoJetStart", eff, true, true)
-        end
-    end
-    self:EmitSound("MA2_Mech.JJLoop", 85, 100)
-end
-
-function ENT:GekkoJump_StopJetFX()
-    self:StopSound("MA2_Mech.JJLoop")
-    self:EmitSound("MA2_Mech.JJEnd", 85, 100)
-end
-
--- ============================================================
-function ENT:GekkoJump_LandImpact()
-    local shakePos = self:GetPos()
-
-    util.ScreenShake(shakePos, 12, 8, 0.6, 700)
-    self:EmitSound("physics/metal/metal_box_impact_hard3.wav", 100, 80)
-
-    local eff = EffectData()
-    eff:SetOrigin(shakePos)
-    eff:SetNormal(Vector(0, 0, 1))
-    eff:SetScale(3)
-    eff:SetMagnitude(3)
-    eff:SetRadius(128)
-    util.Effect("dust", eff)
-
-    ParticleEffect("impact_dirt_cheap", shakePos, Angle(0, 0, 0))
-    self:SetNWInt("GekkoLandDust", (self:GetNWInt("GekkoLandDust", 0) + 1) % 255)
-    self:GeckoCrush_LandBlast()
 end
