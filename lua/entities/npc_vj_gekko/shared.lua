@@ -22,24 +22,30 @@ ENT.StartHealth  = 3300
 
 ENT.StopMovingWhileAttacking = false
 
--- VJ_NPC_UsesCustomMoveAnimation intentionally removed.
--- When set to true it suppressed VJBase's entire locomotion tick,
--- making RunSpeed / WalkSpeed have no effect and locking the NPC
--- on a static walk sequence regardless of values set.
+-- CRITICAL: This tells VJBase "we own sequence control".
+-- Without it, VJBase calls ResetSequence every Think tick and
+-- overwrites our SetPlaybackRate back to 1.0, making the run
+-- animation and speed tuning completely ineffective.
+ENT.VJ_NPC_UsesCustomMoveAnimation = true
 
 ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
 ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
 
+-- Walk and Run speed are intentionally the same here.
+-- VJBase nav speed is kept flat; the distinction between
+-- walking and running is handled entirely by GekkoUpdateAnimation
+-- via the _gekkoRunning flag and playback-rate math
+-- (arate = vel / ANIM_RUN_SPEED or ANIM_WALK_SPEED).
 ENT.WalkSpeed = 184
-ENT.RunSpeed  = 350
+ENT.RunSpeed  = 184
 
--- VJ_RunToEnemy must be true so VJBase issues run speed to the nav
--- task when chasing an enemy. With false, the NPC is always capped
--- at WalkSpeed regardless of what RunSpeed is set to.
-ENT.VJ_RunToEnemy         = true
-ENT.VJ_RunToEnemyDistance = 1500
+-- Disable VJBase's built-in chase-run task.
+-- It fights GekkoUpdateAnimation for sequence ownership and
+-- issues conflicting TASK_RUN_PATH commands.
+ENT.VJ_RunToEnemy         = false
+ENT.VJ_RunToEnemyDistance = 0
 
 ENT.TurningSpeed  = 15
 ENT.SightDistance = 900000
