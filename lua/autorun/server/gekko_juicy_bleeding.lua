@@ -3,11 +3,12 @@
 -- PURPOSE: Global bleeding system - defines OFBleeding_DO and
 --          GekkoTriggerJuicyBleed as GLOBALS, loads extensions.
 -- SCOPE: Server autorun
+-- NOTE: Particle system names here MUST match the internal names
+--       stored inside the PCF binaries (of_simple_bleeding_*),
+--       NOT the PCF filename.
 -- ============================================================
 if not SERVER then return end
 
--- CRITICAL: AddCSLuaFile MUST come before include so the file is
--- registered for client download before it is executed server-side.
 AddCSLuaFile("gekko_juicy_bleeding/extensions.lua")
 include("gekko_juicy_bleeding/extensions.lua")
 
@@ -21,12 +22,6 @@ local function OFBleeding_CleanUp()
     end
 end
 
--- ============================================================
--- CORE: Spawn bleeding particle effect
--- Byte-for-byte port of OFBleeding_DO from the original addon.
--- Defined as a module-local here; GekkoTriggerJuicyBleed is the
--- public API that init.lua calls.
--- ============================================================
 local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
     if not rag or not bone then return end
 
@@ -60,12 +55,13 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
     hiddenmodel:SetLocalAngles(ang)
     hiddenmodel:SetLocalPos(pos)
 
+    -- Use the ORIGINAL particle system names stored inside the PCF binaries.
     local use_darker = GetConVar("gekko_juicy_bleeding_darker"):GetBool()
     local effect_name
     if use_darker then
-        effect_name = islarge and "gekko_juicy_bleeding_darker_spray" or "gekko_juicy_bleeding_darker_spray_b"
+        effect_name = islarge and "of_simple_bleeding_darker_spray" or "of_simple_bleeding_darker_spray_b"
     else
-        effect_name = islarge and "gekko_juicy_bleeding_spray" or "gekko_juicy_bleeding_spray_b"
+        effect_name = islarge and "of_simple_bleeding_spray" or "of_simple_bleeding_spray_b"
     end
 
     if bleed_type ~= 3 then
@@ -89,7 +85,6 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
         islarge = islarge,
     })
 
-    -- Prune stale points (older than 2s)
     local keep = {}
     for _, v in ipairs(rag._active_bloodstream_points) do
         if v.time and v.time > (CurTime() - 2) then
@@ -99,10 +94,6 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
     rag._active_bloodstream_points = keep
 end
 
--- ============================================================
--- PUBLIC API: Called from npc_vj_gekko/init.lua OnTakeDamage.
--- GekkoTriggerJuicyBleed(ent, dmginfo)
--- ============================================================
 function GekkoTriggerJuicyBleed(ent, dmginfo)
     if not IsValid(ent) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
@@ -115,7 +106,6 @@ function GekkoTriggerJuicyBleed(ent, dmginfo)
         dmgdir = ent:GetForward()
     end
 
-    -- GetAnimBone is provided by extensions.lua via DMGINFO metatable.
     local bone = dmginfo:GetAnimBone(ent)
     if not bone then return end
 
@@ -133,7 +123,6 @@ function GekkoTriggerJuicyBleed(ent, dmginfo)
         islarge = true
     end
 
-    -- bleed_type: 0 = live NPC, 1 = ragdoll handoff, 2 = ragdoll, 3 = killing blow
     local bleed_type = 0
     if ent:IsRagdoll() then
         bleed_type = 2
@@ -144,10 +133,6 @@ function GekkoTriggerJuicyBleed(ent, dmginfo)
     OFBleeding_DO(lpos, lang, bone, ent, islarge, bleed_type)
 end
 
--- ============================================================
--- RAGDOLL HANDOFF via engine hook (VJ Base / GMod NPC death).
--- Fires for engine-generated ragdolls only.
--- ============================================================
 hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     if not IsValid(ent) or not IsValid(rag) then return end
     if ent:GetClass() ~= "npc_vj_gekko" then return end
@@ -155,7 +140,6 @@ hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
 
     rag.allow_gekko_juicy_bleeding = true
-
     if ent._active_bloodstream_points then
         for _, v in ipairs(ent._active_bloodstream_points) do
             if v and v.lpos and v.lang and v.bone then
@@ -166,19 +150,12 @@ hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     end
 end)
 
--- ============================================================
--- RAGDOLL HANDOFF via GekkoRagdollSpawned.
--- Fires for manually-spawned prop_ragdolls from death_pose_system.lua.
--- CreateEntityRagdoll does NOT fire for ents.Create("prop_ragdoll"),
--- so this hook is the only path that works for Gekko's death ragdoll.
--- ============================================================
 hook.Add("GekkoRagdollSpawned", "GekkoJuicyBleed_RagdollHandoff", function(npc, rag)
     if not IsValid(npc) or not IsValid(rag) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
     if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
 
     rag.allow_gekko_juicy_bleeding = true
-
     if npc._active_bloodstream_points then
         for _, v in ipairs(npc._active_bloodstream_points) do
             if v and v.lpos and v.lang and v.bone then
@@ -189,9 +166,6 @@ hook.Add("GekkoRagdollSpawned", "GekkoJuicyBleed_RagdollHandoff", function(npc, 
     end
 end)
 
--- ============================================================
--- CLEANUP: Free stored bleed points on entity removal.
--- ============================================================
 hook.Add("EntityRemoved", "GekkoJuicyBleed_Cleanup", function(ent)
     if ent._active_bloodstream_points then
         ent._active_bloodstream_points = nil
