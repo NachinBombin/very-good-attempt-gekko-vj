@@ -7,28 +7,26 @@ local JUMP_RISING  = 1
 local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
-local JUMP_FORCE_MIN      = 500
-local JUMP_FORCE_MAX      = 1200
-local JUMP_FORWARD_FORCE  = 400
-local JUMP_LAND_LOCKOUT   = 1.4
-local JUMP_COOLDOWN_MIN   = 11.0
-local JUMP_COOLDOWN_MAX   = 35.0
-local JUMP_GROUND_DIST    = 24
-local JUMP_MIN_ENEMY_DIST = 600
-local JUMP_MAX_ENEMY_DIST = 99400
-
-local JUMP_RISING_TIMEOUT    = 1.5
-local JUMP_LAND_SUPPRESS_PAD = 1.1
+local JUMP_FORCE_MIN       = 500
+local JUMP_FORCE_MAX       = 1200
+local JUMP_FORWARD_FORCE   = 400
+local JUMP_LAND_LOCKOUT    = 1.4
+local JUMP_COOLDOWN_MIN    = 11.0
+local JUMP_COOLDOWN_MAX    = 35.0
+local JUMP_GROUND_DIST     = 24
+local JUMP_MIN_ENEMY_DIST  = 600
+local JUMP_MAX_ENEMY_DIST  = 99400
+local JUMP_RISING_TIMEOUT  = 1.5
+local JUMP_LAND_SUPPRESS_PAD  = 1.1
 local JUMP_POST_LAND_COOLDOWN = 3.0
 
--- ── Stuck-Z recovery ───────────────────────────────────────────────────
-local JUMP_STUCK_Z_THRESHOLD  = 8.0
-local JUMP_STUCK_Z_WINDOW     = 0.6
+-- Stuck-Z: reacts within ~2 ticks, one nudge attempt then hard abort
+local JUMP_STUCK_Z_THRESHOLD  = 2.0   -- was 8.0
+local JUMP_STUCK_Z_WINDOW     = 0.08  -- was 0.6  (~2 think ticks at 24hz)
 local JUMP_UNSTUCK_NUDGE      = 28
-local JUMP_STUCK_MAX_ATTEMPTS = 2
+local JUMP_STUCK_MAX_ATTEMPTS = 1     -- was 2
 
--- ── Jet FX / Land impact tuning ──────────────────────────────────────────
-local JET_PARTICLE      = "astw2_nightfire_thruster_small"
+-- Land impact tuning
 local LAND_PARTICLE     = "astw2_nightfire_explosion_ground"
 local LAND_BLAST_RADIUS = 220
 local LAND_BLAST_DAMAGE = 55
@@ -96,8 +94,6 @@ function ENT:GekkoJump_Init()
     self:SetGekkoJumpTimer(0)
     self._jumpCooldown        = 0
     self._gekkoJustJumped     = 0
-    self._jetAttachments      = {}
-    self._jetsRunning         = false
     self._seqJump             = -1
     self._seqFall             = -1
     self._seqLand             = -1
@@ -120,57 +116,10 @@ function ENT:GekkoJump_Activate()
     self._seqJump = self:LookupSequence("jump")
     self._seqFall = self:LookupSequence("fall")
     self._seqLand = self:LookupSequence("land")
-    self:GekkoJump_ScanAttachments()
     print(string.format(
-        "[GekkoJump] Activate | jump=%d  fall=%d  land=%d  jets=%d",
-        self._seqJump, self._seqFall, self._seqLand,
-        #self._jetAttachments
+        "[GekkoJump] Activate | jump=%d  fall=%d  land=%d",
+        self._seqJump, self._seqFall, self._seqLand
     ))
-end
-
--- ============================================================
---  GekkoJump_ScanAttachments
---
---  Correct GMod API for iterating model attachments:
---    Entity:GetAttachmentInfo(index) -> table { name=string, id=number }
---                                    -> nil when index is out of range
---
---  There is NO GetNumAttachments() or GetAttachmentName() in GMod Lua.
--- ============================================================
-function ENT:GekkoJump_ScanAttachments()
-    self._jetAttachments = {}
-    local i = 1
-    while true do
-        local info = self:GetAttachmentInfo(i)
-        if not info then break end             -- nil = past last attachment
-        if string.find(info.name, "MainJet", 1, true) then
-            self._jetAttachments[#self._jetAttachments + 1] = i
-        end
-        i = i + 1
-    end
-end
-
--- ============================================================
---  GekkoJump_StartJetFX
--- ============================================================
-function ENT:GekkoJump_StartJetFX()
-    if not self._jetAttachments then return end
-    self:GekkoJump_StopJetFX()
-    for _, attIdx in ipairs(self._jetAttachments) do
-        ParticleEffectAttach(JET_PARTICLE, PATTACH_POINT_FOLLOW, self, attIdx)
-    end
-    self._jetsRunning = true
-    print("[GekkoJump] StartJetFX | attachments=" .. #self._jetAttachments)
-end
-
--- ============================================================
---  GekkoJump_StopJetFX
--- ============================================================
-function ENT:GekkoJump_StopJetFX()
-    if not self._jetsRunning then return end
-    self:StopParticles()
-    self._jetsRunning = false
-    print("[GekkoJump] StopJetFX")
 end
 
 -- ============================================================
@@ -194,10 +143,6 @@ function ENT:GekkoJump_LandImpact()
     util.Effect(LAND_PARTICLE, ed)
     self:SetNWInt("GekkoLandDust", (self:GetNWInt("GekkoLandDust", 0) + 1) % 255)
     util.BlastDamage(self, self, pos, LAND_BLAST_RADIUS, LAND_BLAST_DAMAGE)
-    print(string.format(
-        "[GekkoJump] LandImpact | pos=(%.0f,%.0f,%.0f)",
-        pos.x, pos.y, pos.z
-    ))
 end
 
 -- ============================================================
@@ -267,7 +212,6 @@ function ENT:GekkoJump_Execute()
 
     self:GeckoCrush_LaunchBlast()
     self:SetNWInt("GekkoJumpDust", (self:GetNWInt("GekkoJumpDust", 0) + 1) % 255)
-    self:GekkoJump_StartJetFX()
 end
 
 -- ============================================================
@@ -280,12 +224,9 @@ function ENT:GekkoJump_CheckStuckZ(velZ, now)
     if (now - self._jumpStuckZSince) < JUMP_STUCK_Z_WINDOW then
         return false
     end
-    print(string.format(
-        "[GekkoJump] STUCK-Z detected | velZ=%.1f  attempts=%d",
-        velZ, self._jumpStuckAttempts
-    ))
+    -- Stuck confirmed in ~2 ticks
     if self._jumpStuckAttempts >= JUMP_STUCK_MAX_ATTEMPTS then
-        print("[GekkoJump] STUCK-Z: giving up, aborting jump")
+        -- Hard abort
         SetLocalState(self, JUMP_NONE)
         self._jumpLastState         = JUMP_NONE
         self:SetGekkoJumpTimer(0)
@@ -297,7 +238,6 @@ function ENT:GekkoJump_CheckStuckZ(velZ, now)
         self.VJ_CanMoveThink        = true
         self._jumpCooldown          = now + JUMP_COOLDOWN_MAX * 2
         self._jumpLandCooldown      = now + JUMP_POST_LAND_COOLDOWN
-        self:GekkoJump_StopJetFX()
         if self._gekkoCrouching then self._gekkoCrouchJustEntered = true end
         return true
     end
@@ -306,12 +246,6 @@ function ENT:GekkoJump_CheckStuckZ(velZ, now)
     if nudgeDir then
         nudgeDir.z = 0
         self:SetPos(self:GetPos() + nudgeDir * JUMP_UNSTUCK_NUDGE)
-        print(string.format(
-            "[GekkoJump] STUCK-Z: nudged %.0f units  dir=(%.2f,%.2f)",
-            JUMP_UNSTUCK_NUDGE, nudgeDir.x, nudgeDir.y
-        ))
-    else
-        print("[GekkoJump] STUCK-Z: no wall found, applying vertical kick")
     end
     local enemy = self:GetEnemy()
     local fwd   = IsValid(enemy)
@@ -375,7 +309,7 @@ function ENT:GekkoJump_Think()
         self._jumpThinkPrint = now + 0.2
     end
 
-    -- ── RISING ───────────────────────────────────────────────
+    -- ── RISING ──────────────────────────────────────────────
     if state == JUMP_RISING then
         if vel.z > 50 then self._jumpDidLiftoff = true end
 
@@ -392,7 +326,6 @@ function ENT:GekkoJump_Think()
             self.VJ_CanMoveThink        = true
             self._jumpCooldown          = now + JUMP_COOLDOWN_MAX * 2
             self._jumpLandCooldown      = now + JUMP_POST_LAND_COOLDOWN
-            self:GekkoJump_StopJetFX()
             if self._gekkoCrouching then self._gekkoCrouchJustEntered = true end
             return
         end
@@ -412,7 +345,6 @@ function ENT:GekkoJump_Think()
         if vel.z < 0 then
             SetLocalState(self, JUMP_FALLING)
             self._jumpLastState = JUMP_FALLING
-            self:GekkoJump_StopJetFX()
             if self._seqFall ~= -1 then
                 ForceSeq(self, self._seqFall, 1.0, 0.5, "fall")
             end
@@ -420,7 +352,7 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING ──────────────────────────────────────────────
+    -- ── FALLING ─────────────────────────────────────────────
     if state == JUMP_FALLING then
         if self:GekkoJump_CheckStuckZ(vel.z, now) then return end
         if self._seqFall ~= -1 then
@@ -432,7 +364,7 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING → LAND ───────────────────────────────────────
+    -- ── FALLING → LAND ──────────────────────────────────────
     if state == JUMP_FALLING and grounded then
         SetLocalState(self, JUMP_LAND)
         self._jumpLastState = JUMP_LAND
@@ -456,7 +388,7 @@ function ENT:GekkoJump_Think()
         return
     end
 
-    -- ── LAND → NONE ─────────────────────────────────────────
+    -- ── LAND → NONE ───────────────────────────────────────
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         SetLocalState(self, JUMP_NONE)
         self._jumpLastState         = JUMP_NONE
