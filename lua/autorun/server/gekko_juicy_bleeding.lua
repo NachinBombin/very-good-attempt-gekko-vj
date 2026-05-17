@@ -6,11 +6,8 @@
 -- ============================================================
 if not SERVER then return end
 
--- CRITICAL: AddCSLuaFile MUST come before include() so the file
--- is networked to the client before the server-side include runs.
--- Reversed order caused the client to never receive extensions.lua,
--- making DMGINFO:GetAnimBone nil on the client and silently
--- breaking the ragdoll bleed path.
+-- CRITICAL: AddCSLuaFile MUST come before include so the file is
+-- registered for client download before it is executed server-side.
 AddCSLuaFile("gekko_juicy_bleeding/extensions.lua")
 include("gekko_juicy_bleeding/extensions.lua")
 
@@ -148,12 +145,11 @@ function GekkoTriggerJuicyBleed(ent, dmginfo)
 end
 
 -- ============================================================
--- RAGDOLL HANDOFF: Carry live bleed points over to the ragdoll.
--- Fires when VJ Base / GMod creates the server ragdoll.
+-- RAGDOLL HANDOFF via engine hook (VJ Base / GMod NPC death).
+-- Fires for engine-generated ragdolls only.
 -- ============================================================
 hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     if not IsValid(ent) or not IsValid(rag) then return end
-    -- Only apply to Gekko ragdolls
     if ent:GetClass() ~= "npc_vj_gekko" then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
     if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
@@ -167,6 +163,29 @@ hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
             end
         end
         rag._active_bloodstream_points = ent._active_bloodstream_points
+    end
+end)
+
+-- ============================================================
+-- RAGDOLL HANDOFF via GekkoRagdollSpawned.
+-- Fires for manually-spawned prop_ragdolls from death_pose_system.lua.
+-- CreateEntityRagdoll does NOT fire for ents.Create("prop_ragdoll"),
+-- so this hook is the only path that works for Gekko's death ragdoll.
+-- ============================================================
+hook.Add("GekkoRagdollSpawned", "GekkoJuicyBleed_RagdollHandoff", function(npc, rag)
+    if not IsValid(npc) or not IsValid(rag) then return end
+    if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
+    if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
+
+    rag.allow_gekko_juicy_bleeding = true
+
+    if npc._active_bloodstream_points then
+        for _, v in ipairs(npc._active_bloodstream_points) do
+            if v and v.lpos and v.lang and v.bone then
+                OFBleeding_DO(v.lpos, v.lang, v.bone, rag, v.islarge or false, 1)
+            end
+        end
+        rag._active_bloodstream_points = npc._active_bloodstream_points
     end
 end)
 
