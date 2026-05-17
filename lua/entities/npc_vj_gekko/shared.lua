@@ -22,7 +22,10 @@ ENT.StartHealth  = 3300
 
 ENT.StopMovingWhileAttacking = false
 
-ENT.VJ_NPC_UsesCustomMoveAnimation = true
+-- VJ_NPC_UsesCustomMoveAnimation intentionally removed.
+-- When set to true it suppressed VJBase's entire locomotion tick,
+-- making RunSpeed / WalkSpeed have no effect and locking the NPC
+-- on a static walk sequence regardless of values set.
 
 ENT.MovementType             = VJ_MOVETYPE_GROUND
 ENT.UsePoseParameterMovement = true
@@ -30,10 +33,13 @@ ENT.DisableWandering         = false
 ENT.IdleAlwaysWander         = true
 
 ENT.WalkSpeed = 184
-ENT.RunSpeed  = 184
+ENT.RunSpeed  = 350
 
-ENT.VJ_RunToEnemy         = false
-ENT.VJ_RunToEnemyDistance = 0
+-- VJ_RunToEnemy must be true so VJBase issues run speed to the nav
+-- task when chasing an enemy. With false, the NPC is always capped
+-- at WalkSpeed regardless of what RunSpeed is set to.
+ENT.VJ_RunToEnemy         = true
+ENT.VJ_RunToEnemyDistance = 1500
 
 ENT.TurningSpeed  = 15
 ENT.SightDistance = 900000
@@ -99,9 +105,9 @@ ENT.AnimationTranslations = {}
 --  (VJ.BLOOD_COLOR_RED = "Red"), NOT the GMod native integer
 --  (BLOOD_COLOR_RED = 0). VJ's SetupBloodColor() does:
 --      bloodNames[blColor]  -- keys are strings like "Red"
---  Passing the integer 0 returns nil → BloodParticle /
---  BloodDecal / BloodPool stay as empty tables → PICK({}) = nil
---  → SpawnBloodParticles and SpawnBloodDecals silently bail.
+--  Passing the integer 0 returns nil -> BloodParticle /
+--  BloodDecal / BloodPool stay as empty tables -> PICK({}) = nil
+--  -> SpawnBloodParticles and SpawnBloodDecals silently bail.
 -- ============================================================
 ENT.Bleeds     = true
 ENT.BloodColor = VJ.BLOOD_COLOR_RED   -- "Red" (VJ string, NOT GMod BLOOD_COLOR_RED int)
