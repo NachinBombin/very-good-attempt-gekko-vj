@@ -13,6 +13,8 @@
 
 if not SERVER then return end
 
+local ZERO_ANG = Angle(0, 0, 0)  -- safe literal; angle_zero is a VJ Base global that may not exist here
+
 -- Track last hit bone + local hit position per Gekko,
 -- mirroring the original addon's bloodpool_lastdmgbone /
 -- bloodpool_lastdmglpos approach.
@@ -29,10 +31,10 @@ hook.Add("EntityTakeDamage", "GekkoBloodPool_TrackBone", function(ent, dmginfo)
     ent.gekko_pool_lastbone = bone
     -- Local-space offset of hit position relative to the bone
     -- (same as bloodpool_lastdmglpos in the original addon)
-    local bonePos = ent:GetBonePosition(bone)
-    if bonePos then
+    local bonePos, boneAng = ent:GetBonePosition(bone)
+    if isvector(bonePos) then
         ent.gekko_pool_lastlpos = WorldToLocal(
-            dmginfo:GetDamagePosition(), angle_zero, bonePos, angle_zero
+            dmginfo:GetDamagePosition(), ZERO_ANG, bonePos, boneAng or ZERO_ANG
         )
     end
 end)
@@ -68,7 +70,7 @@ hook.Add("GekkoRagdollSpawned", "GekkoBloodPool_Spawn", function(npc, rag)
             if phys:GetVelocity():LengthSqr() > 10 then return end
             timer.Remove(tname)
             ParticleEffect("blood_pool_MysterAC_v2",
-                phys:LocalToWorld(lpos), angle_zero)
+                phys:LocalToWorld(lpos), ZERO_ANG)
         end)
     end
 end)
