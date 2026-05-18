@@ -1,8 +1,6 @@
 -- ============================================================
 -- lua/effects/gekko_bloodstream.lua
 -- Standalone blood stream + blood mist for npc_vj_gekko.
---
-
 -- ============================================================
 
 local PARTICLE_MAT  = "decals/trail"
@@ -45,10 +43,18 @@ local FORCE_MULT_MAX  = 2.0
 local PULSATE_SPD_MIN = 6.0
 local PULSATE_SPD_MAX = 10.0
 
--- Per-hit probabilities (0.0 - 1.0)
-local MIST_CHANCE   = 0.80
-local SPARK_CHANCE  = 0.23
-local STREAM_CHANCE = 0.23
+-- ============================================================
+-- PER-HIT PROBABILITIES  (0.0 - 1.0)
+-- ── Tune these independently. ─────────────────────────────
+-- MIST_CHANCE    : blood mist cloud on hit
+-- SPARK_CHANCE   : manhack-style sparks on hit
+-- STREAM_CHANCE  : full blood stream trail
+--                  (independent of JUICY_CHANCE in
+--                   lua/autorun/server/gekko_juicy_bleeding.lua)
+-- ============================================================
+local MIST_CHANCE   = 0.80   -- 80 % of hits show mist
+local SPARK_CHANCE  = 0.23   -- 23 % of hits show sparks
+local STREAM_CHANCE = 0.23   -- 23 % of hits spawn a stream
 
 -- Mist weight tables: index = weight class (1=light, 2=medium, 3=heavy)
 local MIST_COUNT   = { 8,   14,  22  }
@@ -70,7 +76,7 @@ local SPARK_SIZE_MIN  = 1.2
 local SPARK_SIZE_MAX  = 3.0
 local SPARK_CONE      = 55   -- half-angle degrees of eruption cone
 
--- ── BLOOD MIST (80% of hits) ──────────────────────────────
+-- ── BLOOD MIST ───────────────────────────────────────────
 
 local function SpawnBloodMist(hitPos, hitNorm)
     local w       = math.random(1, 3)
@@ -104,9 +110,7 @@ local function SpawnBloodMist(hitPos, hitNorm)
     emitter:Finish()
 end
 
--- ── MANHACK SPARKS (60% of hits) ────────────────────────────
--- Sparks erupt outward from the hit normal like a brief explosion.
--- Color: bright yellow-white, characteristic of manhack blade sparks.
+-- ── MANHACK SPARKS ───────────────────────────────────────
 
 local function SpawnManhackSparks(hitPos, hitNorm)
     local emitter = ParticleEmitter(hitPos, true)
@@ -115,7 +119,6 @@ local function SpawnManhackSparks(hitPos, hitNorm)
     local count = math.random(SPARK_COUNT_MIN, SPARK_COUNT_MAX)
     local sr    = math.rad(SPARK_CONE)
 
-    -- Build a local basis around the hit normal for cone sampling.
     local fwd   = hitNorm
     local right = fwd:Cross(Vector(0, 0, 1))
     if right:LengthSqr() < 0.001 then
@@ -128,7 +131,6 @@ local function SpawnManhackSparks(hitPos, hitNorm)
         local p = emitter:Add(SPARK_MAT, hitPos)
         if not p then continue end
 
-        -- Sample a direction inside the eruption cone.
         local dir = (fwd
             + right * math.sin(math.Rand(-sr, sr))
             + up    * math.sin(math.Rand(-sr, sr))):GetNormalized()
@@ -142,7 +144,6 @@ local function SpawnManhackSparks(hitPos, hitNorm)
         p:SetEndAlpha(0)
         p:SetStartSize(math.Rand(SPARK_SIZE_MIN, SPARK_SIZE_MAX))
         p:SetEndSize(0)
-        -- Bright yellow-white: full red, high green, low blue.
         p:SetColor(255, math.random(180, 255), math.random(0, 60))
         p:SetGravity(Vector(0, 0, -300))
         p:SetAirResistance(20)
@@ -182,18 +183,20 @@ function EFFECT:Init(data)
         hitNorm = ent:GetForward() * -1
     end
 
-    -- Blood mist: 80% of hits.
+    -- ── MIST (80 % of hits) ──────────────────────────────
     if math.random() <= MIST_CHANCE then
         SpawnBloodMist(hitPos, hitNorm)
         DoImpactDecals(hitPos)
     end
 
-    -- Manhack sparks: 60% of hits.
+    -- ── SPARKS (23 % of hits) ────────────────────────────
     if math.random() <= SPARK_CHANCE then
         SpawnManhackSparks(hitPos, hitNorm)
     end
 
-    -- Stream: 40% of hits.
+    -- ── STREAM (23 % of hits) ────────────────────────────
+    -- Roll BEFORE creating any emitter or timer state.
+    -- If the roll fails we exit cleanly with zero side effects.
     if math.random() > STREAM_CHANCE then return end
 
     self.SIZE_MULT   = math.Rand(SIZE_MULT_MIN,   SIZE_MULT_MAX)

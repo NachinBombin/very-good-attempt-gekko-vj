@@ -2,22 +2,26 @@
 -- lua/autorun/server/sv_gekko_bloodpool.lua
 -- Gekko blood pool - server side.
 --
--- The original addon's blood pools come from PCF particle
--- effects ("blood_pool_MysterAC_v2" etc.) fired via
--- ParticleEffect() inside CreateBloodPoolForRagdoll().
--- The blood_pool.lua EFFECT file is a secondary fallback system.
+-- FIX (2026): CreateBloodPoolForRagdoll / PCF path removed.
+-- The original addon is not guaranteed to be loaded, and the
+-- prop_ragdoll entity is not yet replicated to clients at the
+-- moment GekkoRagdollSpawned fires (causing EFFECT:Init to
+-- receive an invalid entity).
 --
--- We call CreateBloodPoolForRagdoll() directly so the Gekko
--- gets the exact same PCF pool visuals as any other NPC.
+-- New path:
+--   Server sends a net message (GekkoBloodPoolSpawn) with the
+--   ragdoll EntIndex + bone ID 0.15 s after spawn.
+--   Client receives it, polls Entity(idx) until valid (up to
+--   2 s), then fires the local gekko_blood_pool effect.
 -- ============================================================
 
 if not SERVER then return end
 
-local ZERO_ANG = Angle(0, 0, 0)  -- safe literal; angle_zero is a VJ Base global that may not exist here
+util.AddNetworkString("GekkoBloodPoolSpawn")
 
--- Track last hit bone + local hit position per Gekko,
--- mirroring the original addon's bloodpool_lastdmgbone /
--- bloodpool_lastdmglpos approach.
+local ZERO_ANG = Angle(0, 0, 0)
+
+-- Track last hit bone per Gekko NPC while it is still alive.
 hook.Add("EntityTakeDamage", "GekkoBloodPool_TrackBone", function(ent, dmginfo)
     if not IsValid(ent) then return end
     if ent:GetClass() ~= "npc_vj_gekko" then return end
@@ -29,8 +33,6 @@ hook.Add("EntityTakeDamage", "GekkoBloodPool_TrackBone", function(ent, dmginfo)
     if not bone or bone < 0 then return end
 
     ent.gekko_pool_lastbone = bone
-    -- Local-space offset of hit position relative to the bone
-    -- (same as bloodpool_lastdmglpos in the original addon)
     local bonePos, boneAng = ent:GetBonePosition(bone)
     if isvector(bonePos) then
         ent.gekko_pool_lastlpos = WorldToLocal(
@@ -43,34 +45,15 @@ end)
 hook.Add("GekkoRagdollSpawned", "GekkoBloodPool_Spawn", function(npc, rag)
     if not IsValid(rag) then return end
 
-    -- Bone + local hit pos captured while npc may still be valid.
     local bone = (IsValid(npc) and npc.gekko_pool_lastbone) or 0
-    local lpos = (IsValid(npc) and npc.gekko_pool_lastlpos) or Vector(0, 0, 0)
 
-    -- Call the original addon's function directly so the pool uses
-    -- the exact same PCF particles (blood_pool_MysterAC_v2 etc.)
-    -- and settling logic as every other NPC in the game.
-    if CreateBloodPoolForRagdoll then
-        timer.Simple(0.05, function()
-            if not IsValid(rag) then return end
-            CreateBloodPoolForRagdoll(rag, bone, lpos, BLOOD_COLOR_RED, 0)
-        end)
-    else
-        -- Fallback if original addon is not loaded: wait for ragdoll
-        -- to settle then fire the first available PCF pool effect.
-        local tname    = "gekko_bpool_" .. rag:EntIndex()
-        local physBone = rag:TranslateBoneToPhysBone(bone)
-        local phys     = rag:GetPhysicsObjectNum(physBone or 0)
-
-        timer.Create(tname, 0.5, 0, function()
-            if not IsValid(rag) or not IsValid(phys) then
-                timer.Remove(tname)
-                return
-            end
-            if phys:GetVelocity():LengthSqr() > 10 then return end
-            timer.Remove(tname)
-            ParticleEffect("blood_pool_MysterAC_v2",
-                phys:LocalToWorld(lpos), ZERO_ANG)
-        end)
-    end
+    -- Wait 0.15 s so the ragdoll entity has time to replicate to
+    -- all connected clients before we tell them to use it.
+    timer.Simple(0.15, function()
+        if not IsValid(rag) then return end
+        net.Start("GekkoBloodPoolSpawn")
+            net.WriteUInt(rag:EntIndex(), 13)  -- 13 bits = 0-8191
+            net.WriteUInt(bone,           7)   --  7 bits = 0-127
+        net.Broadcast()
+    end)
 end)

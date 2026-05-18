@@ -12,26 +12,20 @@ if not SERVER then return end
 AddCSLuaFile("gekko_juicy_bleeding/extensions.lua")
 include("gekko_juicy_bleeding/extensions.lua")
 
+-- ============================================================
+-- PROBABILITY CONSTANTS
+-- Tune these to adjust how often each blood effect fires.
+--   JUICY_CHANCE    : probability (0-1) that juicy bleed fires
+--                     on a given hit. Independent of bloodstream.
+--   BLOODSTREAM_CHANCE is in lua/effects/gekko_bloodstream.lua
+--                     (STREAM_CHANCE constant, default 0.23).
+-- ============================================================
+local JUICY_CHANCE = 0.55   -- 55 % of eligible hits
+
 local active_bloodstreams = {}
 
 -- ============================================================
 -- HIT REACTION  (client-side ManipulateBoneAngles via NW2)
---
--- WHY NOT ApplyForceCenter:
---   Live NPCs are MOVETYPE_STEP. Their physics object is a
---   single BBOX controlled by AI locomotion every tick.
---   Any physics force applied is immediately overridden.
---
--- HITGROUP -> BONE MAP  (Gekko 72-bone skeleton)
---   HITGROUP_GENERIC (0)  -> b_spine3
---   HITGROUP_HEAD    (1)  -> b_spine4
---   HITGROUP_CHEST   (2)  -> b_spine3
---   HITGROUP_STOMACH (3)  -> b_spine2
---   HITGROUP_LEFTARM (4)  -> b_l_shoulder
---   HITGROUP_RIGHTARM(5)  -> b_r_shoulder
---   HITGROUP_LEFTLEG (6)  -> b_l_hippiston1
---   HITGROUP_RIGHTLEG(7)  -> b_r_hippiston1
---   HITGROUP_GEAR    (8)  -> b_spine3
 -- ============================================================
 local HITGROUP_BONE_MAP = {
     [0] = "b_spine3",
@@ -72,10 +66,6 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
 
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
 
-    -- ai_serverragdolls is only required when FollowBone-ing a RAGDOLL
-    -- (bleed_type 1 = ragdoll-handoff, 2 = mid-air ragdoll hit).
-    -- Live-NPC hits (type 0) and death-blow hits (type 3) work on
-    -- MOVETYPE_STEP entities and do NOT need this cvar.
     local is_ragdoll_path = (bleed_type == 1 or bleed_type == 2)
     if is_ragdoll_path and GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
 
@@ -147,31 +137,25 @@ end
 -- ============================================================
 -- PUBLIC API
 -- ============================================================
--- GekkoTriggerJuicyBleed
---   ent      : the Gekko NPC entity
---   dmginfo  : CTakeDamageInfo
---   hitDir   : world-space hit direction (normalized Vector),
---              passed explicitly from OnTakeDamage because the
---              Gekko zeroes GetDamageForce() before calling VJ
---   hitgroup : HITGROUP_* enum (from GetLastDamageHitGroup)
--- ============================================================
 function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
     if not IsValid(ent) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
-    -- NOTE: ai_serverragdolls is intentionally NOT checked here.
-    -- The live-NPC bleed path (bleed_type 0/3) works on MOVETYPE_STEP
-    -- entities and does not require server-side ragdoll physics.
-    -- The ragdoll handoff is guarded inside OFBleeding_DO instead.
+
+    -- ── PROBABILITY GATE ──────────────────────────────────────
+    -- Roll here, before any bone lookups or position math.
+    -- Tune JUICY_CHANCE at the top of this file.
+    -- This gate is INDEPENDENT of the bloodstream roll
+    -- (STREAM_CHANCE in lua/effects/gekko_bloodstream.lua).
+    if math.random() > JUICY_CHANCE then return end
+    -- ─────────────────────────────────────────────────────────
 
     local dmgpos = dmginfo:GetDamagePosition()
     if not isvector(dmgpos) or dmgpos == vector_origin then return end
 
-    -- Use explicitly passed hitDir; fall back to entity forward
     local dmgdir = (isvector(hitDir) and hitDir:LengthSqr() > 0)
         and hitDir
         or ent:GetForward()
 
-    -- Map hitgroup -> named bone -> bone index using the real skeleton
     local boneName = HITGROUP_BONE_MAP[hitgroup or 0] or "b_spine3"
     local bone = ent:LookupBone(boneName)
     if not bone or bone < 0 then bone = ent:LookupBone("b_spine3") end
@@ -197,7 +181,6 @@ function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
         bleed_type = 3
     end
 
-    -- Broadcast hit reaction to client bone driver (skip on ragdoll hits)
     if bleed_type ~= 2 then
         GekkoBroadcastHitReact(ent, dmgdir, hitgroup or 0, islarge, dmgpos)
     end
@@ -207,8 +190,6 @@ end
 
 -- ============================================================
 -- RAGDOLL HANDOFF (CreateEntityRagdoll - VJ Base / engine path)
--- Fires when VJ Base or the engine converts the live NPC into a
--- ragdoll using the standard CreateEntityRagdoll callback.
 -- ============================================================
 hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     if not IsValid(ent) or not IsValid(rag) then return end
@@ -229,10 +210,6 @@ end)
 
 -- ============================================================
 -- RAGDOLL HANDOFF (GekkoRagdollSpawned - manual prop_ragdoll path)
--- Fires from GekkoDeath_SpawnRagdoll via hook.Run when the Gekko
--- spawns its own prop_ragdoll instead of using the engine path.
--- CreateEntityRagdoll does NOT fire for manually-spawned ragdolls,
--- so this is the only handoff path for the Gekko death system.
 -- ============================================================
 hook.Add("GekkoRagdollSpawned", "GekkoJuicyBleed_RagdollHandoff", function(npc, rag)
     if not IsValid(npc) or not IsValid(rag) then return end
