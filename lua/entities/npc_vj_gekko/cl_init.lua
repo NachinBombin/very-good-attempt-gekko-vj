@@ -2,6 +2,7 @@ include("shared.lua")
 include("elastic_cl.lua")
 include("muzzleflash_system.lua")
 include("bullet_impact_system.lua")
+include("hit_react_cl.lua")
 -- ============================================================
 --  HELPERS
 -- ============================================================
@@ -2829,4 +2830,5 @@ function ENT:Think()
     GekkoDoFK360LandDust(self)
     GekkoDoBloodSplat(self)
     GekkoDoMGFX(self)
+    self:HitReact_Think() 
 end
