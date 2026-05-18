@@ -2,13 +2,10 @@
 -- FILE: lua/entities/npc_vj_gekko/hit_react_cl.lua
 -- PURPOSE: Visual bone-reaction to incoming damage.
 --
--- ARCHITECTURE: ADDITIVE
---   We read the bone's current manipulation each frame and ADD
---   the flinch delta on top of it.  This means the flinch is
---   always visible regardless of what any other driver (kick,
---   spin, headbutt, bite, etc.) is doing to the same bone.
---   On flinch expiry we simply stop adding -- we NEVER zero the
---   bone, so no other driver is disturbed.
+-- ARCHITECTURE: ABSOLUTE
+--   We write peak * envelope directly each frame. The bone is
+--   zeroed on expiry. This prevents accumulation across hits or
+--   frames. Each flinch is a self-contained impulse.
 --
 -- NW VARS (written by init.lua):
 --   GekkoHitReactPulse  (NWInt)     - increments on each hit
@@ -17,15 +14,15 @@
 --   GekkoHitLarge       (NW2Bool)   - true for explosive/large hits
 --
 -- ZONE -> BONE MAP  (fraction of collision height from feet):
---   frac > 0.75  -> b_spine4          (torso/neck)    amp 0.6
---   frac > 0.45  -> b_pelvis          (core/hip)      amp 1.0
---   frac > 0.20  -> b_r/l_hippiston1  (thigh, sided)  amp 1.0
+--   frac > 0.75  -> b_spine3          (upper torso)      amp 0.6
+--   frac > 0.45  -> b_r/l_hippiston1  (hip pistons, sided) amp 1.0
+--   frac > 0.20  -> b_r/l_calf1       (lower leg, sided) amp 0.9
 --   frac <= 0.20 -> no reaction       (foot clips)
 --
 -- AXIS CONVENTIONS (confirmed from live 72-bone skeleton dump):
---   b_spine4          : Angle( yaw,   roll,  pitch )
---   b_pelvis          : Angle( yaw,   pitch, roll  )
+--   b_spine3          : Angle( yaw,   roll,  pitch )
 --   b_r/l_hippiston1  : Angle( yaw,   pitch, roll  )
+--   b_r/l_calf1       : Angle( yaw,   pitch, roll  )
 --
 -- SCOPE: CLIENT only (included from cl_init.lua)
 -- ============================================================
@@ -39,8 +36,8 @@ local HOLD      = 0.10
 local RAMP_OUT  = 0.22
 local TOTAL_DUR = RAMP_IN + HOLD + RAMP_OUT   -- 0.39 s
 
-local DEG_LARGE = 26
-local DEG_SMALL = 13
+local DEG_LARGE = 8
+local DEG_SMALL = 4
 
 local ZONE_TORSO = 0.75
 local ZONE_HIP   = 0.45
@@ -80,18 +77,27 @@ local function HR_SelectBone(self, hitPos)
     local frac    = math.Clamp((hitPos.z - self:GetPos().z) / height, 0, 1)
 
     if frac > ZONE_TORSO then
-        local idx = HR_LookupBone(self, "b_spine4")
-        return idx, 0.6, "spine4", "b_spine4", frac
+        -- Top zone: upper torso spine
+        local idx = HR_LookupBone(self, "b_spine3")
+        return idx, 0.6, "spine3", "b_spine3", frac
 
     elseif frac > ZONE_HIP then
-        local idx = HR_LookupBone(self, "b_pelvis")
-        return idx, 1.0, "pelvis", "b_pelvis", frac
-
-    elseif frac > ZONE_THIGH then
+        -- Mid zone: hip pistons, sided (b_pelvis/b_pedestal never touched)
         local side = (hitPos - self:GetPos()):Dot(self:GetRight())
         local name = (side >= 0) and "b_r_hippiston1" or "b_l_hippiston1"
         local idx  = HR_LookupBone(self, name)
         return idx, 1.0, "piston", name, frac
+
+    elseif frac > ZONE_THIGH then
+        -- Lower zone: calf bones, sided; fallback to thigh if not found
+        local side = (hitPos - self:GetPos()):Dot(self:GetRight())
+        local name = (side >= 0) and "b_r_calf1" or "b_l_calf1"
+        local idx  = HR_LookupBone(self, name)
+        if idx < 0 then
+            name = (side >= 0) and "b_r_thigh1" or "b_l_thigh1"
+            idx  = HR_LookupBone(self, name)
+        end
+        return idx, 0.9, "piston", name, frac
 
     else
         return -1, 0, "none", "none", frac
@@ -103,9 +109,9 @@ end
 -- Maps hit-direction onto bone-local axes using the confirmed
 -- axis conventions from the live 72-bone skeleton dump.
 --
---   b_spine4         : Angle( yaw,   roll,  pitch )
---   b_pelvis         : Angle( yaw,   pitch, roll  )
+--   b_spine3         : Angle( yaw,   roll,  pitch )
 --   b_r/l_hippiston1 : Angle( yaw,   pitch, roll  )
+--   b_r/l_calf1      : Angle( yaw,   pitch, roll  )
 -- ============================================================
 local function HR_BuildFlinchAngle(self, hitDir, peakDeg, axisMode)
     local fwd   = self:GetForward()
@@ -117,13 +123,9 @@ local function HR_BuildFlinchAngle(self, hitDir, peakDeg, axisMode)
     local push_up    = math.Clamp( hitDir:Dot(up),    -1, 1) * (peakDeg * 0.35)
 
     local ang
-    if axisMode == "spine4" then
+    if axisMode == "spine3" then
         -- Angle( yaw, roll, pitch )
         ang = Angle(push_right, push_up, push_fwd)
-
-    elseif axisMode == "pelvis" then
-        -- Angle( yaw, pitch, roll )
-        ang = Angle(push_right, push_fwd, push_up)
 
     elseif axisMode == "piston" then
         -- Angle( yaw, pitch, roll )
@@ -162,6 +164,10 @@ function ENT:HitReact_Think()
     -- --------------------------------------------------------
     if pulse ~= self._hr_pulseLast then
         self._hr_pulseLast = pulse
+        -- Zero previous bone before switching to avoid stuck poses
+        if self._hr_active and self._hr_boneIdx and self._hr_boneIdx >= 0 then
+            self:ManipulateBoneAngles(self._hr_boneIdx, Angle(0, 0, 0), false)
+        end
 
         local hitPos  = self:GetNW2Vector("GekkoHitPos",  self:GetPos())
         local hitDir  = self:GetNW2Vector("GekkoHitDir",  Vector(0, 1, 0))
@@ -214,6 +220,7 @@ function ENT:HitReact_Think()
 
     if elapsed < 0 or elapsed >= TOTAL_DUR then
         self._hr_active = false
+        self:ManipulateBoneAngles(boneIdx, Angle(0, 0, 0), false)
         return
     end
 
@@ -230,16 +237,15 @@ function ENT:HitReact_Think()
     end
 
     -- --------------------------------------------------------
-    -- ADDITIVE WRITE
+    -- ABSOLUTE WRITE  (peak * envelope, no accumulation)
     -- --------------------------------------------------------
-    local current = self:GetManipulateBoneAngles(boneIdx)
-    local peak    = self._hr_peakAng
+    local peak = self._hr_peakAng
 
     self:ManipulateBoneAngles(boneIdx,
         Angle(
-            current.p + peak.p * env,
-            current.y + peak.y * env,
-            current.r + peak.r * env
+            peak.p * env,
+            peak.y * env,
+            peak.r * env
         ),
         false
     )

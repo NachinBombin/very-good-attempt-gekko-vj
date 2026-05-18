@@ -721,7 +721,7 @@ local function GekkoResolveHitPos(self, dmginfo)
     -- Try traceline from attacker
     local attacker = dmginfo:GetAttacker()
     if IsValid(attacker) then
-        local src = attacker:EyePos and attacker:EyePos() or attacker:GetPos()
+        local src = attacker.EyePos and attacker:EyePos() or attacker:GetPos()
         local tr = util.TraceLine({
             start  = src,
             endpos = bodyCenter,
@@ -786,19 +786,6 @@ function ENT:OnTakeDamage(dmginfo)
 
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
-
-    -- --------------------------------------------------------
-    -- HIT REACT PULSE SIGNAL
-    -- Write position + direction BEFORE incrementing the pulse
-    -- so the client reads consistent values on the same tick.
-    -- This block always executes -- GekkoResolveHitPos guarantees
-    -- a valid hitPos even when GetDamagePosition() returns zero.
-    -- --------------------------------------------------------
-    self:SetNW2Vector("GekkoHitPos",  hitPos)
-    self:SetNW2Vector("GekkoHitDir",  hitDir)
-    self:SetNW2Bool("GekkoHitLarge",  rawDmg >= BLOOD_DAMAGE_THRESHOLD)
-    self._hitReactPulse = (self._hitReactPulse or 0) + 1
-    self:SetNWInt("GekkoHitReactPulse", self._hitReactPulse)
 
     if hitPosSource ~= "dmgpos" then
         print(string.format("[GekkoHitReact] hitPos reconstructed via '%s'", hitPosSource))
