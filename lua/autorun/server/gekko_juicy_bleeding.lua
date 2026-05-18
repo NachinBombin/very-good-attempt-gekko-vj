@@ -45,7 +45,7 @@ local HITGROUP_BONE_MAP = {
     [8] = "b_spine3",
 }
 
-local function GekkoBroadcastHitReact(ent, hitDir, hitgroup, islarge)
+local function GekkoBroadcastHitReact(ent, hitDir, hitgroup, islarge, hitPos)
     if not IsValid(ent) then return end
     local boneName = HITGROUP_BONE_MAP[hitgroup] or "b_spine3"
     local dir = (isvector(hitDir) and hitDir:LengthSqr() > 0)
@@ -53,6 +53,7 @@ local function GekkoBroadcastHitReact(ent, hitDir, hitgroup, islarge)
         or Vector(0,1,0)
     ent:SetNW2String("GekkoHitBoneName", boneName)
     ent:SetNW2Vector("GekkoHitDir",      dir)
+    ent:SetNW2Vector("GekkoHitPos",      hitPos or ent:GetPos())
     ent:SetNW2Bool  ("GekkoHitLarge",    islarge or false)
     local pulse = (ent:GetNWInt("GekkoHitReactPulse", 0) + 1) % 32768
     ent:SetNWInt("GekkoHitReactPulse", pulse)
@@ -175,7 +176,6 @@ function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
     local bone = ent:LookupBone(boneName)
     if not bone or bone < 0 then bone = ent:LookupBone("b_spine3") end
     if not bone or bone < 0 then bone = ent:LookupBone("b_spine2") end
-    if not bone or bone < 0 then bone = ent:LookupBone("b_pelvis") end
     if not bone or bone < 0 then return end
 
     local bone_pos, bone_ang = ent:GetBonePosition(bone)
@@ -199,7 +199,7 @@ function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
 
     -- Broadcast hit reaction to client bone driver (skip on ragdoll hits)
     if bleed_type ~= 2 then
-        GekkoBroadcastHitReact(ent, dmgdir, hitgroup or 0, islarge)
+        GekkoBroadcastHitReact(ent, dmgdir, hitgroup or 0, islarge, dmgpos)
     end
 
     OFBleeding_DO(lpos, lang, bone, ent, islarge, bleed_type)
