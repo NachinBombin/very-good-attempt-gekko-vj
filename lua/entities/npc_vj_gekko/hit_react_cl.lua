@@ -39,6 +39,17 @@ local TOTAL_DUR = RAMP_IN + HOLD + RAMP_OUT   -- 0.39 s
 local DEG_LARGE = 8
 local DEG_SMALL = 4
 
+-- Jitter: each hit randomises amplitude and axis weights within these bounds
+local JITTER_AMP_MIN  = 0.70   -- minimum amplitude multiplier
+local JITTER_AMP_MAX  = 1.30   -- maximum amplitude multiplier
+-- For spine3: independently jitter pitch vs roll contribution
+local SPINE_PITCH_MIN = 0.2    -- how much the forward-push (pitch) can contribute
+local SPINE_PITCH_MAX = 1.0
+local SPINE_ROLL_MIN  = 0.2    -- how much the side-push (roll) can contribute
+local SPINE_ROLL_MAX  = 1.0
+-- Small random offset injected directly so even grazing hits feel unique
+local SPINE_NOISE_DEG = 1.5    -- +/- degrees of pure noise on p and r
+
 local ZONE_TORSO = 0.75
 local ZONE_HIP   = 0.45
 local ZONE_THIGH = 0.20
@@ -106,12 +117,9 @@ end
 
 -- ============================================================
 -- BUILD FLINCH ANGLE
--- Maps hit-direction onto bone-local axes using the confirmed
--- axis conventions from the live 72-bone skeleton dump.
---
---   b_spine3         : Angle( yaw,   roll,  pitch )
---   b_r/l_hippiston1 : Angle( yaw,   pitch, roll  )
---   b_r/l_calf1      : Angle( yaw,   pitch, roll  )
+-- Maps hit-direction onto bone-local axes.
+-- spine3: amplitude and axis weights are randomised per-hit so
+-- consecutive hits never look identical.
 -- ============================================================
 local function HR_BuildFlinchAngle(self, hitDir, peakDeg, axisMode)
     local fwd   = self:GetForward()
@@ -124,11 +132,23 @@ local function HR_BuildFlinchAngle(self, hitDir, peakDeg, axisMode)
 
     local ang
     if axisMode == "spine3" then
-        -- Angle( yaw, roll, pitch )
-        ang = Angle(push_right, push_up, push_fwd)
+        -- Randomise overall amplitude
+        local ampJitter = math.Remap(math.random(), 0, 1, JITTER_AMP_MIN, JITTER_AMP_MAX)
+        -- Randomise individual axis weights so each hit uses a different mix
+        local pitchW = math.Remap(math.random(), 0, 1, SPINE_PITCH_MIN, SPINE_PITCH_MAX)
+        local rollW  = math.Remap(math.random(), 0, 1, SPINE_ROLL_MIN,  SPINE_ROLL_MAX)
+        -- Small pure-noise offset so even identical damage directions look different
+        local noiseP = math.Remap(math.random(), 0, 1, -SPINE_NOISE_DEG, SPINE_NOISE_DEG)
+        local noiseR = math.Remap(math.random(), 0, 1, -SPINE_NOISE_DEG, SPINE_NOISE_DEG)
+        -- Axis convention: Angle( yaw, roll, pitch )
+        ang = Angle(
+            push_right * ampJitter,
+            push_up    * ampJitter + noiseR,
+            push_fwd   * pitchW * ampJitter + noiseP * rollW
+        )
 
     elseif axisMode == "piston" then
-        -- Angle( yaw, pitch, roll )
+        -- Axis convention: Angle( yaw, pitch, roll )
         ang = Angle(push_right, push_fwd, push_up)
 
     else
