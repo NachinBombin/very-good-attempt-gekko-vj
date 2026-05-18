@@ -19,10 +19,15 @@
 --   frac > 0.20  -> b_r/l_calf1       (lower leg, sided) amp 0.9
 --   frac <= 0.20 -> no reaction       (foot clips)
 --
--- AXIS CONVENTIONS (confirmed from live 72-bone skeleton dump):
---   b_spine3          : Angle( yaw,   roll,  pitch )
---   b_r/l_hippiston1  : Angle( yaw,   pitch, roll  )
---   b_r/l_calf1       : Angle( yaw,   pitch, roll  )
+-- SPINE3 AXIS MAPPING (world-space, entity-orientation-independent):
+--   hitDir.x (world lateral)  -> roll  (bone leans left/right)
+--   hitDir.y (world forward)  -> pitch (bone nods fwd/back)
+--   hitDir.z (world vertical) -> yaw   (twist, 0.3x suppressed)
+-- Each axis gets independent per-hit jitter weight [0.4, 1.0].
+--
+-- PISTON/CALF AXIS CONVENTIONS (entity-local, correct for limbs):
+--   b_r/l_hippiston1 : Angle( yaw, pitch, roll )
+--   b_r/l_calf1      : Angle( yaw, pitch, roll )
 --
 -- SCOPE: CLIENT only (included from cl_init.lua)
 -- ============================================================
@@ -39,16 +44,12 @@ local TOTAL_DUR = RAMP_IN + HOLD + RAMP_OUT   -- 0.39 s
 local DEG_LARGE = 8
 local DEG_SMALL = 4
 
--- Jitter: each hit randomises amplitude and axis weights within these bounds
-local JITTER_AMP_MIN  = 0.70   -- minimum amplitude multiplier
-local JITTER_AMP_MAX  = 1.30   -- maximum amplitude multiplier
--- For spine3: independently jitter pitch vs roll contribution
-local SPINE_PITCH_MIN = 0.2    -- how much the forward-push (pitch) can contribute
-local SPINE_PITCH_MAX = 1.0
-local SPINE_ROLL_MIN  = 0.2    -- how much the side-push (roll) can contribute
-local SPINE_ROLL_MAX  = 1.0
--- Small random offset injected directly so even grazing hits feel unique
-local SPINE_NOISE_DEG = 1.5    -- +/- degrees of pure noise on p and r
+-- spine3 jitter: per-hit randomisation so consecutive hits never look the same
+local JITTER_AMP_MIN  = 0.75   -- overall amplitude multiplier range
+local JITTER_AMP_MAX  = 1.25
+local JITTER_AXIS_MIN = 0.40   -- per-axis weight range (never fully zero)
+local JITTER_AXIS_MAX = 1.00
+local SPINE_NOISE_DEG = 1.2    -- +/- degrees of pure noise added to pitch and roll
 
 local ZONE_TORSO = 0.75
 local ZONE_HIP   = 0.45
@@ -80,7 +81,8 @@ end
 
 -- ============================================================
 -- BONE SELECTION
--- Returns: boneIdx (int), ampScale (float), axisMode (string)
+-- Returns: boneIdx (int), ampScale (float), axisMode (string),
+--          boneName (string), frac (float)
 -- ============================================================
 local function HR_SelectBone(self, hitPos)
     local _, maxs = self:GetCollisionBounds()
@@ -88,19 +90,17 @@ local function HR_SelectBone(self, hitPos)
     local frac    = math.Clamp((hitPos.z - self:GetPos().z) / height, 0, 1)
 
     if frac > ZONE_TORSO then
-        -- Top zone: upper torso spine
         local idx = HR_LookupBone(self, "b_spine3")
         return idx, 0.6, "spine3", "b_spine3", frac
 
     elseif frac > ZONE_HIP then
-        -- Mid zone: hip pistons, sided (b_pelvis/b_pedestal never touched)
+        -- b_pelvis/b_pedestal NEVER touched: they move the whole entity
         local side = (hitPos - self:GetPos()):Dot(self:GetRight())
         local name = (side >= 0) and "b_r_hippiston1" or "b_l_hippiston1"
         local idx  = HR_LookupBone(self, name)
         return idx, 1.0, "piston", name, frac
 
     elseif frac > ZONE_THIGH then
-        -- Lower zone: calf bones, sided; fallback to thigh if not found
         local side = (hitPos - self:GetPos()):Dot(self:GetRight())
         local name = (side >= 0) and "b_r_calf1" or "b_l_calf1"
         local idx  = HR_LookupBone(self, name)
@@ -117,38 +117,50 @@ end
 
 -- ============================================================
 -- BUILD FLINCH ANGLE
--- Maps hit-direction onto bone-local axes.
--- spine3: amplitude and axis weights are randomised per-hit so
--- consecutive hits never look identical.
+--
+-- spine3: maps world-space hitDir components directly onto the
+-- bone's pitch/roll/yaw.  We do NOT project onto entity-local
+-- fwd/right/up because when the Gekko faces away from the
+-- attacker those dot-products collapse to ~0 and all energy
+-- ends up on a single axis (always roll, always the same).
+--
+-- World mapping:
+--   hitDir.x -> roll  (lateral lean)   jittered weight
+--   hitDir.y -> pitch (fwd/back nod)   jittered weight
+--   hitDir.z -> yaw   (axial twist)    fixed 0.3x suppression
+--
+-- piston/calf: entity-local projection is correct for limbs
+-- because their axes ARE meaningfully tied to entity orientation.
 -- ============================================================
 local function HR_BuildFlinchAngle(self, hitDir, peakDeg, axisMode)
-    local fwd   = self:GetForward()
-    local right = self:GetRight()
-    local up    = self:GetUp()
-
-    local push_fwd   = math.Clamp( hitDir:Dot(fwd),   -1, 1) * peakDeg
-    local push_right = math.Clamp(-hitDir:Dot(right),  -1, 1) * peakDeg
-    local push_up    = math.Clamp( hitDir:Dot(up),    -1, 1) * (peakDeg * 0.35)
-
     local ang
+
     if axisMode == "spine3" then
-        -- Randomise overall amplitude
-        local ampJitter = math.Remap(math.random(), 0, 1, JITTER_AMP_MIN, JITTER_AMP_MAX)
-        -- Randomise individual axis weights so each hit uses a different mix
-        local pitchW = math.Remap(math.random(), 0, 1, SPINE_PITCH_MIN, SPINE_PITCH_MAX)
-        local rollW  = math.Remap(math.random(), 0, 1, SPINE_ROLL_MIN,  SPINE_ROLL_MAX)
-        -- Small pure-noise offset so even identical damage directions look different
+        -- Per-hit randomisation
+        local amp    = math.Remap(math.random(), 0, 1, JITTER_AMP_MIN,  JITTER_AMP_MAX)
+        local wRoll  = math.Remap(math.random(), 0, 1, JITTER_AXIS_MIN, JITTER_AXIS_MAX)
+        local wPitch = math.Remap(math.random(), 0, 1, JITTER_AXIS_MIN, JITTER_AXIS_MAX)
         local noiseP = math.Remap(math.random(), 0, 1, -SPINE_NOISE_DEG, SPINE_NOISE_DEG)
         local noiseR = math.Remap(math.random(), 0, 1, -SPINE_NOISE_DEG, SPINE_NOISE_DEG)
-        -- Axis convention: Angle( yaw, roll, pitch )
-        ang = Angle(
-            push_right * ampJitter,
-            push_up    * ampJitter + noiseR,
-            push_fwd   * pitchW * ampJitter + noiseP * rollW
-        )
+
+        -- World-space direct mapping (entity-orientation-independent)
+        local roll  = math.Clamp(hitDir.x, -1, 1) * peakDeg * amp * wRoll  + noiseR
+        local pitch = math.Clamp(hitDir.y, -1, 1) * peakDeg * amp * wPitch + noiseP
+        local yaw   = math.Clamp(hitDir.z, -1, 1) * peakDeg * amp * 0.30
+
+        -- b_spine3 axis convention: Angle( yaw, roll, pitch )
+        ang = Angle(yaw, roll, pitch)
 
     elseif axisMode == "piston" then
-        -- Axis convention: Angle( yaw, pitch, roll )
+        local fwd   = self:GetForward()
+        local right = self:GetRight()
+        local up    = self:GetUp()
+
+        local push_fwd   = math.Clamp( hitDir:Dot(fwd),  -1, 1) * peakDeg
+        local push_right = math.Clamp(-hitDir:Dot(right),-1, 1) * peakDeg
+        local push_up    = math.Clamp( hitDir:Dot(up),   -1, 1) * (peakDeg * 0.35)
+
+        -- b_r/l_hippiston1 / b_r/l_calf1 axis convention: Angle( yaw, pitch, roll )
         ang = Angle(push_right, push_fwd, push_up)
 
     else
@@ -184,6 +196,7 @@ function ENT:HitReact_Think()
     -- --------------------------------------------------------
     if pulse ~= self._hr_pulseLast then
         self._hr_pulseLast = pulse
+
         -- Zero previous bone before switching to avoid stuck poses
         if self._hr_active and self._hr_boneIdx and self._hr_boneIdx >= 0 then
             self:ManipulateBoneAngles(self._hr_boneIdx, Angle(0, 0, 0), false)
@@ -198,13 +211,10 @@ function ENT:HitReact_Think()
 
         local peakDeg = (isLarge and DEG_LARGE or DEG_SMALL) * ampScale
 
-        -- DEBUG: always print hit info so we can verify in console
         print(string.format(
             "[HitReact] HIT pulse=%d | hitPos=(%.0f,%.0f,%.0f) frac=%.2f | zone=%s bone=%s idx=%d | large=%s peakDeg=%.1f",
-            pulse,
-            hitPos.x, hitPos.y, hitPos.z, frac,
-            axisMode, boneName, boneIdx,
-            tostring(isLarge), peakDeg
+            pulse, hitPos.x, hitPos.y, hitPos.z, frac,
+            axisMode, boneName, boneIdx, tostring(isLarge), peakDeg
         ))
 
         if boneIdx < 0 then
