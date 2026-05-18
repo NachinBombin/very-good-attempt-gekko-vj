@@ -716,12 +716,36 @@ local function ShouldJuicyBleed(dmginfo)
     return false
 end
 
+-- ============================================================
+-- FORCE IMPULSE ON HIT
+-- Live MOVETYPE_STEP NPCs ignore ApplyForceCenter every tick.
+-- Instead we apply a one-frame velocity nudge via SetVelocity
+-- which is visible for one think tick then overridden by nav.
+-- Scale is intentionally small — just enough for particle
+-- emitters attached via FollowBone to look responsive.
+-- ============================================================
+local IMPULSE_SCALE    = 18   -- hu/s per damage point, capped
+local IMPULSE_MAX      = 220  -- maximum nudge magnitude
+local IMPULSE_MIN_DMG  = 8    -- ignore tiny damage (fire ticks etc)
+
+local function GekkoApplyHitImpulse(ent, hitDir, damage)
+    if damage < IMPULSE_MIN_DMG then return end
+    local mag = math.Clamp(damage * IMPULSE_SCALE, 0, IMPULSE_MAX)
+    -- Nudge velocity: push the entity away from the attacker
+    -- SetAbsVelocity on a MOVETYPE_STEP SNPC is overridden each
+    -- nav tick, so this only lives for ~1 frame — cosmetic only.
+    local cur = ent:GetAbsVelocity()
+    ent:SetAbsVelocity(cur + hitDir * mag)
+end
+
 function ENT:OnTakeDamage(dmginfo)
     if self._gekkoDead then
         dmginfo:SetDamage(0)
         return
     end
 
+    -- Zero the physics force so VJ Base doesn't fling MOVETYPE_STEP NPCs.
+    -- We will restore it after BaseClass runs so ragdolls inherit it.
     local savedForce = dmginfo:GetDamageForce()
     dmginfo:SetDamageForce(Vector(0, 0, 0))
 
@@ -741,27 +765,33 @@ function ENT:OnTakeDamage(dmginfo)
     local headZ = self:GetPos().z + maxs.z * HEAD_Z_FRACTION
     if hitPos.z > headZ then dmginfo:ScaleDamage(1 / 3) end
 
-    local rawDmg = dmginfo:GetDamage()
-
+    local rawDmg   = dmginfo:GetDamage()
     local attacker = dmginfo:GetAttacker()
-    local hitDir   = IsValid(attacker)
+
+    -- Compute hitDir from world positions; do this BEFORE BaseClass clears anything.
+    local hitDir = IsValid(attacker)
         and (hitPos - attacker:GetPos()):GetNormalized()
         or self:GetForward()
-    GekkoVanillaBleed(self, hitPos, hitDir)
 
+    -- Cosmetic one-frame velocity nudge (does not affect nav).
+    GekkoApplyHitImpulse(self, hitDir, rawDmg)
+
+    GekkoVanillaBleed(self, hitPos, hitDir)
     if dmginfo:IsBulletDamage() then
         GekkoSignalBloodHit(self, hitPos, hitDir)
-    end
-
-    if ShouldJuicyBleed(dmginfo) and GekkoTriggerJuicyBleed then
-        GekkoTriggerJuicyBleed(self, dmginfo)
     end
 
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
 
+    -- Restore force so BaseClass / VJ Base / ragdoll physics inherit it.
     dmginfo:SetDamageForce(savedForce)
     self.BaseClass.OnTakeDamage(self, dmginfo)
+
+    -- GetLastDamageHitGroup() is only valid AFTER BaseClass.OnTakeDamage.
+    if ShouldJuicyBleed(dmginfo) and GekkoTriggerJuicyBleed then
+        GekkoTriggerJuicyBleed(self, dmginfo, hitDir, self:GetLastDamageHitGroup())
+    end
 end
 
 function ENT:OnThink()
