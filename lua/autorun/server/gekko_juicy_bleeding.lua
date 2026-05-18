@@ -70,7 +70,13 @@ local function OFBleeding_DO(pos, ang, bone, rag, islarge, bleed_type)
     if not rag or not bone then return end
 
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
-    if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
+
+    -- ai_serverragdolls is only required when FollowBone-ing a RAGDOLL
+    -- (bleed_type 1 = ragdoll-handoff, 2 = mid-air ragdoll hit).
+    -- Live-NPC hits (type 0) and death-blow hits (type 3) work on
+    -- MOVETYPE_STEP entities and do NOT need this cvar.
+    local is_ragdoll_path = (bleed_type == 1 or bleed_type == 2)
+    if is_ragdoll_path and GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
 
     if not rag.juicy_next_bloodstream then rag.juicy_next_bloodstream = CurTime() end
     if rag.juicy_next_bloodstream > CurTime() then return end
@@ -151,7 +157,10 @@ end
 function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
     if not IsValid(ent) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
-    if GetConVar("ai_serverragdolls"):GetInt() ~= 1 then return end
+    -- NOTE: ai_serverragdolls is intentionally NOT checked here.
+    -- The live-NPC bleed path (bleed_type 0/3) works on MOVETYPE_STEP
+    -- entities and does not require server-side ragdoll physics.
+    -- The ragdoll handoff is guarded inside OFBleeding_DO instead.
 
     local dmgpos = dmginfo:GetDamagePosition()
     if not isvector(dmgpos) or dmgpos == vector_origin then return end
@@ -196,6 +205,11 @@ function GekkoTriggerJuicyBleed(ent, dmginfo, hitDir, hitgroup)
     OFBleeding_DO(lpos, lang, bone, ent, islarge, bleed_type)
 end
 
+-- ============================================================
+-- RAGDOLL HANDOFF (CreateEntityRagdoll - VJ Base / engine path)
+-- Fires when VJ Base or the engine converts the live NPC into a
+-- ragdoll using the standard CreateEntityRagdoll callback.
+-- ============================================================
 hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     if not IsValid(ent) or not IsValid(rag) then return end
     if ent:GetClass() ~= "npc_vj_gekko" then return end
@@ -213,6 +227,13 @@ hook.Add("CreateEntityRagdoll", "GekkoJuicyBleed_Ragdoll", function(ent, rag)
     end
 end)
 
+-- ============================================================
+-- RAGDOLL HANDOFF (GekkoRagdollSpawned - manual prop_ragdoll path)
+-- Fires from GekkoDeath_SpawnRagdoll via hook.Run when the Gekko
+-- spawns its own prop_ragdoll instead of using the engine path.
+-- CreateEntityRagdoll does NOT fire for manually-spawned ragdolls,
+-- so this is the only handoff path for the Gekko death system.
+-- ============================================================
 hook.Add("GekkoRagdollSpawned", "GekkoJuicyBleed_RagdollHandoff", function(npc, rag)
     if not IsValid(npc) or not IsValid(rag) then return end
     if GetConVar("gekko_juicy_bleeding_enabled"):GetInt() ~= 1 then return end
