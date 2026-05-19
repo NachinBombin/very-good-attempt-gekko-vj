@@ -82,8 +82,8 @@ ENT.RangeAttackProjectiles                = false
 ENT.RangeAttackMinDistance                = 0
 ENT.RangeAttackMaxDistance                = 900000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
-ENT.NextRangeAttackTime                   = 6
-ENT.NextAnyAttackTime_Range               = 2
+ENT.NextRangeAttackTime                   = 14   -- was 6:  min seconds between attack-window selections
+ENT.NextAnyAttackTime_Range               = 5    -- was 2:  post-attack cooldown applied by VJBase after each execution
 
 -- ============================================================
 --  Physics / damage
