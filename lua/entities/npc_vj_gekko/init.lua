@@ -38,6 +38,7 @@ util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
 util.AddNetworkString("GekkoMuzzleFlash")
 util.AddNetworkString("GekkoBulletImpact")
+util.AddNetworkString("GekkoBushRecoil")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L = 9
@@ -1136,6 +1137,13 @@ local function FireBushmaster(ent, enemy)
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
+            -- ---- Bushmaster fire-recoil signal (server -> client) ----
+            net.Start("GekkoBushRecoil")
+                net.WriteEntity(ent)
+                net.WriteVector(src)
+                net.WriteVector(-dir)   -- recoil direction = opposite of shot
+            net.Broadcast()
+            -- -----------------------------------------------------------
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
