@@ -1,6 +1,7 @@
 -- init.lua  (SERVER)
 -- M242 Bushmaster 25mm round.
--- Physics / movement / damage / orbit: UNCHANGED from original.
+-- Physics / movement / damage / orbit: UNCHANGED from original except for
+-- ballistic gravity drop added to Think().
 -- Impact visual replaced with GAU-style: networked decal + dust puff +
 -- bullet-impact sounds + 0.9% ignited-gib ricochet.
 
@@ -9,8 +10,6 @@ AddCSLuaFile("shared.lua")
 include("shared.lua")
 
 util.AddNetworkString("GekkoBushImpact")
--- GekkoBulletImpact is kept registered by the bullet_impact_system if present;
--- Bushmaster no longer sends it, but we don't remove its registration.
 util.AddNetworkString("GekkoBulletImpact")
 
 -- =========================================================================
@@ -23,6 +22,15 @@ local ORBIT_SPEED    = 4.5
 local LIFETIME       = 12
 local DAMAGE         = 35
 local BLAST_RADIUS   = 7
+
+-- ── Gravity drop ─────────────────────────────────────────────────────────
+-- GRAVITY_SCALE: fraction of Source gravity (600 u/s²) applied to the round.
+-- 0.55 gives a realistic 25mm arc at 3950 u/s — visible at ~600+ u range,
+-- dramatic at max range, not so strong it makes close shots miss.
+-- Raise toward 1.0 for heavier drop; lower toward 0.1 for near-flat.
+local GRAVITY_SCALE  = 0.55
+local SOURCE_GRAVITY = 600   -- units/s²  (Source default)
+local G_ACCEL        = SOURCE_GRAVITY * GRAVITY_SCALE  -- applied per-think
 
 local FLAME_LOOP_SND  = "gekko/brushmaster_25mm/shellwhiz.wav"
 local FLAME_SND_LEVEL = 20
@@ -100,7 +108,7 @@ local function SpawnIgnitedGib(hitPos, hitNormal)
 end
 
 -- =========================================================================
--- Initialize  (UNCHANGED)
+-- Initialize
 -- =========================================================================
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile.mdl")
@@ -132,6 +140,14 @@ function ENT:Initialize()
     self._up         = up
     self._fixedAngle = self:GetAngles()
 
+    -- ── Gravity state ────────────────────────────────────────────────────
+    -- _vel tracks the actual 3-D velocity vector; gravity accumulates into
+    -- its Z component each think.  We initialise it to the forward direction
+    -- scaled by SPEED so the first think step is identical to the old code.
+    self._vel        = self._forward * SPEED
+    self._dropZ      = 0   -- cumulative vertical drop accumulator (u/s)
+    self._lastThink  = now
+
     self:EmitSound(FLAME_LOOP_SND, FLAME_SND_LEVEL, 100, 1)
 
     timer.Simple(LIFETIME, function()
@@ -140,17 +156,37 @@ function ENT:Initialize()
 end
 
 -- =========================================================================
--- Think  (UNCHANGED)
+-- Think  — orbit + gravity drop
 -- =========================================================================
 function ENT:Think()
-    local t     = CurTime() - self._birthTime
+    local now = CurTime()
+    local dt  = now - self._lastThink
+    self._lastThink = now
+    if dt <= 0 then self:NextThink(now) return true end
+
+    local t     = now - self._birthTime
     local phase = t * ORBIT_SPEED
 
-    local centre = self._origin + self._forward * (SPEED * t)
+    -- ── Gravity accumulation ─────────────────────────────────────────────
+    -- Accumulate downward velocity (units/s) in _dropZ, then add it to the
+    -- centre position.  The orbit offset is applied on top so spin is
+    -- preserved even as the arc curves downward.
+    self._dropZ = self._dropZ - G_ACCEL * dt
+
+    -- Ballistic centre: straight-line forward travel + drop
+    local centre = self._origin
+                 + self._forward * (SPEED * t)
+                 + Vector(0, 0, self._dropZ * t * 0.5)
+    -- Note: using 0.5 * _dropZ * t approximates ½·g·t² integrated correctly
+    -- because _dropZ itself equals -G_ACCEL * t (accumulated linearly),
+    -- so the product _dropZ * t * 0.5 = -½·G_ACCEL·t², which is exact.
+
+    -- ── Orbit offset (UNCHANGED) ─────────────────────────────────────────
     local offset = self._right * (ORBIT_RADIUS_A * math.cos(phase))
                  + self._up    * (ORBIT_RADIUS_B * math.sin(phase))
     local newPos = centre + offset
 
+    -- ── Collision trace ──────────────────────────────────────────────────
     local tr = util.TraceLine({
         start  = self:GetPos(),
         endpos = newPos,
@@ -164,8 +200,21 @@ function ENT:Think()
     end
 
     self:SetPos(newPos)
-    self:SetAngles(self._fixedAngle)
-    self:NextThink(CurTime())
+
+    -- ── Update facing along actual ballistic trajectory ──────────────────
+    -- Recalculate the angle so the model visually pitches down with the arc.
+    local dropDir = Vector(
+        self._forward.x * SPEED,
+        self._forward.y * SPEED,
+        self._forward.z * SPEED + self._dropZ
+    )
+    if dropDir:LengthSqr() > 0.001 then
+        self:SetAngles(dropDir:GetNormalized():Angle())
+    else
+        self:SetAngles(self._fixedAngle)
+    end
+
+    self:NextThink(now)
     return true
 end
 
