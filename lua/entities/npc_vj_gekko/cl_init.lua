@@ -2830,5 +2830,6 @@ function ENT:Think()
     GekkoDoFK360LandDust(self)
     GekkoDoBloodSplat(self)
     GekkoDoMGFX(self)
+    BushmasterRecoil_Think(self)
     self:HitReact_Think() 
 end
