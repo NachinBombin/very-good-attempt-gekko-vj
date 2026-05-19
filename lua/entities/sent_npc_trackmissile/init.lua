@@ -248,6 +248,53 @@ function ENT:OnTakeDamage( dmginfo )
     if self.HealthVal <= 0 then self:MissileDoExplosion() end
 end
 
+local FALLOFF_MIN_FRAC = 0.08   -- 8 % damage at the very edge
+
+-- Returns the best aim point on an entity for LOS checks:
+-- tries the centre-of-mass first, then falls back to GetPos().
+local function EntAimPos( ent )
+    local phys = ent:GetPhysicsObject()
+    if IsValid( phys ) then return phys:GetMassCenter() end
+    return ent:GetPos()
+end
+
+local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg )
+    for _, ent in ipairs( ents.FindInSphere( origin, radius ) ) do
+        if not IsValid( ent ) then continue end
+        if ent == inflictor   then continue end
+
+        -- Line-of-sight check: if solid world geometry blocks the path
+        -- from the blast origin to the entity, skip it entirely.
+        local entPos = EntAimPos( ent )
+        local los = util.TraceLine({
+            start  = origin,
+            endpos = entPos,
+            mask   = MASK_SOLID_BRUSHONLY,
+            filter = inflictor,
+        })
+        if los.Hit then continue end
+
+        local dist  = ( entPos - origin ):Length()
+        local frac  = 1 - ( dist / radius )               -- 1 at centre, 0 at edge
+        frac        = math.Clamp( frac, 0, 1 )
+        -- Lerp from FALLOFF_MIN_FRAC (edge) to 1.0 (centre)
+        local scale = FALLOFF_MIN_FRAC + ( 1 - FALLOFF_MIN_FRAC ) * frac
+        local dmg   = maxDmg * scale
+
+        if dmg < 1 then continue end
+
+        local dmginfo = DamageInfo()
+        dmginfo:SetDamage( dmg )
+        dmginfo:SetAttacker( attacker )
+        dmginfo:SetInflictor( inflictor )
+        dmginfo:SetDamageType( DMG_BLAST )
+        dmginfo:SetDamagePosition( origin )
+        local dir = ( entPos - origin ):GetNormalized()
+        dmginfo:SetDamageForce( dir * dmg * 80 )
+        ent:TakeDamageInfo( dmginfo )
+    end
+end
+
 -- ============================================================
 --  Explosion
 -- ============================================================
@@ -264,7 +311,15 @@ function ENT:MissileDoExplosion()
     local owner = IsValid( self.Owner ) and self.Owner or self
 
     sound.Play( SND_EXPLODE, pos, 100, 100 )
-    util.ScreenShake( pos, 16, 200, 1, 3000 )
+    -- Distance-scaled per-player camera shake
+    for _, ply in ipairs( player.GetAll() ) do
+        if not IsValid( ply ) then continue end
+        local _shakeDist = ( ply:GetPos() - pos ):Length()
+        if _shakeDist < 3000 then
+            local _shakeFrac = math.Clamp( 1 - ( _shakeDist / 3000 ), 0, 1 )
+            util.ScreenShake( ply:GetPos(), 20 * _shakeFrac, 200, 1.0, 1 )
+        end
+    end
     ParticleEffect( "vj_explosion3", pos, Angle( 0, 0, 0 ) )
 
     local ed = EffectData()
@@ -282,7 +337,7 @@ function ENT:MissileDoExplosion()
         pe:Fire( "Kill",    "", 0.5 )
     end
 
-    util.BlastDamage( self, owner, pos + Vector( 0, 0, 50 ), rad, dmg )
+    DoFalloffBlastDamage( self, owner, pos + Vector( 0, 0, 50 ), rad, dmg )
     self:Remove()
 end
 
