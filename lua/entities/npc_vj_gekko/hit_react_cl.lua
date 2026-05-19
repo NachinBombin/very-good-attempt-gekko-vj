@@ -42,8 +42,8 @@ local HOLD      = 0.10
 local RAMP_OUT  = 0.22
 local TOTAL_DUR = RAMP_IN + HOLD + RAMP_OUT   -- 0.39 s
 
-local DEG_LARGE = 8
-local DEG_SMALL = 4
+local DEG_LARGE = 38
+local DEG_SMALL = 24
 
 local HR_FIRE_CHANCE  = 0.50   -- probability a hit triggers a reaction
 
@@ -57,8 +57,8 @@ local NOISE_DEG       = 1.2    -- +/- pure noise degrees on pitch and roll
 -- Vertical axis (hitDir.z) suppression per zone
 -- (twist looks wrong at full amplitude on limb bones)
 local YAW_SCALE_SPINE  = 0.30
-local YAW_SCALE_PISTON = 0.20
-local YAW_SCALE_CALF   = 0.15
+local YAW_SCALE_PISTON = 0.39
+local YAW_SCALE_CALF   = 0.35
 
 local ZONE_TORSO = 0.75
 local ZONE_HIP   = 0.45
@@ -292,6 +292,6 @@ function ENT:HitReact_Think()
             peak.y * env,
             peak.r * env
         ),
-        false
+        true
     )
 end
