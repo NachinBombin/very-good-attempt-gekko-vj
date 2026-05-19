@@ -1,16 +1,20 @@
 -- init.lua  (SERVER)
 -- M242 Bushmaster 25mm round.
--- Position is set entirely by the Gekko's FireBushmaster logic.
--- No position manipulation here.
+-- Physics / movement / damage / orbit: UNCHANGED from original.
+-- Impact visual replaced with GAU-style: networked decal + dust puff +
+-- bullet-impact sounds + 0.9% ignited-gib ricochet.
 
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
+util.AddNetworkString("GekkoBushImpact")
+-- GekkoBulletImpact is kept registered by the bullet_impact_system if present;
+-- Bushmaster no longer sends it, but we don't remove its registration.
 util.AddNetworkString("GekkoBulletImpact")
 
 -- =========================================================================
--- Configuration
+-- Configuration  (physics/damage UNCHANGED)
 -- =========================================================================
 local SPEED          = 3950
 local ORBIT_RADIUS_A = 4
@@ -21,21 +25,82 @@ local DAMAGE         = 35
 local BLAST_RADIUS   = 7
 
 local FLAME_LOOP_SND  = "gekko/brushmaster_25mm/shellwhiz.wav"
-local FLAME_SND_LEVEL = 20   -- low; audible only when round passes close
+local FLAME_SND_LEVEL = 20
 
--- =========================================================================
--- Helper: broadcast the bullet impact projected light
--- =========================================================================
-local function SendBulletImpact(pos, normal, presetID)
-    net.Start("GekkoBulletImpact")
-        net.WriteVector(pos)
-        net.WriteVector(normal)
-        net.WriteUInt(presetID, 3)   -- 3 bits: matches ReadUInt(3) in bullet_impact_system.lua
-    net.Broadcast()
+-- ─── Impact sounds (same list as GAU bullet) ─────────────────────────────────
+local IMPACT_SOUNDS = {
+    "physics/concrete/impact_bullet1.wav",
+    "physics/concrete/impact_bullet2.wav",
+    "physics/concrete/impact_bullet3.wav",
+    "physics/dirt/impact_bullet1.wav",
+    "physics/dirt/impact_bullet2.wav",
+    "physics/dirt/impact_bullet3.wav",
+    "physics/metal/metal_solid_impact_bullet1.wav",
+    "physics/metal/metal_solid_impact_bullet2.wav",
+    "physics/metal/metal_solid_impact_bullet3.wav",
+}
+for _, s in ipairs(IMPACT_SOUNDS) do util.PrecacheSound(s) end
+
+local GIB_RICO_CHANCE = 0.009
+local GIB_MODEL       = "models/gibs/wood_gib01e.mdl"
+util.PrecacheModel(GIB_MODEL)
+
+-- ─── Ignited gib (mirrors ent_ac47_m134_bullet/init.lua exactly) ─────────────
+local function SpawnIgnitedGib(hitPos, hitNormal)
+    local gib = ents.Create("prop_physics")
+    if not IsValid(gib) then return end
+
+    gib:SetModel(GIB_MODEL)
+    gib:SetPos(hitPos + hitNormal * 3)
+    gib:SetAngles(Angle(
+        math.random(0, 360),
+        math.random(0, 360),
+        math.random(0, 360)
+    ))
+    gib:Spawn()
+    gib:Activate()
+
+    local phys = gib:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:Wake()
+
+        local helper
+        if math.abs(hitNormal.z) < 0.9 then
+            helper = Vector(0, 0, 1)
+        else
+            helper = Vector(1, 0, 0)
+        end
+        local tangent   = hitNormal:Cross(helper)  tangent:Normalize()
+        local bitangent = hitNormal:Cross(tangent) bitangent:Normalize()
+
+        local cos_theta = math.random()
+        local sin_theta = math.sqrt(1 - cos_theta * cos_theta)
+        local phi       = math.random() * (2 * math.pi)
+        local cp        = math.cos(phi)
+        local sp        = math.sin(phi)
+
+        local nx, ny, nz = hitNormal.x, hitNormal.y, hitNormal.z
+        local dx = nx * cos_theta + tangent.x * (sin_theta * cp) + bitangent.x * (sin_theta * sp)
+        local dy = ny * cos_theta + tangent.y * (sin_theta * cp) + bitangent.y * (sin_theta * sp)
+        local dz = nz * cos_theta + tangent.z * (sin_theta * cp) + bitangent.z * (sin_theta * sp)
+        local dlen = math.sqrt(dx*dx + dy*dy + dz*dz)
+        if dlen < 0.001 then gib:Remove() return end
+        dx = dx / dlen  dy = dy / dlen  dz = dz / dlen
+
+        local speed = math.Rand(120, 340)
+        phys:SetVelocity(Vector(dx * speed, dy * speed, dz * speed))
+        phys:SetAngleVelocity(Vector(
+            math.Rand(-400, 400),
+            math.Rand(-400, 400),
+            math.Rand(-400, 400)
+        ))
+    end
+
+    gib:Ignite(0, 0)
 end
 
 -- =========================================================================
--- Initialize
+-- Initialize  (UNCHANGED)
 -- =========================================================================
 function ENT:Initialize()
     self:SetModel("models/weapons/w_missile.mdl")
@@ -67,7 +132,6 @@ function ENT:Initialize()
     self._up         = up
     self._fixedAngle = self:GetAngles()
 
-    -- Shell whiz loop: bound to entity so it 3D-tracks position in flight
     self:EmitSound(FLAME_LOOP_SND, FLAME_SND_LEVEL, 100, 1)
 
     timer.Simple(LIFETIME, function()
@@ -76,7 +140,7 @@ function ENT:Initialize()
 end
 
 -- =========================================================================
--- Think
+-- Think  (UNCHANGED)
 -- =========================================================================
 function ENT:Think()
     local t     = CurTime() - self._birthTime
@@ -106,7 +170,7 @@ function ENT:Think()
 end
 
 -- =========================================================================
--- Touch
+-- Touch  (UNCHANGED)
 -- =========================================================================
 function ENT:Touch(other)
     if other == self:GetOwner() then return end
@@ -120,18 +184,15 @@ function ENT:Touch(other)
 end
 
 -- =========================================================================
--- Explode
+-- Explode  — physics/damage UNCHANGED; visuals replaced with GAU impact FX
 -- =========================================================================
 function ENT:Explode(hitPos, hitNormal, hitEnt)
     if self._exploded then return end
     self._exploded = true
 
-    -- Stop the flight loop before removal
     self:StopSound(FLAME_LOOP_SND)
 
-    -- Bullet impact projected light — presetID 2 = BUSHMASTER
-    SendBulletImpact(hitPos, hitNormal, 2)
-
+    -- ─ Damage (UNCHANGED) ─
     local dmg = DamageInfo()
     dmg:SetDamage(DAMAGE)
     dmg:SetAttacker(IsValid(self:GetOwner()) and self:GetOwner() or self)
@@ -140,14 +201,24 @@ function ENT:Explode(hitPos, hitNormal, hitEnt)
     dmg:SetDamagePosition(hitPos)
     dmg:SetDamageForce(hitNormal * -DAMAGE * 50)
 
-    util.BlastDamage(self, IsValid(self:GetOwner()) and self:GetOwner() or self,
-        hitPos, BLAST_RADIUS, DAMAGE)
+    util.BlastDamage(
+        self,
+        IsValid(self:GetOwner()) and self:GetOwner() or self,
+        hitPos, BLAST_RADIUS, DAMAGE
+    )
 
-    local eff = EffectData()
-    eff:SetOrigin(hitPos)
-    eff:SetNormal(hitNormal)
-    eff:SetScale(1)
-    util.Effect("Explosion", eff)
+    -- ─ GAU-style impact broadcast ─
+    local sndIdx = math.random(#IMPACT_SOUNDS)
+    net.Start("GekkoBushImpact")
+        net.WriteVector(hitPos)
+        net.WriteVector(hitNormal)
+        net.WriteUInt(sndIdx, 8)
+    net.Broadcast()
+
+    -- ─ 0.9% ignited gib ricochet (server-only, same as GAU) ─
+    if math.random() < GIB_RICO_CHANCE then
+        SpawnIgnitedGib(hitPos, hitNormal)
+    end
 
     self:Remove()
 end
