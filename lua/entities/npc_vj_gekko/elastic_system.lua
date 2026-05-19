@@ -13,11 +13,12 @@
 --    self:GekkoElastic_OnRemove()
 --
 --  PLAYER CABLE-BREAK:
---    If the hooked target is a player, they can snap the cable
---    by button-smashing.  The client tracks key/mouse presses
---    and sends "GekkoElasticPlayerBreak" when >= 7 unique
---    button-down events occur within any rolling 1-second window.
---    The server validates authorship and calls _Cleanup().
+--    Tracked entirely server-side via hook.Add("PlayerButtonDown").
+--    Every button-down event for a living player is timestamped.
+--    If >= 7 presses fall within a rolling 1-second window AND
+--    that player is the current elastic target of any Gekko,
+--    the cable is cut immediately and GekkoElasticBreak is
+--    broadcast to all clients to remove the beam.
 -- ============================================================
 
 AddCSLuaFile("elastic_cl.lua")
@@ -45,13 +46,83 @@ local GEKKO_ORIGIN_Z        = 380
 -- Pre-fire delay: shoot sound plays NOW, actual logic starts after.
 local ELASTIC_PREFIRE_DELAY = 0.9
 
+-- Cable-break: player must hit this many button-down events
+-- within BREAK_WINDOW seconds to snap the elastic.
+local BREAK_THRESHOLD = 7
+local BREAK_WINDOW    = 1.0
+
 util.AddNetworkString("GekkoElasticRope")
 util.AddNetworkString("GekkoElasticShootSound")
--- Sent server->all when a player successfully snaps the cable early.
+-- Broadcast server->all clients when a player snaps the cable.
 util.AddNetworkString("GekkoElasticBreak")
--- Sent client->server when a player smashes keys fast enough.
-util.AddNetworkString("GekkoElasticPlayerBreak")
 util.PrecacheModel(ANCHOR_MODEL)
+
+-- ============================================================
+--  PER-PLAYER BUTTON TIMESTAMP TABLE
+--
+--  Keyed by player entity userdata.
+--  Value: table of CurTime() timestamps of recent button-down
+--  events. Pruned to BREAK_WINDOW on every new press.
+-- ============================================================
+local _breakTimes = {}
+
+hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply, button)
+    if not IsValid(ply) or not ply:Alive() then return end
+
+    -- Initialise table for this player if needed.
+    if not _breakTimes[ply] then
+        _breakTimes[ply] = {}
+    end
+
+    local now    = CurTime()
+    local times  = _breakTimes[ply]
+
+    -- Record this press.
+    times[#times + 1] = now
+
+    -- Prune events outside the rolling window.
+    local cutoff = now - BREAK_WINDOW
+    local i = 1
+    while i <= #times do
+        if times[i] < cutoff then
+            table.remove(times, i)
+        else
+            i = i + 1
+        end
+    end
+
+    -- Not enough presses yet.
+    if #times < BREAK_THRESHOLD then return end
+
+    -- Check if this player is currently hooked by any Gekko.
+    for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
+        if not IsValid(ent) then continue end
+        if not ent._elasticActive then continue end
+        if ent._elasticEnemy ~= ply then continue end
+
+        -- Cable broken.
+        print(string.format(
+            "[GekkoElastic] CABLE BROKEN by player %s (button mash)",
+            ply:Nick()))
+
+        -- Reset timestamp table so they can't re-trigger instantly.
+        _breakTimes[ply] = {}
+
+        ent:_GekkoElastic_Cleanup()
+
+        -- Tell all clients to kill the beam for this player.
+        net.Start("GekkoElasticBreak")
+            net.WriteEntity(ply)
+        net.Broadcast()
+
+        break
+    end
+end)
+
+-- Clean up table when player disconnects.
+hook.Add("PlayerDisconnected", "GekkoElasticCableBreakCleanup", function(ply)
+    _breakTimes[ply] = nil
+end)
 
 -- ============================================================
 --  LINE-OF-SIGHT HELPER
@@ -300,35 +371,3 @@ function ENT:GekkoElastic_OnRemove()
     self:_GekkoElastic_Cleanup()
     self._elasticNextShotT = math.huge
 end
-
--- ============================================================
---  PLAYER CABLE-BREAK  (server-side receiver)
---
---  Client sends this net message when the hooked player has
---  pressed >= 7 buttons within a rolling 1-second window.
---  We validate:
---    1. The sender is actually alive.
---    2. This Gekko is currently active and the sender is the
---       hooked target.
---  If valid, the cable is cut immediately.
--- ============================================================
-net.Receive("GekkoElasticPlayerBreak", function(len, ply)
-    if not IsValid(ply) or not ply:Alive() then return end
-
-    -- Find all Gekko NPCs and check if this player is hooked to one.
-    for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
-        if not IsValid(ent) then continue end
-        if not ent._elasticActive then continue end
-        if ent._elasticEnemy ~= ply then continue end
-
-        -- This is the Gekko pulling this player -- cut the cable.
-        print(string.format("[GekkoElastic] CABLE BROKEN by player %s (button mash)", ply:Nick()))
-        ent:_GekkoElastic_Cleanup()
-
-        -- Notify all clients so the beam and sound stop immediately.
-        net.Start("GekkoElasticBreak")
-            net.WriteEntity(ply)
-        net.Broadcast()
-        break
-    end
-end)
