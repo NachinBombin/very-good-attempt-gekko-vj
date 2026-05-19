@@ -11,6 +11,13 @@
 --    self:GekkoElastic_Think()
 --    self:GekkoElastic_Fire(enemy)
 --    self:GekkoElastic_OnRemove()
+--
+--  PLAYER CABLE-BREAK:
+--    If the hooked target is a player, they can snap the cable
+--    by button-smashing.  The client tracks key/mouse presses
+--    and sends "GekkoElasticPlayerBreak" when >= 7 unique
+--    button-down events occur within any rolling 1-second window.
+--    The server validates authorship and calls _Cleanup().
 -- ============================================================
 
 AddCSLuaFile("elastic_cl.lua")
@@ -40,20 +47,14 @@ local ELASTIC_PREFIRE_DELAY = 0.9
 
 util.AddNetworkString("GekkoElasticRope")
 util.AddNetworkString("GekkoElasticShootSound")
+-- Sent server->all when a player successfully snaps the cable early.
+util.AddNetworkString("GekkoElasticBreak")
+-- Sent client->server when a player smashes keys fast enough.
+util.AddNetworkString("GekkoElasticPlayerBreak")
 util.PrecacheModel(ANCHOR_MODEL)
 
 -- ============================================================
 --  LINE-OF-SIGHT HELPER
---
---  Traces from the Gekko's fire origin (GetPos + GEKKO_ORIGIN_Z)
---  to the enemy's eye / center position.
---
---  Uses MASK_SOLID_BRUSHONLY so only world brushes (walls,
---  rooftops, solid geometry) block the shot.  Other NPCs and
---  props are intentionally ignored -- the Gekko can reach
---  through them but NOT through solid architecture.
---
---  Returns true if the path is clear.
 -- ============================================================
 local function GekkoElastic_HasLOS(gekko, enemy)
     local fromPos = gekko:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
@@ -122,10 +123,6 @@ function ENT:GekkoElastic_Think()
             self._elasticPendingEnemy = nil
 
             if IsValid(pendEnemy) then
-                -- Re-check LOS at detonation time.
-                -- If enemy ducked behind cover during the 0.9s wind-up,
-                -- abort silently.  Reset cooldown to a short value so
-                -- the Gekko tries again quickly once LOS is restored.
                 if not GekkoElastic_HasLOS(self, pendEnemy) then
                     print("[GekkoElastic] DETONATE BLOCKED (no LOS) -- re-queuing")
                     self._elasticNextShotT = now + 2.0
@@ -190,7 +187,6 @@ function ENT:GekkoElastic_Think()
     if not IsValid(enemy) then return end
     if self:GetPos():Distance(enemy:GetPos()) > ELASTIC_MAX_RANGE then return end
 
-    -- LOS gate: don't even commit to pre-fire if sight is blocked
     if not GekkoElastic_HasLOS(self, enemy) then return end
 
     if math.random() > 0.18 then return end
@@ -199,8 +195,6 @@ end
 
 -- ============================================================
 --  GekkoElastic_Fire
---  Sends the shoot sound net message immediately, then waits
---  ELASTIC_PREFIRE_DELAY before actually doing anything.
 -- ============================================================
 function ENT:GekkoElastic_Fire(enemy)
     if not IsValid(enemy) then return false end
@@ -209,12 +203,10 @@ function ENT:GekkoElastic_Fire(enemy)
         ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
     self:_GekkoElastic_Cleanup()
 
-    -- broadcast the pre-fire shoot sound immediately
     net.Start("GekkoElasticShootSound")
         net.WriteEntity(self)
     net.Broadcast()
 
-    -- queue the real logic for ELASTIC_PREFIRE_DELAY seconds later
     self._elasticPending      = true
     self._elasticPendingT     = CurTime() + ELASTIC_PREFIRE_DELAY
     self._elasticPendingEnemy = enemy
@@ -308,3 +300,35 @@ function ENT:GekkoElastic_OnRemove()
     self:_GekkoElastic_Cleanup()
     self._elasticNextShotT = math.huge
 end
+
+-- ============================================================
+--  PLAYER CABLE-BREAK  (server-side receiver)
+--
+--  Client sends this net message when the hooked player has
+--  pressed >= 7 buttons within a rolling 1-second window.
+--  We validate:
+--    1. The sender is actually alive.
+--    2. This Gekko is currently active and the sender is the
+--       hooked target.
+--  If valid, the cable is cut immediately.
+-- ============================================================
+net.Receive("GekkoElasticPlayerBreak", function(len, ply)
+    if not IsValid(ply) or not ply:Alive() then return end
+
+    -- Find all Gekko NPCs and check if this player is hooked to one.
+    for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
+        if not IsValid(ent) then continue end
+        if not ent._elasticActive then continue end
+        if ent._elasticEnemy ~= ply then continue end
+
+        -- This is the Gekko pulling this player -- cut the cable.
+        print(string.format("[GekkoElastic] CABLE BROKEN by player %s (button mash)", ply:Nick()))
+        ent:_GekkoElastic_Cleanup()
+
+        -- Notify all clients so the beam and sound stop immediately.
+        net.Start("GekkoElasticBreak")
+            net.WriteEntity(ply)
+        net.Broadcast()
+        break
+    end
+end)
