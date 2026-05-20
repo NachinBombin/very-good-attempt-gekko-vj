@@ -48,8 +48,24 @@ local STREAK_MAX         = 6
 local STREAK_WINDOW      = 1.5
 
 -- Physics-impact damage thresholds (debris / bullet props)
-local PHYS_DMG_MIN_SPEED  = 200   -- below this speed, no damage
-local PHYS_DMG_SCALE      = 0.06  -- damage = impactSpeed * scale
+local PHYS_DMG_MIN_SPEED  = 200
+local PHYS_DMG_SCALE      = 0.06
+
+-- ---------------------------------------------------------
+--  PRE-DETONATION SHOTGUN BURST
+-- ---------------------------------------------------------
+-- Fires this many seconds before the explosion actually happens.
+local PREDET_DELAY      = 0.2
+-- Number of pellets in the burst.
+local PREDET_PELLETS    = 9
+-- Damage per pellet.
+local PREDET_PELLET_DMG = 18
+-- Max effective range of the pellets (they can trace further but deal no dmg past this).
+local PREDET_RANGE      = 3000
+-- Cone half-angle in degrees — spread of the pellets.
+local PREDET_SPREAD_DEG = 4.0
+-- Forward offset of the "muzzle" from the missile's centre.
+local PREDET_NOSE_OFFS  = 20
 
 -- ---------------------------------------------------------
 --  SOUNDS
@@ -58,8 +74,8 @@ local SND_FIRE    = "nikita/distant_fire.wav"
 local SND_WHISTLE = "nikita/bomb_whistle_loop.wav"
 local SND_FLAME   = "nikita/flame_loop.wav"
 local SND_LOCKON  = "nikita/lock on stinger.wav"
+local SND_PREDET  = "weapons/shotgun/shotgun_fire7.wav"
 
--- Distance at which the lock-on stinger triggers (and resets when exceeded).
 local LOCKON_DIST = 600
 
 -- ---------------------------------------------------------
@@ -178,7 +194,6 @@ local function BuildTangents(normal)
     return right, tang
 end
 
--- Returns true if 'ent' is a world brush / static geometry.
 local function IsWorldEnt(ent)
     if not IsValid(ent) then return true end
     local cl = ent:GetClass()
@@ -359,7 +374,7 @@ local function ClearanceProbe(origin, moveDir, filter)
 end
 
 -- ---------------------------------------------------------
---  COLLISION RESILIENCE  (geometry only, never health)
+--  COLLISION RESILIENCE
 -- ---------------------------------------------------------
 local function BumpArmor(self, now)
     if now - self._lastBump < BUMP_COOLDOWN then return false end
@@ -412,6 +427,101 @@ local function GetAimPos(self)
 end
 
 -- ---------------------------------------------------------
+--  PRE-DETONATION SHOTGUN BURST
+-- ---------------------------------------------------------
+-- Called from any code path that is about to intentionally detonate the
+-- missile (proximity trigger, expire, owner command). Fires a spread of
+-- pellets from the nose tip toward the current aim position, then schedules
+-- the actual explosion PREDET_DELAY seconds later.
+--
+-- Returns true so the caller can know the timer is pending and avoid a
+-- second immediate explosion call.
+-- ---------------------------------------------------------
+local function RandomConeDir( baseDir, halfAngleDeg )
+    -- Build two tangent vectors for the cone base.
+    local up = Vector(0, 0, 1)
+    local right = baseDir:Cross(up)
+    if right:LengthSqr() < 0.001 then
+        right = baseDir:Cross(Vector(1, 0, 0))
+    end
+    right:Normalize()
+    local tang = right:Cross(baseDir)
+    tang:Normalize()
+
+    local halfRad = math.rad(halfAngleDeg)
+    local theta   = math.random() * halfRad          -- radial distance from centre
+    local phi     = math.random() * 2 * math.pi      -- rotation around cone axis
+    local sinT    = math.sin(theta)
+
+    local d = baseDir   * math.cos(theta)
+            + right     * (sinT * math.cos(phi))
+            + tang      * (sinT * math.sin(phi))
+    d:Normalize()
+    return d
+end
+
+function ENT:Nikita_PreDetBurst()
+    if self.Nikita_Exploded    then return end
+    if self._predetFired       then return end
+    self._predetFired = true
+
+    local muzzlePos = self:GetPos() + self:GetForward() * PREDET_NOSE_OFFS
+    local owner     = IsValid(self.NikitaOwner) and self.NikitaOwner or self
+
+    -- Determine aim direction: toward the current target if known,
+    -- otherwise just use the missile's forward.
+    local aimPos  = GetAimPos(self)
+    local aimDir  = aimPos
+                    and (aimPos - muzzlePos):GetNormalized()
+                    or  self:GetForward()
+
+    -- Play shotgun sound at the nose position.
+    sound.Play(SND_PREDET, muzzlePos, 85, 100)
+
+    -- Fire each pellet as an individual hitscan ray so it produces
+    -- proper bullet impact effects on every surface it hits.
+    for i = 1, PREDET_PELLETS do
+        local pelletDir = RandomConeDir(aimDir, PREDET_SPREAD_DEG)
+
+        local tr = util.TraceLine({
+            start  = muzzlePos,
+            endpos  = muzzlePos + pelletDir * PREDET_RANGE,
+            filter  = { self },
+            mask    = MASK_SHOT,
+        })
+
+        -- Spawn bullet impact effect on whatever the pellet hit.
+        if tr.Hit then
+            local ed = EffectData()
+            ed:SetOrigin(tr.HitPos)
+            ed:SetNormal(tr.HitNormal)
+            ed:SetSurfaceProp(tr.SurfaceProps)
+            ed:SetDamageType(DMG_BULLET)
+            util.Effect("Impact", ed)
+
+            if IsValid(tr.Entity) and tr.Entity ~= self then
+                local dmginfo = DamageInfo()
+                dmginfo:SetDamage(PREDET_PELLET_DMG)
+                dmginfo:SetAttacker(owner)
+                dmginfo:SetInflictor(self)
+                dmginfo:SetDamageType(DMG_BULLET)
+                dmginfo:SetDamagePosition(tr.HitPos)
+                dmginfo:SetDamageForce(pelletDir * PREDET_PELLET_DMG * 50)
+                tr.Entity:TakeDamageInfo(dmginfo)
+            end
+        end
+    end
+
+    -- Schedule the actual detonation.
+    local missileRef = self
+    timer.Simple(PREDET_DELAY, function()
+        if IsValid(missileRef) and not missileRef.Nikita_Exploded then
+            missileRef:Nikita_DoExplosion()
+        end
+    end)
+end
+
+-- ---------------------------------------------------------
 --  INITIALIZE
 -- ---------------------------------------------------------
 function ENT:CustomOnInitialize()
@@ -444,6 +554,7 @@ function ENT:CustomOnInitialize()
     self._lkTime       = nil
 
     self._lastPhysDmg  = -999
+    self._predetFired  = false
 
     self._lockOnArmed  = true
     self._lockOnActive = false
@@ -501,6 +612,7 @@ function ENT:CustomOnTakeDamage_BeforeDamage(dmginfo, hitgroup)
         dmginfo:SetDamage(0)
         return
     end
+    -- When shot down (not an intentional detonation), blow up immediately.
     if self:Health() - dmginfo:GetDamage() <= 0 then
         self:Nikita_DoExplosion(dmginfo)
     end
@@ -509,7 +621,7 @@ end
 -- ---------------------------------------------------------
 --  FALLOFF BLAST HELPERS
 -- ---------------------------------------------------------
-local FALLOFF_MIN_FRAC = 0.08   -- 8% damage at the very edge
+local FALLOFF_MIN_FRAC = 0.08
 
 local function EntAimPos( ent )
     local phys = ent:GetPhysicsObject()
@@ -523,7 +635,6 @@ local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg
         if ent == inflictor   then continue end
 
         local entPos = EntAimPos( ent )
-        -- Skip entities with no line of sight (behind walls/roofs)
         local los = util.TraceLine({
             start  = origin,
             endpos = entPos,
@@ -567,7 +678,6 @@ function ENT:Nikita_DoExplosion(dmginfo)
 
     sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
 
-    -- Distance-scaled per-player camera shake
     for _, ply in ipairs( player.GetAll() ) do
         if not IsValid( ply ) then continue end
         local _sd = ( ply:GetPos() - pos ):Length()
@@ -611,7 +721,9 @@ function ENT:CustomOnThink()
     local dt  = math.max(FrameTime(), 0.001)
 
     if self.Nikita_ExpireTime and now > self.Nikita_ExpireTime then
-        self:Nikita_DoExplosion(); return
+        -- Lifetime expired: fire pre-det burst, which schedules the explosion.
+        self:Nikita_PreDetBurst()
+        return
     end
 
     if now >= self._nextArmorReg then
@@ -644,7 +756,9 @@ function ENT:CustomOnThink()
         end
 
         if distToEnemy <= (self.Nikita_ProxRadius or 220) then
-            self:Nikita_DoExplosion(); return
+            -- Proximity detonation: fire burst first, explosion follows in 0.2 s.
+            self:Nikita_PreDetBurst()
+            return
         end
     end
 
@@ -749,5 +863,6 @@ function ENT:CustomOnThink_AIEnabled()
 end
 
 function ENT:CustomOnKilled(dmginfo, hitgroup)
+    -- Shot down by a player — no pre-det burst, just explode immediately.
     self:Nikita_DoExplosion(dmginfo)
 end
