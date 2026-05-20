@@ -1,26 +1,5 @@
 -- ============================================================
 --  ELASTIC SLING SYSTEM  (server-side)
---
---  BUG FIXES in this revision:
---
---  1. RE-APPEAR AFTER SNAP
---     GekkoElastic_Fire sets _elasticNextShotT, but the retract
---     animation on the client takes  dist/EXTEND_SPEED  seconds.
---     A new beam can fire immediately after cleanup and appear
---     while the retract is still playing.
---     FIX: Track _elasticRetractUntil on every cleanup path.
---     The passive fire gate blocks until that time clears.
---
---  2. ATTACHES AFTER TARGET DIES
---     IsValid(ply) returns true on a dead, not-yet-removed player.
---     FIX: All enemy validity checks now also call :Alive() for
---     players.
---
---  3. ZOMBIE CABLE ON DEATH / RESPAWN
---     Player entity is reused across respawns.  _elasticActive
---     was never cleared on death so the cable persisted forever.
---     FIX: hook PlayerDeath + PlayerSpawn force-break any active
---     beam targeting that player and broadcast GekkoElasticBreak.
 -- ============================================================
 
 AddCSLuaFile("elastic_cl.lua")
@@ -50,7 +29,6 @@ local BREAK_THRESHOLD = 7
 local BREAK_WINDOW    = 1.0
 
 -- How long after any cleanup we block new shots.
--- Must be >= max retract travel time (MAX_RANGE / EXTEND_SPEED).
 local RETRACT_BLOCK_PAD = (ELASTIC_MAX_RANGE / EXTEND_SPEED) + 0.3
 
 util.AddNetworkString("GekkoElasticRope")
@@ -62,12 +40,9 @@ util.PrecacheModel(ANCHOR_MODEL)
 -- ============================================================
 --  HELPERS
 -- ============================================================
--- Returns true only if the entity is alive and valid.
--- Handles players (need :Alive()) and NPCs (health check).
 local function IsAliveAndValid(ent)
     if not IsValid(ent) then return false end
     if ent:IsPlayer() then return ent:Alive() end
-    -- NPC / prop: treat as alive if it has positive health or no health concept
     if ent.Health and ent:Health() <= 0 then return false end
     return true
 end
@@ -105,15 +80,11 @@ end
 
 -- ============================================================
 --  GLOBAL DEATH / RESPAWN HOOKS
---  These run once per server, not per-Gekko instance.
---  They scan all Gekkos so we don't miss a cable targeting
---  the dying player.
 -- ============================================================
 local function ForceBreakOnTarget(target)
     for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
         if not IsValid(ent) then continue end
 
-        -- Clear any pending shot aimed at this target
         if ent._elasticPendingEnemy == target then
             ent._elasticPending      = false
             ent._elasticPendingEnemy = nil
@@ -139,8 +110,6 @@ hook.Add("PlayerDeath", "GekkoElasticPlayerDeath", function(ply)
 end)
 
 hook.Add("PlayerSpawn", "GekkoElasticPlayerSpawn", function(ply)
-    -- Respawn reuses the same entity: force-break any cable
-    -- that survived death (edge-case if PlayerDeath was missed)
     ForceBreakOnTarget(ply)
 end)
 
@@ -158,6 +127,7 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply)
     local times = _breakTimes[ply]
     times[#times + 1] = now
 
+    -- prune presses outside the window
     local cutoff = now - BREAK_WINDOW
     local i = 1
     while i <= #times do
@@ -167,13 +137,17 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply)
 
     if #times < BREAK_THRESHOLD then return end
 
+    -- FIX (key-smash reset): always wipe the table, even when no cable
+    -- is active for this player. This prevents stale presses from
+    -- triggering an instant-break the moment a new tether lands.
+    _breakTimes[ply] = {}
+
     for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
         if not IsValid(ent) then continue end
         if not ent._elasticActive then continue end
         if ent._elasticEnemy ~= ply then continue end
 
         local breakPos = ply:GetPos() + Vector(0, 0, 40)
-        _breakTimes[ply] = {}
         ent:_GekkoElastic_Cleanup()
 
         net.Start("GekkoElasticBreak")
@@ -195,7 +169,7 @@ end)
 function ENT:GekkoElastic_Init()
     self._elasticNextShotT    = CurTime() + math.Rand(
         ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
-    self._elasticRetractUntil = 0     -- blocks new shots during retract
+    self._elasticRetractUntil = 0
     self._elasticActive       = false
     self._elasticPending      = false
     self._elasticPendingT     = 0
@@ -214,13 +188,11 @@ end
 function ENT:GekkoElastic_Think()
     local now = CurTime()
 
-    -- pending pre-fire delay
     if self._elasticPending then
         if now >= self._elasticPendingT then
             self._elasticPending = false
             local pendEnemy = self._elasticPendingEnemy
             self._elasticPendingEnemy = nil
-            -- Discard if target died while waiting
             if IsAliveAndValid(pendEnemy) then
                 if not GekkoElastic_HasLOS(self, pendEnemy) then
                     self._elasticNextShotT = now + 2.0
@@ -233,7 +205,6 @@ function ENT:GekkoElastic_Think()
     end
 
     if self._elasticActive then
-        -- Target died mid-pull
         local enemy = self._elasticEnemy
         if not IsAliveAndValid(enemy) then
             local breakPos = IsValid(enemy) and
@@ -248,7 +219,6 @@ function ENT:GekkoElastic_Think()
             return
         end
 
-        -- Natural expiry
         if now >= self._elasticCleanupT then
             local retractEnt = self._elasticEnemy
             self:_GekkoElastic_Cleanup()
@@ -260,7 +230,6 @@ function ENT:GekkoElastic_Think()
             return
         end
 
-        -- Track anchor to enemy
         if IsValid(self._elasticAnchorE) then
             local epos = enemy:GetPos() + Vector(0, 0, 40)
             local phys = self._elasticAnchorE:GetPhysicsObject()
@@ -271,7 +240,6 @@ function ENT:GekkoElastic_Think()
             self._elasticAnchorE:SetPos(epos)
         end
 
-        -- Velocity kicks (delayed until tip arrives)
         if now >= self._elasticPullStartT and now >= self._elasticNextKickT then
             self._elasticNextKickT = now + ELASTIC_PULL_INTERVAL
             local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
@@ -294,8 +262,6 @@ function ENT:GekkoElastic_Think()
         return
     end
 
-    -- Passive fire gate:
-    -- Block during cooldown AND during the retract window of the last cable.
     if now < (self._elasticNextShotT or 0) then return end
     if now < (self._elasticRetractUntil or 0) then return end
 
@@ -380,9 +346,6 @@ end
 
 -- ============================================================
 --  _GekkoElastic_Cleanup
---
---  Sets _elasticRetractUntil so the passive fire gate knows
---  to wait out the retract animation before shooting again.
 -- ============================================================
 function ENT:_GekkoElastic_Cleanup()
     if IsValid(self._elasticAnchorG) then self._elasticAnchorG:Remove() end
@@ -394,7 +357,6 @@ function ENT:_GekkoElastic_Cleanup()
     self._elasticAnchorE      = nil
     self._elasticEnemy        = nil
     self._elasticPullStartT   = 0
-    -- Block new shots for the full retract travel time
     self._elasticRetractUntil = CurTime() + RETRACT_BLOCK_PAD
 end
 
@@ -402,7 +364,20 @@ end
 --  GekkoElastic_OnRemove
 -- ============================================================
 function ENT:GekkoElastic_OnRemove()
+    -- FIX (death broadcast): capture the enemy reference BEFORE cleanup
+    -- wipes it, then send GekkoElasticBreak so the client drops the beam.
+    local activeEnemy  = self._elasticEnemy
+    local hadActive    = self._elasticActive
+
     self:_GekkoElastic_Cleanup()
     self._elasticNextShotT    = math.huge
     self._elasticRetractUntil = math.huge
+
+    if hadActive and IsValid(activeEnemy) then
+        local breakPos = activeEnemy:GetPos() + Vector(0, 0, 40)
+        net.Start("GekkoElasticBreak")
+            net.WriteEntity(activeEnemy)
+            net.WriteVector(breakPos)
+        net.Broadcast()
+    end
 end
