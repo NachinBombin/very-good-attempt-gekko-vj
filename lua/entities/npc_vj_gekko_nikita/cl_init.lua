@@ -8,20 +8,25 @@ include("shared.lua")
 --    1.9s+       : Full flame + sparks + dlight + stabilisers
 --    1.9 - 2.9s  : Smoke trail continues, then naturally fades out
 --                  (overlap = 1s, handled via _smokeFadeEnd timestamp)
+--
+--  Pre-detonation burst visuals:
+--    NikitaMuzzleFlash  → muzzle ring + emitter flash at nose tip
+--    NikitaPelletTracer → per-pellet beam drawn in PostDrawTranslucentRenderables
+--                         (same pipeline as bushmaster: effects/laser1 beam +
+--                          sprites/light_glow02_add tip glow, timed fade-out)
 -- ============================================================
 
 -- ----------------------------------------------------------------
 --  TIMING
 -- ----------------------------------------------------------------
-local FLAME_DELAY   = 1.6   -- seconds before flame / light turn on
-local SMOKE_FADE    = 1.0   -- extra seconds smoke keeps emitting after flame starts
---  => smoke emits from t=0 to t=(FLAME_DELAY + SMOKE_FADE)
+local FLAME_DELAY   = 1.6
+local SMOKE_FADE    = 1.0
 
 -- ----------------------------------------------------------------
---  SMOKE TRAIL TUNING  (pre-ignition / overlap period)
+--  SMOKE TRAIL TUNING
 -- ----------------------------------------------------------------
-local SMOKE_EMIT_CHANCE  = 0.65   -- probability per Think tick
-local SMOKE_SIZE_MIN     = 55     -- large puff — missile-scale vs grenade
+local SMOKE_EMIT_CHANCE  = 0.65
+local SMOKE_SIZE_MIN     = 55
 local SMOKE_SIZE_MAX     = 110
 local SMOKE_END_MIN      = 110
 local SMOKE_END_MAX      = 180
@@ -31,8 +36,8 @@ local SMOKE_SPEED_MIN    = 35
 local SMOKE_SPEED_MAX    = 85
 local SMOKE_DIE_MIN      = 0.55
 local SMOKE_DIE_MAX      = 1.10
-local SMOKE_SPREAD       = 14    -- lateral randomness on emit position
-local SMOKE_BACK_OFFSET  = 55    -- same back-offset as the exhaust flame
+local SMOKE_SPREAD       = 14
+local SMOKE_BACK_OFFSET  = 55
 
 -- ----------------------------------------------------------------
 --  STABILIZER TUNING
@@ -50,6 +55,161 @@ local STAB_FIRE_CHANCE   = 0.35
 local STAB_DRIFT_THRESH  = 30
 local STAB_DRIFT_BOOST   = 0.70
 
+-- ----------------------------------------------------------------
+--  PELLET TRACER TUNING
+-- ----------------------------------------------------------------
+-- How long each tracer beam is visible (seconds).
+local TRACER_LIFE        = 0.09
+-- Width of the bright core beam.
+local TRACER_WIDTH_CORE  = 3
+-- Width of the soft outer glow beam.
+local TRACER_WIDTH_HALO  = 10
+-- Tip glow sprite size.
+local TRACER_GLOW_SIZE   = 22
+-- Colour: bright yellow-white core, warm halo (shotgun pellet feel).
+local TRACER_COLOR_CORE  = Color(255, 240, 200, 255)
+local TRACER_COLOR_HALO  = Color(255, 160,  60, 120)
+local TRACER_COLOR_GLOW  = Color(255, 200, 100, 200)
+
+-- ----------------------------------------------------------------
+--  MUZZLE FLASH TUNING
+-- ----------------------------------------------------------------
+-- Radius of the forward cone of flame particles.
+local MF_PARTICLES       = 14
+local MF_SPEED_MIN       = 250
+local MF_SPEED_MAX       = 700
+local MF_SPREAD          = 55
+local MF_SIZE_MIN        = 10
+local MF_SIZE_MAX        = 28
+local MF_DIE_MIN         = 0.04
+local MF_DIE_MAX         = 0.12
+-- Dynamic light at muzzle.
+local MF_DLIGHT_SIZE     = 220
+local MF_DLIGHT_DUR      = 0.07
+
+-- ----------------------------------------------------------------
+--  SHARED MATERIALS (reuse bushmaster pipeline)
+-- ----------------------------------------------------------------
+local mat_beam = Material("effects/laser1")
+local mat_glow = Material("sprites/light_glow02_add")
+
+-- ----------------------------------------------------------------
+--  TRACER DRAW LIST
+--  Each entry: { startPos, endPos, dieTime }
+--  Rendered every PostDrawTranslucentRenderables frame.
+-- ----------------------------------------------------------------
+local g_tracers = {}
+
+hook.Add("PostDrawTranslucentRenderables", "nikita_pellet_tracers", function(depth, skybox)
+    if depth or skybox then return end
+    local now = CurTime()
+    local cam = EyePos()
+    local i   = 1
+    while i <= #g_tracers do
+        local t = g_tracers[i]
+        if now >= t.dieTime then
+            table.remove(g_tracers, i)
+        else
+            local frac    = math.Clamp((t.dieTime - now) / TRACER_LIFE, 0, 1)
+            local a_core  = math.floor(TRACER_COLOR_CORE.a  * frac)
+            local a_halo  = math.floor(TRACER_COLOR_HALO.a  * frac)
+            local a_glow  = math.floor(TRACER_COLOR_GLOW.a  * frac)
+            local dist    = math.sqrt(cam:DistToSqr(t.startPos))
+            local scale   = math.Clamp(dist / 1200, 1.0, 4.0)
+
+            render.SetMaterial(mat_beam)
+            render.DrawBeam(
+                t.startPos, t.endPos,
+                TRACER_WIDTH_CORE * scale, 0, 1,
+                Color(TRACER_COLOR_CORE.r, TRACER_COLOR_CORE.g, TRACER_COLOR_CORE.b, a_core)
+            )
+            render.DrawBeam(
+                t.startPos, t.endPos,
+                TRACER_WIDTH_HALO * scale, 0, 1,
+                Color(TRACER_COLOR_HALO.r, TRACER_COLOR_HALO.g, TRACER_COLOR_HALO.b, a_halo)
+            )
+
+            render.SetMaterial(mat_glow)
+            render.DrawSprite(
+                t.endPos,
+                TRACER_GLOW_SIZE * scale, TRACER_GLOW_SIZE * scale,
+                Color(TRACER_COLOR_GLOW.r, TRACER_COLOR_GLOW.g, TRACER_COLOR_GLOW.b, a_glow)
+            )
+
+            i = i + 1
+        end
+    end
+end)
+
+-- ----------------------------------------------------------------
+--  NET: one tracer per pellet
+-- ----------------------------------------------------------------
+net.Receive("NikitaPelletTracer", function()
+    local startPos = net.ReadVector()
+    local endPos   = net.ReadVector()
+    g_tracers[#g_tracers + 1] = {
+        startPos = startPos,
+        endPos   = endPos,
+        dieTime  = CurTime() + TRACER_LIFE,
+    }
+end)
+
+-- ----------------------------------------------------------------
+--  NET: muzzle flash
+-- ----------------------------------------------------------------
+net.Receive("NikitaMuzzleFlash", function()
+    local muzzlePos = net.ReadVector()
+    local aimDir    = net.ReadVector()
+
+    -- Particle emitter burst (forward-facing flame cone).
+    local emitter = ParticleEmitter(muzzlePos, false)
+    if emitter then
+        for _ = 1, MF_PARTICLES do
+            local p = emitter:Add("particles/flamelet" .. math.random(1, 5), muzzlePos)
+            if p then
+                local scatter = VectorRand() * MF_SPREAD
+                local vel     = aimDir * math.Rand(MF_SPEED_MIN, MF_SPEED_MAX) + scatter
+                p:SetVelocity(vel)
+                p:SetLifeTime(0)
+                p:SetDieTime(math.Rand(MF_DIE_MIN, MF_DIE_MAX))
+                p:SetStartAlpha(math.random(180, 255))
+                p:SetEndAlpha(0)
+                p:SetStartSize(math.Rand(MF_SIZE_MIN, MF_SIZE_MAX))
+                p:SetEndSize(0)
+                p:SetColor(255, math.random(140, 220), math.random(0, 60))
+                p:SetRoll(math.Rand(0, 360))
+                p:SetRollDelta(math.Rand(-3, 3))
+                p:SetGravity(Vector(0, 0, 30))
+                p:SetCollide(false)
+            end
+        end
+        emitter:Finish()
+    end
+
+    -- Standard GMod muzzle flash effect at the nose.
+    local ed = EffectData()
+    ed:SetOrigin(muzzlePos)
+    ed:SetNormal(aimDir)
+    ed:SetScale(1.4)
+    util.Effect("MuzzleEffect", ed)
+
+    -- Dynamic light flash.
+    local dl = DynamicLight(0)
+    if dl then
+        dl.pos        = muzzlePos
+        dl.r          = 255
+        dl.g          = 200
+        dl.b          = 80
+        dl.brightness = 6
+        dl.Size       = MF_DLIGHT_SIZE
+        dl.Decay      = MF_DLIGHT_SIZE / MF_DLIGHT_DUR
+        dl.DieTime    = CurTime() + MF_DLIGHT_DUR
+    end
+end)
+
+-- ================================================================
+--  ENT CALLBACKS
+-- ================================================================
 function ENT:Initialize()
     self.NikitaEmitter  = ParticleEmitter(self:GetPos(), false)
     self.StabEmitter    = ParticleEmitter(self:GetPos(), false)
@@ -81,12 +241,12 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  WHITE SMOKE TRAIL  (active before flame; overlaps 1s after)
+    --  WHITE SMOKE TRAIL
     -- --------------------------------------------------------
     if smokeOn and IsValid(self.SmokeEmitter) then
         if math.random() < SMOKE_EMIT_CHANCE then
             local spread = VectorRand() * SMOKE_SPREAD
-            spread.x = spread.x * 0.4   -- tighten spread along fwd axis
+            spread.x = spread.x * 0.4
             local part = self.SmokeEmitter:Add(
                 "particle/particle_smokegrenade",
                 exhaustPos + spread
@@ -108,11 +268,10 @@ function ENT:Think()
         end
     end
 
-    -- Everything below this point only runs after FLAME_DELAY
     if not flameOn then return end
 
     -- --------------------------------------------------------
-    --  Dynamic light: orange core, swells during boost
+    --  Dynamic light
     -- --------------------------------------------------------
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
@@ -150,7 +309,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Fuchsia flame layer (swells +10 at full boost)
+    --  Fuchsia flame layer
     -- --------------------------------------------------------
     local fuchsiaMin = Lerp(boost, 35, 45)
     local fuchsiaMax = Lerp(boost, 45, 55)
@@ -198,8 +357,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Smoke wisp during flame phase (1-in-3 chance per tick)
-    --  (lighter accent wisps, smaller than the pre-ignition plume)
+    --  Smoke wisp during flame phase
     -- --------------------------------------------------------
     if math.random(1, 3) == 1 then
         local part = self.NikitaEmitter:Add(

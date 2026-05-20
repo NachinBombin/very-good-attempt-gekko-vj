@@ -54,17 +54,11 @@ local PHYS_DMG_SCALE      = 0.06
 -- ---------------------------------------------------------
 --  PRE-DETONATION SHOTGUN BURST
 -- ---------------------------------------------------------
--- Fires this many seconds before the explosion actually happens.
 local PREDET_DELAY      = 0.2
--- Number of pellets in the burst.
 local PREDET_PELLETS    = 9
--- Damage per pellet.
 local PREDET_PELLET_DMG = 18
--- Max effective range of the pellets (they can trace further but deal no dmg past this).
 local PREDET_RANGE      = 3000
--- Cone half-angle in degrees — spread of the pellets.
 local PREDET_SPREAD_DEG = 4.0
--- Forward offset of the "muzzle" from the missile's centre.
 local PREDET_NOSE_OFFS  = 20
 
 -- ---------------------------------------------------------
@@ -77,6 +71,12 @@ local SND_LOCKON  = "nikita/lock on stinger.wav"
 local SND_PREDET  = "weapons/shotgun/shotgun_fire7.wav"
 
 local LOCKON_DIST = 600
+
+-- ---------------------------------------------------------
+--  NET STRINGS
+-- ---------------------------------------------------------
+util.AddNetworkString("NikitaPelletTracer")
+util.AddNetworkString("NikitaMuzzleFlash")
 
 -- ---------------------------------------------------------
 --  RAY TABLES  (pitch, yaw, weight)
@@ -429,16 +429,7 @@ end
 -- ---------------------------------------------------------
 --  PRE-DETONATION SHOTGUN BURST
 -- ---------------------------------------------------------
--- Called from any code path that is about to intentionally detonate the
--- missile (proximity trigger, expire, owner command). Fires a spread of
--- pellets from the nose tip toward the current aim position, then schedules
--- the actual explosion PREDET_DELAY seconds later.
---
--- Returns true so the caller can know the timer is pending and avoid a
--- second immediate explosion call.
--- ---------------------------------------------------------
 local function RandomConeDir( baseDir, halfAngleDeg )
-    -- Build two tangent vectors for the cone base.
     local up = Vector(0, 0, 1)
     local right = baseDir:Cross(up)
     if right:LengthSqr() < 0.001 then
@@ -449,8 +440,8 @@ local function RandomConeDir( baseDir, halfAngleDeg )
     tang:Normalize()
 
     local halfRad = math.rad(halfAngleDeg)
-    local theta   = math.random() * halfRad          -- radial distance from centre
-    local phi     = math.random() * 2 * math.pi      -- rotation around cone axis
+    local theta   = math.random() * halfRad
+    local phi     = math.random() * 2 * math.pi
     local sinT    = math.sin(theta)
 
     local d = baseDir   * math.cos(theta)
@@ -468,18 +459,19 @@ function ENT:Nikita_PreDetBurst()
     local muzzlePos = self:GetPos() + self:GetForward() * PREDET_NOSE_OFFS
     local owner     = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
-    -- Determine aim direction: toward the current target if known,
-    -- otherwise just use the missile's forward.
     local aimPos  = GetAimPos(self)
     local aimDir  = aimPos
                     and (aimPos - muzzlePos):GetNormalized()
                     or  self:GetForward()
 
-    -- Play shotgun sound at the nose position.
     sound.Play(SND_PREDET, muzzlePos, 85, 100)
 
-    -- Fire each pellet as an individual hitscan ray so it produces
-    -- proper bullet impact effects on every surface it hits.
+    -- Broadcast muzzle flash to all clients.
+    net.Start("NikitaMuzzleFlash")
+        net.WriteVector(muzzlePos)
+        net.WriteVector(aimDir)
+    net.Broadcast()
+
     for i = 1, PREDET_PELLETS do
         local pelletDir = RandomConeDir(aimDir, PREDET_SPREAD_DEG)
 
@@ -490,7 +482,15 @@ function ENT:Nikita_PreDetBurst()
             mask    = MASK_SHOT,
         })
 
-        -- Spawn bullet impact effect on whatever the pellet hit.
+        -- The endpoint clients will draw the tracer beam to.
+        local endPos = tr.Hit and tr.HitPos or (muzzlePos + pelletDir * PREDET_RANGE)
+
+        -- Broadcast tracer to all clients.
+        net.Start("NikitaPelletTracer")
+            net.WriteVector(muzzlePos)
+            net.WriteVector(endPos)
+        net.Broadcast()
+
         if tr.Hit then
             local ed = EffectData()
             ed:SetOrigin(tr.HitPos)
@@ -512,7 +512,6 @@ function ENT:Nikita_PreDetBurst()
         end
     end
 
-    -- Schedule the actual detonation.
     local missileRef = self
     timer.Simple(PREDET_DELAY, function()
         if IsValid(missileRef) and not missileRef.Nikita_Exploded then
@@ -612,7 +611,6 @@ function ENT:CustomOnTakeDamage_BeforeDamage(dmginfo, hitgroup)
         dmginfo:SetDamage(0)
         return
     end
-    -- When shot down (not an intentional detonation), blow up immediately.
     if self:Health() - dmginfo:GetDamage() <= 0 then
         self:Nikita_DoExplosion(dmginfo)
     end
@@ -721,7 +719,6 @@ function ENT:CustomOnThink()
     local dt  = math.max(FrameTime(), 0.001)
 
     if self.Nikita_ExpireTime and now > self.Nikita_ExpireTime then
-        -- Lifetime expired: fire pre-det burst, which schedules the explosion.
         self:Nikita_PreDetBurst()
         return
     end
@@ -756,7 +753,6 @@ function ENT:CustomOnThink()
         end
 
         if distToEnemy <= (self.Nikita_ProxRadius or 220) then
-            -- Proximity detonation: fire burst first, explosion follows in 0.2 s.
             self:Nikita_PreDetBurst()
             return
         end
@@ -863,6 +859,5 @@ function ENT:CustomOnThink_AIEnabled()
 end
 
 function ENT:CustomOnKilled(dmginfo, hitgroup)
-    -- Shot down by a player — no pre-det burst, just explode immediately.
     self:Nikita_DoExplosion(dmginfo)
 end
