@@ -1,10 +1,6 @@
 -- ============================================================
 --  npc_vj_gekko / leg_disable_system.lua
 --  Gekko VJ NPC — Leg disabling / grounded state
---  FIXES:
---   * Hard snap to floor once on trigger (no repeated floating adjustment)
---   * Stronger movement kill (including MoveType and sprint flags)
---   * Grounding is no longer re-run every tick, only pose + bleed are
 -- ============================================================
 
 local GROUNDED_HEALTH_FRACTION = 0.30
@@ -47,57 +43,68 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
 end
 
 -- ============================================================
---  Helper: hard-lock all locomotion — called on trigger and tick
+--  Helper: hard-lock all locomotion
+--  Called both on trigger and every tick while grounded.
 -- ============================================================
 local function HardLockMovement(ent)
-    -- Zero VJ Base speed fields so it cannot feed them to the nav system
     ent.MoveSpeed    = 0
     ent.RunSpeed     = 0
     ent.WalkSpeed    = 0
     ent.MaxWalkSpeed = 0
     ent.MaxRunSpeed  = 0
 
-    -- Kill any residual physics velocity
+    -- Cancel any residual velocity
     local vel = ent:GetVelocity()
     if vel:LengthSqr() > 1 then
-        ent:SetVelocity(-vel)   -- impulse to cancel, works on MOVETYPE_STEP
+        ent:SetAbsVelocity(Vector(0, 0, 0))
     end
 
-    -- Force the NPC to stand still — override whatever schedule VJ restored
+    -- Force idle schedule so VJ Base stops issuing move tasks
     if ent:GetCurrentSchedule() ~= SCHED_IDLE_STAND then
         ent:SetSchedule(SCHED_IDLE_STAND)
     end
-
-    -- Stop navigation
     ent:TaskComplete()
     if ent.StopMoving then ent:StopMoving() end
 end
 
 -- ============================================================
---  Helper: snap origin down to floor (one-shot use on trigger)
+--  Helper: snap NPC feet to the floor directly below
+--  Uses a simple downward traceline from the foot origin.
+--  Must be called BEFORE SetMoveType(MOVETYPE_NONE).
 -- ============================================================
-function ENT:GekkoLegs_GroundToFloorOnce()
-    local mins, maxs = self:GetCollisionBounds()
-    local halfHeight = (maxs.z - mins.z) * 0.5
-    local start      = self:GetPos() + Vector(0, 0, halfHeight)
+local function SnapToFloor(ent)
+    -- Start just a couple units above the foot so we never start solid
+    local footOrigin = ent:GetPos() + Vector(0, 0, 2)
 
-    local tr = util.TraceHull({
-        start  = start,
-        endpos = start - Vector(0, 0, halfHeight + 256),
-        mins   = mins,
-        maxs   = maxs,
-        mask   = MASK_PLAYERSOLID,
-        filter = self,
+    -- Trace straight down up to 2048 units, only world/brush geometry
+    local tr = util.TraceLine({
+        start  = footOrigin,
+        endpos  = footOrigin - Vector(0, 0, 2048),
+        filter = ent,
+        mask   = MASK_SOLID_BRUSHONLY,
     })
 
-    if tr.Hit then
-        self:SetPos(tr.HitPos + Vector(0, 0, 2))
+    if tr.Hit and not tr.StartSolid then
+        -- Place feet exactly on the surface
+        ent:SetPos(tr.HitPos)
+        print(string.format("[GekkoLegs] Snapped to floor at Z=%.1f (dropped %.1f units)",
+            tr.HitPos.z, footOrigin.z - tr.HitPos.z))
+    else
+        -- Fallback: try again with a broader mask in case the first missed a prop floor
+        local tr2 = util.TraceLine({
+            start  = footOrigin,
+            endpos  = footOrigin - Vector(0, 0, 2048),
+            filter = ent,
+            mask   = MASK_PLAYERSOLID_BRUSHONLY,
+        })
+        if tr2.Hit and not tr2.StartSolid then
+            ent:SetPos(tr2.HitPos)
+            print(string.format("[GekkoLegs] Snapped to floor (fallback mask) at Z=%.1f",
+                tr2.HitPos.z))
+        else
+            print("[GekkoLegs] WARNING: floor snap trace missed, NPC may float")
+        end
     end
-end
-
--- Backwards compat: old name now just forwards once
-function ENT:GekkoLegs_GroundToFloor()
-    return self:GekkoLegs_GroundToFloorOnce()
 end
 
 -- ============================================================
@@ -109,13 +116,7 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._gekkoLegsDisabled   = true
     self._gekkoLegsTriggeredT = CurTime()
 
-    -- Hard stop locomotion and AI navigation
-    -- Freeze movement type so Gekko cannot be pushed into walking again
-    self:SetMoveType(MOVETYPE_NONE)
-    HardLockMovement(self)
-    self.VJ_IsBeingCrouched = false
-
-    -- Cancel jump
+    -- 1. Cancel jump immediately
     if self.SetGekkoJumpState then
         self:SetGekkoJumpState(self.JUMP_NONE or 0)
         self:SetGekkoJumpTimer(0)
@@ -125,28 +126,42 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._jumpCooldown     = CurTime() + 9999
     self._jumpLandCooldown = CurTime() + 9999
 
-    -- Turn off run / sprint flags so animation update does not try to run
+    -- 2. Kill sprint / run flags
     self._gekkoRunning = false
     if self._gekkoSprinting then
-        if GekkoSprint_End then
-            GekkoSprint_End(self)
-        else
-            self._gekkoSprinting = false
+        -- GekkoSprint_End is a module-local in init.lua;
+        -- set the flag directly as a safe fallback
+        self._gekkoSprinting    = false
+        self._gekkoSprintEndT   = 0
+        if self._preSprint_MoveSpeed then
+            self.MoveSpeed = self._preSprint_MoveSpeed
+            self.RunSpeed  = self._preSprint_RunSpeed
+            self.WalkSpeed = self._preSprint_WalkSpeed
+            self._preSprint_MoveSpeed = nil
+            self._preSprint_RunSpeed  = nil
+            self._preSprint_WalkSpeed = nil
         end
     end
 
-    -- Force standing hull, no crouch
+    -- 3. Force standing hull, clear crouch
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetNWBool("GekkoIsCrouching", false)
-    self._gekkoCrouching = false
+    self._gekkoCrouching    = false
+    self.VJ_IsBeingCrouched = false
 
-    -- One-shot hard snap to the floor directly below current position
-    self:GekkoLegs_GroundToFloorOnce()
+    -- 4. Snap feet to floor BEFORE freezing move type
+    --    (move type must still be MOVETYPE_STEP so SetPos works normally)
+    SnapToFloor(self)
 
-    -- Apply static disabled pose
+    -- 5. NOW freeze locomotion completely
+    self:SetMoveType(MOVETYPE_NONE)
+    self:SetAbsVelocity(Vector(0, 0, 0))
+    HardLockMovement(self)
+
+    -- 6. Apply the disabled leg pose
     self:GekkoLegs_ApplyPose()
 
-    -- Gib burst
+    -- 7. Gib burst
     local hitPos = dmginfo:GetDamagePosition()
     if (not hitPos) or hitPos == vector_origin then
         hitPos = self:GetPos() + Vector(0, 0, 80)
@@ -164,7 +179,7 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         self:GekkoGib_OnDamage(self.StartHealth or 900, dmginfo)
     end
 
-    print("[GekkoLegs] Entered grounded state (legs disabled, movement hard-locked)")
+    print("[GekkoLegs] Entered grounded state")
 end
 
 -- ============================================================
@@ -185,18 +200,14 @@ end
 
 -- ============================================================
 --  Per-tick update while grounded
---  NOTE: We no longer re-ground every tick; that was causing
---        the floating / slow settle behaviour. Ground snap is
---        done once on trigger; here we just re-assert speeds
---        and keep the visual pose + bleeding.
 -- ============================================================
 function ENT:GekkoLegs_Think()
     if not self._gekkoLegsDisabled then return end
 
-    -- Re-enforce movement lock every tick (VJ Base tries to restore speeds)
+    -- Re-enforce every tick: VJ Base tries to restore speed values
     HardLockMovement(self)
 
-    -- Keep disabled pose (visual only; no SetPos here)
+    -- Keep the visual pose
     self:GekkoLegs_ApplyPose()
 
     -- Passive bleeding
@@ -208,3 +219,7 @@ function ENT:GekkoLegs_Think()
         self:SetNWInt("GekkoBloodSplat", self._bloodSplatPulse * 8 + (variant - 1))
     end
 end
+
+-- Backwards compat alias (safe to call but does nothing while grounded)
+function ENT:GekkoLegs_GroundToFloor() end
+function ENT:GekkoLegs_GroundToFloorOnce() end
