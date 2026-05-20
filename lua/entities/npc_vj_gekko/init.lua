@@ -701,14 +701,6 @@ end
 
 -- ============================================================
 -- RECONSTRUCT HIT POSITION
--- GetDamagePosition() frequently returns vector_origin for
--- bullet and projectile damage after VJ Base processes it.
--- Strategy (in order of reliability):
---   1. Use GetDamagePosition() if non-zero
---   2. Traceline from attacker eye to NPC center
---   3. Traceline from inflictor to NPC center
---   4. NPC body center (half collision height)
--- We NEVER return early -- the hit react must always fire.
 -- ============================================================
 local function GekkoResolveHitPos(self, dmginfo)
     local hitPos = dmginfo:GetDamagePosition()
@@ -719,7 +711,6 @@ local function GekkoResolveHitPos(self, dmginfo)
     local _, maxs = self:GetCollisionBounds()
     local bodyCenter = self:GetPos() + Vector(0, 0, maxs.z * 0.5)
 
-    -- Try traceline from attacker
     local attacker = dmginfo:GetAttacker()
     if IsValid(attacker) then
         local src = attacker.EyePos and attacker:EyePos() or attacker:GetPos()
@@ -729,16 +720,12 @@ local function GekkoResolveHitPos(self, dmginfo)
             filter = { attacker, self },
             mask   = MASK_SHOT,
         })
-        -- Accept the trace hit, or if it missed just use the body center
-        -- (trace can miss if the NPC was behind cover when the server
-        -- processed the shot -- still better than vector_origin).
         if tr.Hit then
             return tr.HitPos, "trace_attacker"
         end
         return bodyCenter, "bodycenter_attacker"
     end
 
-    -- Try traceline from inflictor (projectile)
     local inflictor = dmginfo:GetInflictor()
     if IsValid(inflictor) then
         local src = inflictor:GetPos()
@@ -1235,4 +1222,5 @@ end
 
 function ENT:OnRemove()
     if self._gekkoSprinting then GekkoSprint_End(self) end
+    self:GekkoElastic_OnRemove()
 end
