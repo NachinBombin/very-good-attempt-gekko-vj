@@ -8,10 +8,17 @@
 --    shoot_1..5     : played immediately on GekkoElasticShootSound
 --                     (0.9s before beam/pull exists)
 --    tentaclepull_1 : looped via CreateSound for the beam's full lifetime
+--    tentacle_stab  : played at the target's position on cable break
+--
+--  Effects:
+--    Dust emitter  : spawned at the target's connection point when the
+--                    beam first attaches (GekkoElasticRope).
+--    gekko_bloodstream : spawned at the target's connection point when
+--                    the player snaps the cable (GekkoElasticBreak).
 --
 --  Cable-break detection is handled entirely server-side.
 --  This file only receives GekkoElasticBreak to kill the beam
---  visually before its natural expiry.
+--  visually, play stab sound, and spawn blood effect.
 -- ============================================================
 
 -- ============================================================
@@ -34,7 +41,55 @@ local SHOOT_SOUNDS = {
     "gekko/elastic/shoot_4.wav",
     "gekko/elastic/shoot_5.wav",
 }
-local TENTACLE_LOOP = "gekko/elastic/tentaclepull_1.wav"
+local TENTACLE_LOOP  = "gekko/elastic/tentaclepull_1.wav"
+local TENTACLE_STAB  = "gekko/elastic/tentacle_stab.wav"
+
+-- ============================================================
+--  DUST EFFECT  (played at attach point when beam lands)
+-- ============================================================
+local function SpawnAttachDust(pos)
+    local emitter = ParticleEmitter(pos, false)
+    if not emitter then return end
+
+    for _ = 1, 18 do
+        local p = emitter:Add("particle/smokesprites_000" .. math.random(1, 9), pos)
+        if not p then continue end
+
+        local dir = VectorRand()
+        dir.z     = math.abs(dir.z)  -- bias upward so dust rises
+
+        p:SetVelocity(dir * math.Rand(40, 120))
+        p:SetLifeTime(0)
+        p:SetDieTime(math.Rand(0.35, 0.7))
+        p:SetStartAlpha(math.Rand(120, 180))
+        p:SetEndAlpha(0)
+        p:SetStartSize(math.Rand(4, 9))
+        p:SetEndSize(math.Rand(14, 28))
+        p:SetColor(200, 190, 170)
+        p:SetAirResistance(60)
+        p:SetGravity(Vector(0, 0, 18))
+        p:SetRoll(math.Rand(0, 360))
+        p:SetRollDelta(math.Rand(-0.6, 0.6))
+    end
+
+    emitter:Finish()
+end
+
+-- ============================================================
+--  BLOOD EFFECT  (played at break point when cable is snapped)
+--  Uses the existing gekko_bloodstream effect.
+-- ============================================================
+local function SpawnBreakBlood(pos, enemy)
+    -- gekko_bloodstream reads Entity and Origin from EffectData.
+    -- Normal is set away from the Gekko (upward burst is fine as fallback).
+    local ed = EffectData()
+    ed:SetOrigin(pos)
+    ed:SetNormal(Vector(0, 0, 1))
+    if IsValid(enemy) then
+        ed:SetEntity(enemy)
+    end
+    util.Effect("gekko_bloodstream", ed, true, true)
+end
 
 -- ============================================================
 --  HELPER: stop and remove all beam entries for a given enemy.
@@ -105,6 +160,7 @@ end)
 
 -- ============================================================
 --  BEAM + TENTACLE LOOP  (arrives after pre-fire delay)
+--  Also spawns dust at the target's connection point.
 -- ============================================================
 net.Receive("GekkoElasticRope", function()
     local gekko     = net.ReadEntity()
@@ -116,6 +172,10 @@ net.Receive("GekkoElasticRope", function()
     local col_b     = net.ReadUInt(8)
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
+
+    -- Dust at the exact attachment point on the target.
+    local attachPos = enemy:GetPos() + Vector(0, 0, 40)
+    SpawnAttachDust(attachPos)
 
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
     if loopSnd then
@@ -149,11 +209,23 @@ end)
 -- ============================================================
 --  CABLE BREAK  (server broadcast on early player snap)
 --
---  Immediately removes all beam entries for the freed player
---  so the rope disappears and the loop sound stops.
+--  1. Immediately removes all beam entries for the freed player.
+--  2. Spawns gekko_bloodstream at the break position.
+--  3. Plays tentacle_stab.wav at the break position.
 -- ============================================================
 net.Receive("GekkoElasticBreak", function()
-    local enemy = net.ReadEntity()
+    local enemy    = net.ReadEntity()
+    local breakPos = net.ReadVector()
+
     if not IsValid(enemy) then return end
+
+    -- Kill the beam and loop sound.
     RemoveBeamsForEnemy(enemy)
+
+    -- Blood effect at the exact connection point.
+    SpawnBreakBlood(breakPos, enemy)
+
+    -- Stab sound at the exact connection point.
+    -- sound.Play strips the leading "sound/" automatically.
+    sound.Play(TENTACLE_STAB, breakPos, 85, 100)
 end)

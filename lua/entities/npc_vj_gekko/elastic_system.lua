@@ -54,30 +54,25 @@ local BREAK_WINDOW    = 1.0
 util.AddNetworkString("GekkoElasticRope")
 util.AddNetworkString("GekkoElasticShootSound")
 -- Broadcast server->all clients when a player snaps the cable.
+-- Carries: Entity(player), Vector(break position)
 util.AddNetworkString("GekkoElasticBreak")
 util.PrecacheModel(ANCHOR_MODEL)
 
 -- ============================================================
 --  PER-PLAYER BUTTON TIMESTAMP TABLE
---
---  Keyed by player entity userdata.
---  Value: table of CurTime() timestamps of recent button-down
---  events. Pruned to BREAK_WINDOW on every new press.
 -- ============================================================
 local _breakTimes = {}
 
 hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply, button)
     if not IsValid(ply) or not ply:Alive() then return end
 
-    -- Initialise table for this player if needed.
     if not _breakTimes[ply] then
         _breakTimes[ply] = {}
     end
 
-    local now    = CurTime()
-    local times  = _breakTimes[ply]
+    local now   = CurTime()
+    local times = _breakTimes[ply]
 
-    -- Record this press.
     times[#times + 1] = now
 
     -- Prune events outside the rolling window.
@@ -91,35 +86,34 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply, button)
         end
     end
 
-    -- Not enough presses yet.
     if #times < BREAK_THRESHOLD then return end
 
-    -- Check if this player is currently hooked by any Gekko.
     for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
         if not IsValid(ent) then continue end
         if not ent._elasticActive then continue end
         if ent._elasticEnemy ~= ply then continue end
 
-        -- Cable broken.
+        -- Capture break position BEFORE cleanup clears the enemy ref.
+        local breakPos = ply:GetPos() + Vector(0, 0, 40)
+
         print(string.format(
             "[GekkoElastic] CABLE BROKEN by player %s (button mash)",
             ply:Nick()))
 
-        -- Reset timestamp table so they can't re-trigger instantly.
         _breakTimes[ply] = {}
 
         ent:_GekkoElastic_Cleanup()
 
-        -- Tell all clients to kill the beam for this player.
+        -- Tell all clients: kill the beam and play blood+sound at breakPos.
         net.Start("GekkoElasticBreak")
             net.WriteEntity(ply)
+            net.WriteVector(breakPos)
         net.Broadcast()
 
         break
     end
 end)
 
--- Clean up table when player disconnects.
 hook.Add("PlayerDisconnected", "GekkoElasticCableBreakCleanup", function(ply)
     _breakTimes[ply] = nil
 end)
