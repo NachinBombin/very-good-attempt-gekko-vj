@@ -9,12 +9,15 @@
 --
 --  Sounds:
 --    shoot_1..5     : played immediately on GekkoElasticShootSound
---    tentaclepull_1 : looped via CreateSound for the beam's full lifetime
---    tentacle_stab  : played at the target's position on cable break
+--    tentaclepull_1 : looped via CreateSound for beam's full lifetime
+--    tentacle_stab  : played at break position on cable snap
 --
 --  Effects:
---    Dust emitter  : spawned at the target connection point on attach
---    gekko_bloodstream : spawned at break point on cable snap
+--    Dust emitter      : spawned at target attach point on beam land
+--    Break blood mist  : GUARANTEED heavy mist on cable snap
+--    Break sparks      : GUARANTEED spark burst on cable snap
+--    Break decals      : blood splats on nearby surfaces
+--    Screen flash      : white overlay flash on cable snap (nearby only)
 --
 --  SERVER SIDE IS COMPLETELY UNCHANGED.
 -- ============================================================
@@ -22,22 +25,21 @@
 -- ============================================================
 --  CONFIG
 -- ============================================================
-local ROPE_NODES       = 12      -- number of simulation nodes (inc. endpoints)
-local ROPE_GRAVITY     = Vector(0, 0, -380)  -- gravity applied to inner nodes
-local ROPE_DAMPING     = 0.88    -- velocity retention per frame (0-1); lower = more drag
-local ROPE_CONSTRAINT  = 6       -- distance-constraint iterations per frame
-local ROPE_SLACK       = 1.08    -- rest length = (dist / segments) * SLACK; > 1 = sag
+local ROPE_NODES      = 12
+local ROPE_GRAVITY    = Vector(0, 0, -380)
+local ROPE_DAMPING    = 0.88
+local ROPE_CONSTRAINT = 6
+local ROPE_SLACK      = 1.08
 
 -- ============================================================
 --  ACTIVE BEAM TABLE
---  Each entry: { gekko, enemy, startOffset, endOffset,
---               width, color, removeAt, loopSnd,
---               nodes, prevNodes }       <- new simulation fields
 -- ============================================================
 local activeBeams = {}
 
--- Must match elastic_system.lua
-local GEKKO_ORIGIN_Z = 380
+-- Mid-body visual origin. Intentionally 180, NOT the server physics
+-- anchor (380). 180 places the rope at the Gekko's torso / bushmaster
+-- muzzle height as it appeared before the rope rewrite.
+local GEKKO_ORIGIN_Z = 180
 
 -- ============================================================
 --  SOUNDS
@@ -53,11 +55,8 @@ local TENTACLE_LOOP = "gekko/elastic/tentaclepull_1.wav"
 local TENTACLE_STAB = "gekko/elastic/tentacle_stab.wav"
 
 -- ============================================================
---  ROPE SIMULATION HELPERS
+--  ROPE SIMULATION
 -- ============================================================
-
--- Build a fresh node chain between two world positions.
--- Each node: { pos = Vector, prev = Vector }
 local function RopeNodes_Create(startPos, endPos)
     local nodes = {}
     local segs  = ROPE_NODES - 1
@@ -69,8 +68,6 @@ local function RopeNodes_Create(startPos, endPos)
     return nodes
 end
 
--- Simulate one frame of verlet physics on the node chain.
--- Endpoint nodes (1 and N) are pinned to anchorA / anchorB.
 local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
     local n       = #nodes
     local dtSq    = dt * dt
@@ -79,19 +76,18 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
 
     -- 1. Verlet integrate inner nodes
     for i = 2, n - 1 do
-        local nd   = nodes[i]
-        local cur  = nd.pos
-        local prev = nd.prev
-        -- velocity = (cur - prev), damped
-        local vx = (cur.x - prev.x) * damp
-        local vy = (cur.y - prev.y) * damp
-        local vz = (cur.z - prev.z) * damp
-        -- new position
-        local nx = cur.x + vx + gravity.x * dtSq
-        local ny = cur.y + vy + gravity.y * dtSq
-        local nz = cur.z + vz + gravity.z * dtSq
-        nd.prev  = Vector(cur.x, cur.y, cur.z)
-        nd.pos   = Vector(nx, ny, nz)
+        local nd  = nodes[i]
+        local cur = nd.pos
+        local prv = nd.prev
+        local vx  = (cur.x - prv.x) * damp
+        local vy  = (cur.y - prv.y) * damp
+        local vz  = (cur.z - prv.z) * damp
+        nd.prev = Vector(cur.x, cur.y, cur.z)
+        nd.pos  = Vector(
+            cur.x + vx + gravity.x * dtSq,
+            cur.y + vy + gravity.y * dtSq,
+            cur.z + vz + gravity.z * dtSq
+        )
     end
 
     -- 2. Pin endpoints
@@ -100,7 +96,7 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
     nodes[n].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
     nodes[n].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
 
-    -- 3. Distance constraints (multiple iterations = stiffer)
+    -- 3. Distance constraints
     local segs    = n - 1
     local rawDist = anchorA:Distance(anchorB)
     local restLen = (rawDist / segs) * ROPE_SLACK
@@ -114,11 +110,8 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
             local dz = b.pos.z - a.pos.z
             local d  = math.sqrt(dx*dx + dy*dy + dz*dz)
             if d < 0.001 then continue end
-            local diff = (d - restLen) / d * 0.5
-            local cx   = dx * diff
-            local cy   = dy * diff
-            local cz   = dz * diff
-            -- endpoint nodes are pinned; only move inner nodes
+            local diff     = (d - restLen) / d * 0.5
+            local cx, cy, cz = dx*diff, dy*diff, dz*diff
             if i ~= 1 then
                 a.pos.x = a.pos.x + cx
                 a.pos.y = a.pos.y + cy
@@ -130,14 +123,13 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
                 b.pos.z = b.pos.z - cz
             end
         end
-        -- re-pin endpoints after each constraint pass
-        nodes[1].pos  = Vector(anchorA.x, anchorA.y, anchorA.z)
-        nodes[n].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
+        nodes[1].pos = Vector(anchorA.x, anchorA.y, anchorA.z)
+        nodes[n].pos = Vector(anchorB.x, anchorB.y, anchorB.z)
     end
 end
 
 -- ============================================================
---  DUST EFFECT
+--  ATTACH DUST  (on beam landing)
 -- ============================================================
 local function SpawnAttachDust(pos)
     local emitter = ParticleEmitter(pos, false)
@@ -164,18 +156,99 @@ local function SpawnAttachDust(pos)
 end
 
 -- ============================================================
---  BLOOD EFFECT
+--  BREAK EFFECTS  (all GUARANTEED - no probability rolls)
+--
+--  Called directly instead of util.Effect("gekko_bloodstream")
+--  because that effect has internal 80%/23%/23% probability
+--  rolls that silently skip the visuals most of the time.
 -- ============================================================
-local function SpawnBreakBlood(pos, enemy)
-    local ed = EffectData()
-    ed:SetOrigin(pos)
-    ed:SetNormal(Vector(0, 0, 1))
-    if IsValid(enemy) then ed:SetEntity(enemy) end
-    util.Effect("gekko_bloodstream", ed, true, true)
+local _breakFlashEnd = 0
+
+local function SpawnBreakEffects(pos, enemy)
+    local norm = Vector(0, 0, 1)
+    if IsValid(enemy) then
+        norm = enemy:GetForward() * -1
+    end
+
+    -- Blood mist (heavy, 25 particles)
+    local emitter = ParticleEmitter(pos, true)
+    if emitter then
+        for _ = 1, 25 do
+            local p = emitter:Add("particle/smokesprites_000" .. math.random(1, 9), pos)
+            if not p then continue end
+            local vel = norm * math.Rand(40, 80) + VectorRand() * 24
+            p:SetVelocity(vel)
+            p:SetLifeTime(0)
+            p:SetDieTime(math.Rand(0.8, 1.8))
+            p:SetStartAlpha(math.Rand(65, 90))
+            p:SetEndAlpha(0)
+            p:SetStartSize(math.Rand(8, 14))
+            p:SetEndSize(math.Rand(30, 55))
+            p:SetColor(210, 30, 30)
+            p:SetAirResistance(40)
+            p:SetGravity(Vector(0, 0, -12))
+            p:SetRoll(math.Rand(0, 360))
+            p:SetRollDelta(math.Rand(-0.4, 0.4))
+        end
+        emitter:Finish()
+    end
+
+    -- Sparks (20-35 particles)
+    local sparker = ParticleEmitter(pos, true)
+    if sparker then
+        local right = norm:Cross(Vector(0, 0, 1))
+        if right:LengthSqr() < 0.001 then right = norm:Cross(Vector(0, 1, 0)) end
+        right:Normalize()
+        local up = right:Cross(norm):GetNormalized()
+        local sr = math.rad(55)
+        for _ = 1, math.random(20, 35) do
+            local p = sparker:Add("effects/spark", pos)
+            if not p then continue end
+            local dir = (norm
+                + right * math.sin(math.Rand(-sr, sr))
+                + up    * math.sin(math.Rand(-sr, sr))):GetNormalized()
+            p:SetVelocity(dir * math.Rand(150, 400))
+            p:SetLifeTime(0)
+            p:SetDieTime(math.Rand(0.15, 0.45))
+            p:SetStartAlpha(255)
+            p:SetEndAlpha(0)
+            p:SetStartSize(math.Rand(1.2, 3.0))
+            p:SetEndSize(0)
+            p:SetColor(255, math.random(180, 255), math.random(0, 60))
+            p:SetGravity(Vector(0, 0, -300))
+            p:SetAirResistance(20)
+            p:SetCollide(true)
+            p:SetBounce(0.3)
+        end
+        sparker:Finish()
+    end
+
+    -- Blood decals on nearby surfaces
+    for _ = 1, math.random(3, 6) do
+        local ox = math.Rand(-30, 30)
+        local oy = math.Rand(-30, 30)
+        util.Decal("Blood",
+            pos + Vector(ox, oy,  20),
+            pos + Vector(ox, oy, -96)
+        )
+    end
+
+    -- Screen flash (only for nearby local player)
+    local ply = LocalPlayer()
+    if IsValid(ply) and ply:GetPos():Distance(pos) < 700 then
+        _breakFlashEnd = CurTime() + 0.18
+    end
 end
 
+hook.Add("HUDPaint", "GekkoElasticBreakFlash", function()
+    if CurTime() >= _breakFlashEnd then return end
+    local alpha = math.Remap(CurTime(), _breakFlashEnd - 0.18, _breakFlashEnd, 55, 0)
+    surface.SetDrawColor(255, 255, 255, math.Clamp(alpha, 0, 55))
+    surface.DrawRect(0, 0, ScrW(), ScrH())
+end)
+
 -- ============================================================
---  REMOVE ALL BEAMS FOR A GIVEN ENEMY
+--  REMOVE BEAMS FOR ENEMY
 -- ============================================================
 local function RemoveBeamsForEnemy(enemy)
     local i = 1
@@ -191,7 +264,7 @@ local function RemoveBeamsForEnemy(enemy)
 end
 
 -- ============================================================
---  DRAW HOOK  –  simulated rope
+--  DRAW HOOK
 -- ============================================================
 local _lastFrameT = 0
 
@@ -215,12 +288,10 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
             table.remove(activeBeams, i)
         else
             local anchorA = b.gekko:GetPos() + b.startOffset
-            local anchorB = b.enemy:GetPos() + b.endOffset
+            local anchorB = b.enemy:GetPos()  + b.endOffset
 
-            -- Simulate the rope nodes this frame
             RopeNodes_Simulate(b.nodes, anchorA, anchorB, dt)
 
-            -- Draw segment-by-segment
             render.SetMaterial(mat)
             local nodes = b.nodes
             for s = 1, #nodes - 1 do
@@ -249,7 +320,7 @@ net.Receive("GekkoElasticShootSound", function()
 end)
 
 -- ============================================================
---  NET: BEAM ATTACH  (runs after pre-fire delay)
+--  NET: BEAM ATTACH
 -- ============================================================
 net.Receive("GekkoElasticRope", function()
     local gekko     = net.ReadEntity()
@@ -262,8 +333,7 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
-    local attachPos = enemy:GetPos() + Vector(0, 0, 40)
-    SpawnAttachDust(attachPos)
+    SpawnAttachDust(enemy:GetPos() + Vector(0, 0, 40))
 
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
     if loopSnd then
@@ -276,23 +346,18 @@ net.Receive("GekkoElasticRope", function()
     local anchorA     = gekko:GetPos() + startOffset
     local anchorB     = enemy:GetPos() + endOffset
 
-    -- Build initial straight-line node chain; physics will droop it immediately
-    local nodes = RopeNodes_Create(anchorA, anchorB)
-
-    local entry = {
+    table.insert(activeBeams, {
         gekko       = gekko,
         enemy       = enemy,
         startOffset = startOffset,
         endOffset   = endOffset,
-        width       = math.max(width, 3),   -- min width so rope is visible
+        width       = math.max(width, 3),
         color       = Color(col_r, col_g, col_b, 255),
         removeAt    = CurTime() + snapDelay,
         loopSnd     = loopSnd,
-        nodes       = nodes,
-    }
-    table.insert(activeBeams, entry)
+        nodes       = RopeNodes_Create(anchorA, anchorB),
+    })
 
-    -- Screen shake
     local ply = LocalPlayer()
     if IsValid(ply) then
         local d = ply:GetPos():Distance(enemy:GetPos())
@@ -312,6 +377,6 @@ net.Receive("GekkoElasticBreak", function()
     if not IsValid(enemy) then return end
 
     RemoveBeamsForEnemy(enemy)
-    SpawnBreakBlood(breakPos, enemy)
+    SpawnBreakEffects(breakPos, enemy)
     sound.Play(TENTACLE_STAB, breakPos, 85, 100)
 end)
