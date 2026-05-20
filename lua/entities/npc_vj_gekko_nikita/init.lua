@@ -179,7 +179,6 @@ local function BuildTangents(normal)
 end
 
 -- Returns true if 'ent' is a world brush / static geometry.
--- Used to distinguish "weapon projectile hit us" from "we scraped a wall".
 local function IsWorldEnt(ent)
     if not IsValid(ent) then return true end
     local cl = ent:GetClass()
@@ -446,33 +445,21 @@ function ENT:CustomOnInitialize()
 
     self._lastPhysDmg  = -999
 
-    -- Lock-on stinger state:
-    --   _lockOnArmed  = true means ready to fire (hasn't played yet this approach)
-    --   _lockOnActive = true means stinger is currently playing (target is inside range)
     self._lockOnArmed  = true
     self._lockOnActive = false
 
-    -- Fire sound: one-shot on spawn
     sound.Play(SND_FIRE, self:GetPos(), 90, 100)
-
-    -- Flight loop: both channels started together, looping
     self:EmitSound(SND_WHISTLE, 80, 100)
     self:EmitSound(SND_FLAME,   75, 100)
 end
 
 function ENT:CustomOnPostInitialize()
     self:SetMoveType(MOVETYPE_NOCLIP)
-
-    -- SOLID_BBOX + FSOLID_NOT_SOLID:
-    --   SOLID_BBOX       -> hitscan FireBullets (MASK_SHOT) registers a hit.
-    --   FSOLID_NOT_SOLID -> won't physically block NPCs / locomotor.
     self:SetSolid(SOLID_BBOX)
     self:AddSolidFlags(FSOLID_NOT_SOLID)
     self:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
     self:SetCollisionBounds(Vector(-12,-12,-12), Vector(12,12,12))
 
-    -- Real vphysics shadow so PhysicsCollide fires for physics projectiles.
-    -- Motion disabled so it never moves under physics.
     self:PhysicsInitSphere(12, "metal")
     local phys = self:GetPhysicsObject()
     if IsValid(phys) then
@@ -484,37 +471,19 @@ function ENT:CustomOnPostInitialize()
     self:StartMotionController()
 end
 
--- ---------------------------------------------------------
---  PHYSICS / DEBRIS DAMAGE
---
---  PhysicsCollide fires whenever any physics object touches the
---  vphysics shadow — including the world itself when the missile
---  clips a wall.  We only want WEAPON projectiles and props to
---  count, not geometry.  IsWorldEnt() gates that distinction.
---
---  Hitscan weapons reach OnTakeDamage directly via SOLID_BBOX.
--- ---------------------------------------------------------
 local PHYS_DMG_COOLDOWN = 0.05
 
 function ENT:PhysicsCollide(data, physobj)
     if self.Nikita_Exploded then return end
-
-    -- Ignore collisions with world geometry / static brushes.
-    -- Those are handled by the wall-bump resilience system (BumpArmor)
-    -- and must NEVER feed into health.
     local other = data.HitEntity
     if IsWorldEnt(other) then return end
-
     local now = CurTime()
     if now - self._lastPhysDmg < PHYS_DMG_COOLDOWN then return end
     self._lastPhysDmg = now
-
     local speed = data.Speed
     if speed < PHYS_DMG_MIN_SPEED then return end
-
     local dmg  = math.max(1, speed * PHYS_DMG_SCALE)
     local inf  = IsValid(other) and other or game.GetWorld()
-
     local dmginfo = DamageInfo()
     dmginfo:SetDamage(dmg)
     dmginfo:SetAttacker(inf)
@@ -526,20 +495,57 @@ function ENT:PhysicsCollide(data, physobj)
 end
 
 function ENT:CustomOnTakeDamage_BeforeDamage(dmginfo, hitgroup)
-    -- Block DMG_CRUSH that originates from the world entity.
-    -- This catches any path where a wall-scrape noise or residual
-    -- vphysics event slips through as DMG_CRUSH with world as attacker.
     local dmgType     = dmginfo:GetDamageType()
     local dmgAttacker = dmginfo:GetAttacker()
     if dmgType == DMG_CRUSH and IsWorldEnt(dmgAttacker) then
         dmginfo:SetDamage(0)
         return
     end
-
-    -- Immediate explosion when any weapon hit is lethal, bypassing
-    -- VJ's scheduler stall (HasDeathRagdoll=false leaves it ambiguous).
     if self:Health() - dmginfo:GetDamage() <= 0 then
         self:Nikita_DoExplosion(dmginfo)
+    end
+end
+
+-- ---------------------------------------------------------
+--  FALLOFF BLAST HELPERS
+-- ---------------------------------------------------------
+local FALLOFF_MIN_FRAC = 0.08   -- 8% damage at the very edge
+
+local function EntAimPos( ent )
+    local phys = ent:GetPhysicsObject()
+    if IsValid( phys ) then return phys:GetMassCenter() end
+    return ent:GetPos()
+end
+
+local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg )
+    for _, ent in ipairs( ents.FindInSphere( origin, radius ) ) do
+        if not IsValid( ent ) then continue end
+        if ent == inflictor   then continue end
+
+        local entPos = EntAimPos( ent )
+        -- Skip entities with no line of sight (behind walls/roofs)
+        local los = util.TraceLine({
+            start  = origin,
+            endpos = entPos,
+            mask   = MASK_SOLID_BRUSHONLY,
+            filter = inflictor,
+        })
+        if los.Hit then continue end
+
+        local dist  = ( entPos - origin ):Length()
+        local frac  = math.Clamp( 1 - ( dist / radius ), 0, 1 )
+        local scale = FALLOFF_MIN_FRAC + ( 1 - FALLOFF_MIN_FRAC ) * frac
+        local dmg   = maxDmg * scale
+        if dmg < 1 then continue end
+
+        local dmginfo = DamageInfo()
+        dmginfo:SetDamage( dmg )
+        dmginfo:SetAttacker( attacker )
+        dmginfo:SetInflictor( inflictor )
+        dmginfo:SetDamageType( DMG_BLAST )
+        dmginfo:SetDamagePosition( origin )
+        dmginfo:SetDamageForce( ( entPos - origin ):GetNormalized() * dmg * 80 )
+        ent:TakeDamageInfo( dmginfo )
     end
 end
 
@@ -555,13 +561,21 @@ function ENT:Nikita_DoExplosion(dmginfo)
     local rad   = self.Nikita_Radius or 700
     local owner = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
-    -- Stop all looping / in-flight sounds
     self:StopSound(SND_WHISTLE)
     self:StopSound(SND_FLAME)
     self:StopSound(SND_LOCKON)
 
     sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
-    util.ScreenShake(pos, 16, 200, 1, 3000)
+
+    -- Distance-scaled per-player camera shake
+    for _, ply in ipairs( player.GetAll() ) do
+        if not IsValid( ply ) then continue end
+        local _sd = ( ply:GetPos() - pos ):Length()
+        if _sd < 3000 then
+            local _sf = math.Clamp( 1 - ( _sd / 3000 ), 0, 1 )
+            util.ScreenShake( ply:GetPos(), 20 * _sf, 200, 1.0, 1 )
+        end
+    end
 
     local ed = EffectData()
     ed:SetOrigin(pos)
@@ -578,7 +592,7 @@ function ENT:Nikita_DoExplosion(dmginfo)
         pe:Fire("Kill",    "", 0.5)
     end
 
-    util.BlastDamage(self, owner, pos + Vector(0,0,50), rad, dmg)
+    DoFalloffBlastDamage( self, owner, pos + Vector(0,0,50), rad, dmg )
     self:Remove()
 end
 
@@ -588,8 +602,6 @@ end
 function ENT:CustomOnThink()
     if self.Nikita_Exploded then return end
 
-    -- Keep NOCLIP every tick in case VJ's scheduler resets it.
-    -- Do NOT reset solid — SOLID_BBOX+FSOLID_NOT_SOLID must persist.
     if self:GetMoveType() ~= MOVETYPE_NOCLIP then
         self:SetMoveType(MOVETYPE_NOCLIP)
         return
@@ -621,16 +633,11 @@ function ENT:CustomOnThink()
     if IsValid(enemy) then
         local distToEnemy = myPos:Distance(enemy:GetPos())
 
-        -- Lock-on stinger logic:
-        --   Armed  + inside range  -> play stinger, mark active.
-        --   Active + outside range -> target escaped; stop stinger, re-arm
-        --                             so it fires again on next approach.
         if self._lockOnArmed and distToEnemy <= LOCKON_DIST then
             self._lockOnArmed  = false
             self._lockOnActive = true
             sound.Play(SND_LOCKON, myPos, 85, 100)
         elseif self._lockOnActive and distToEnemy > LOCKON_DIST then
-            -- Target broke away — stop the stinger and reset for next approach.
             self:StopSound(SND_LOCKON)
             self._lockOnActive = false
             self._lockOnArmed  = true
@@ -719,9 +726,6 @@ function ENT:CustomOnThink()
     self:SetAngles(DirToAngle(moveDir))
     self:SetAbsVelocity(moveDir * CRUISE_SPEED)
 
-    -- Wall-bump resilience: uses BumpArmor (geometry counter) only.
-    -- This path NEVER damages health — that is intentional.
-    -- World collision = navigate around it, not die from it.
     local stepDist = CRUISE_SPEED * dt + 16
     local tr = util.TraceHull({
         start  = myPos,
