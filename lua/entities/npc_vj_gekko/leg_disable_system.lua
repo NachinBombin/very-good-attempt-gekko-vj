@@ -1,6 +1,10 @@
 -- ============================================================
 --  npc_vj_gekko / leg_disable_system.lua
 --  Gekko VJ NPC — Leg disabling / grounded state
+--  FIXES:
+--   * Hard snap to floor once on trigger (no repeated floating adjustment)
+--   * Stronger movement kill (including MoveType and sprint flags)
+--   * Grounding is no longer re-run every tick, only pose + bleed are
 -- ============================================================
 
 local GROUNDED_HEALTH_FRACTION = 0.30
@@ -43,7 +47,7 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
 end
 
 -- ============================================================
---  Helper: hard-lock all locomotion — called every tick
+--  Helper: hard-lock all locomotion — called on trigger and tick
 -- ============================================================
 local function HardLockMovement(ent)
     -- Zero VJ Base speed fields so it cannot feed them to the nav system
@@ -70,16 +74,16 @@ local function HardLockMovement(ent)
 end
 
 -- ============================================================
---  Helper: snap origin down to floor
+--  Helper: snap origin down to floor (one-shot use on trigger)
 -- ============================================================
-function ENT:GekkoLegs_GroundToFloor()
+function ENT:GekkoLegs_GroundToFloorOnce()
     local mins, maxs = self:GetCollisionBounds()
     local halfHeight = (maxs.z - mins.z) * 0.5
     local start      = self:GetPos() + Vector(0, 0, halfHeight)
 
     local tr = util.TraceHull({
         start  = start,
-        endpos  = start - Vector(0, 0, halfHeight + 256),
+        endpos = start - Vector(0, 0, halfHeight + 256),
         mins   = mins,
         maxs   = maxs,
         mask   = MASK_PLAYERSOLID,
@@ -91,6 +95,11 @@ function ENT:GekkoLegs_GroundToFloor()
     end
 end
 
+-- Backwards compat: old name now just forwards once
+function ENT:GekkoLegs_GroundToFloor()
+    return self:GekkoLegs_GroundToFloorOnce()
+end
+
 -- ============================================================
 --  Grounded trigger — one-way transition
 -- ============================================================
@@ -100,10 +109,10 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._gekkoLegsDisabled   = true
     self._gekkoLegsTriggeredT = CurTime()
 
-    -- Hard stop
-    self:SetMoveType(MOVETYPE_STEP)
+    -- Hard stop locomotion and AI navigation
+    -- Freeze movement type so Gekko cannot be pushed into walking again
+    self:SetMoveType(MOVETYPE_NONE)
     HardLockMovement(self)
-    self:SetSchedule(SCHED_IDLE_STAND)
     self.VJ_IsBeingCrouched = false
 
     -- Cancel jump
@@ -116,12 +125,25 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._jumpCooldown     = CurTime() + 9999
     self._jumpLandCooldown = CurTime() + 9999
 
+    -- Turn off run / sprint flags so animation update does not try to run
+    self._gekkoRunning = false
+    if self._gekkoSprinting then
+        if GekkoSprint_End then
+            GekkoSprint_End(self)
+        else
+            self._gekkoSprinting = false
+        end
+    end
+
     -- Force standing hull, no crouch
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching = false
 
-    self:GekkoLegs_GroundToFloor()
+    -- One-shot hard snap to the floor directly below current position
+    self:GekkoLegs_GroundToFloorOnce()
+
+    -- Apply static disabled pose
     self:GekkoLegs_ApplyPose()
 
     -- Gib burst
@@ -163,6 +185,10 @@ end
 
 -- ============================================================
 --  Per-tick update while grounded
+--  NOTE: We no longer re-ground every tick; that was causing
+--        the floating / slow settle behaviour. Ground snap is
+--        done once on trigger; here we just re-assert speeds
+--        and keep the visual pose + bleeding.
 -- ============================================================
 function ENT:GekkoLegs_Think()
     if not self._gekkoLegsDisabled then return end
@@ -170,7 +196,7 @@ function ENT:GekkoLegs_Think()
     -- Re-enforce movement lock every tick (VJ Base tries to restore speeds)
     HardLockMovement(self)
 
-    self:GekkoLegs_GroundToFloor()
+    -- Keep disabled pose (visual only; no SetPos here)
     self:GekkoLegs_ApplyPose()
 
     -- Passive bleeding
