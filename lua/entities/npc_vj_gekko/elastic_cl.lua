@@ -4,17 +4,15 @@
 --  THREE PHASES per beam:
 --
 --  [EXTENDING]  t = 0->1  over  dist / EXTEND_SPEED  seconds
---    Cosine/corkscrew tip path, jitter, visible from frame 1.
+--  [ATTACHED]   full verlet sag, both endpoints live
+--  [RETRACTING] tip travels back to gekko via same cosine path
 --
---  [ATTACHED]   t == 1 until retract is triggered
---    Both endpoints live, full verlet sag.
---
---  [RETRACTING] tip travels back from enemy to gekko
---    Same cosine path, same speed, run in reverse.
---    Triggered by:
---      • GekkoElasticRetract  (natural expiry)
---      • GekkoElasticBreak    (key-smash, includes break effects)
---    On completion the beam entry is silently removed.
+--  On key-smash break (b.breakRetracting == true):
+--    Every frame the retracting tip position is computed.
+--    EmitRetractTrail() fires at that exact world position:
+--      * bloodstreameffectzippy burst  (flags=1, via util.Effect)
+--      * orange spark particles
+--    Throttled by b.trailNextT at TRAIL_INTERVAL seconds.
 -- ============================================================
 
 -- ============================================================
@@ -27,11 +25,13 @@ local ROPE_CONSTRAINT = 6
 local ROPE_SLACK      = 1.06
 
 local EXTEND_SPEED      = 600
-
 local EXTEND_AMP        = 28
 local EXTEND_FREQ_START = 2.5
 local EXTEND_FREQ_END   = 6.0
 local EXTEND_JITTER     = 3.2
+
+-- Trail emit interval during break-retract (~18 Hz)
+local TRAIL_INTERVAL = 0.055
 
 -- ============================================================
 --  STATE
@@ -51,7 +51,7 @@ local SHOOT_SOUNDS = {
 }
 local TENTACLE_LOOP   = "gekko/elastic/tentaclepull_1.wav"
 local TENTACLE_STAB   = "gekko/elastic/tentacle_stab.wav"
-local TENTACLE_DETACH = "gekko/elastic/tentacle_stab.wav"  -- same sfx for natural detach
+local TENTACLE_DETACH = "gekko/elastic/tentacle_stab.wav"
 
 -- ============================================================
 --  ROPE SIMULATION
@@ -136,30 +136,15 @@ end
 
 -- ============================================================
 --  COSINE TIP POSITION
---
---  t=0  -> anchorA  (gekko side)
---  t=1  -> target   (enemy side)
---
---  Used for BOTH extend (t: 0->1) and retract (t: 1->0).
---  The "elapsed" clock always runs forward, so the corkscrew
---  continues spinning in the same direction during retract,
---  which reads as the tentacle pulling itself back deliberately.
 -- ============================================================
 local function TipPos_Cosine(t, anchorA, target, right, upVec, elapsed)
     local base = LerpVector(t, anchorA, target)
-
-    -- Amplitude: envelope around the midpoint, zero at both ends.
-    -- (1-t)^0.6 shrinks toward target; t^0.6 shrinks toward origin.
-    -- Combine so amplitude is zero at BOTH t=0 and t=1.
-    local env = (math.sin(t * math.pi)) ^ 0.7
-    local amp = EXTEND_AMP * env
-
+    local env  = (math.sin(t * math.pi)) ^ 0.7
+    local amp  = EXTEND_AMP * env
     local freq  = EXTEND_FREQ_START + (EXTEND_FREQ_END - EXTEND_FREQ_START) * math.abs(t - 0.5) * 2
     local phase = elapsed * freq * math.pi * 2
-
     local offR = math.cos(phase)              * amp
     local offU = math.sin(phase * 0.7 + 1.1) * amp * 0.65
-
     return Vector(
         base.x + right.x * offR + upVec.x * offU,
         base.y + right.y * offR + upVec.y * offU,
@@ -176,8 +161,7 @@ local function SpawnAttachDust(pos)
     for _ = 1, 18 do
         local p = emitter:Add("particle/smokesprites_000" .. math.random(1, 9), pos)
         if not p then continue end
-        local dir = VectorRand()
-        dir.z = math.abs(dir.z)
+        local dir = VectorRand(); dir.z = math.abs(dir.z)
         p:SetVelocity(dir * math.Rand(40, 120))
         p:SetLifeTime(0)
         p:SetDieTime(math.Rand(0.35, 0.7))
@@ -195,7 +179,7 @@ local function SpawnAttachDust(pos)
 end
 
 -- ============================================================
---  BREAK EFFECTS
+--  BREAK EFFECTS  (one-shot burst at snap point)
 -- ============================================================
 local _breakFlashEnd = 0
 
@@ -203,27 +187,16 @@ local function SpawnBreakEffects(pos, enemy)
     local norm = Vector(0, 0, 1)
     if IsValid(enemy) then norm = enemy:GetForward() * -1 end
 
-    local emitter = ParticleEmitter(pos, true)
-    if emitter then
-        for _ = 1, 25 do
-            local p = emitter:Add("particle/smokesprites_000" .. math.random(1, 9), pos)
-            if not p then continue end
-            local vel = norm * math.Rand(40, 80) + VectorRand() * 24
-            p:SetVelocity(vel)
-            p:SetLifeTime(0)
-            p:SetDieTime(math.Rand(0.8, 1.8))
-            p:SetStartAlpha(math.Rand(65, 90))
-            p:SetEndAlpha(0)
-            p:SetStartSize(math.Rand(8, 14))
-            p:SetEndSize(math.Rand(30, 55))
-            p:SetColor(210, 30, 30)
-            p:SetAirResistance(40)
-            p:SetGravity(Vector(0, 0, -12))
-            p:SetRoll(math.Rand(0, 360))
-            p:SetRollDelta(math.Rand(-0.4, 0.4))
-        end
-        emitter:Finish()
-    end
+    -- bloodstreameffectzippy burst at snap point
+    -- flags=1 -> burst mode (150 particles, fires once)
+    -- SetNormal sets the spray direction (backward relative to tentacle forward)
+    -- SetEntity must be a valid entity; use enemy if alive, else world
+    local ed = EffectData()
+    ed:SetOrigin(pos)
+    ed:SetNormal(norm)
+    ed:SetEntity(IsValid(enemy) and enemy or game.GetWorld())
+    ed:SetFlags(1)  -- burst
+    util.Effect("bloodstreameffectzippy", ed, true, true)
 
     local sparker = ParticleEmitter(pos, true)
     if sparker then
@@ -257,10 +230,7 @@ local function SpawnBreakEffects(pos, enemy)
     for _ = 1, math.random(3, 6) do
         local ox = math.Rand(-30, 30)
         local oy = math.Rand(-30, 30)
-        util.Decal("Blood",
-            pos + Vector(ox, oy,  20),
-            pos + Vector(ox, oy, -96)
-        )
+        util.Decal("Blood", pos + Vector(ox, oy, 20), pos + Vector(ox, oy, -96))
     end
 
     local ply = LocalPlayer()
@@ -277,46 +247,94 @@ hook.Add("HUDPaint", "GekkoElasticBreakFlash", function()
 end)
 
 -- ============================================================
---  BEGIN RETRACT  (shared by natural expiry and key-smash)
+--  RETRACT TRAIL TICK
 --
---  Captures the enemy's CURRENT world position as the retract
---  origin so the tip starts exactly where it is now.
---  The retract tip travels from that position back to anchorA
---  using the same cosine path reversed (t: 1->0).
+--  Called every draw frame during break-retract.
+--  Emits at the exact tipPos computed that same frame so
+--  effects are always glued to the moving tip.
 --
---  While retracting, the beam's anchorB is frozen to the
---  captured retract origin — the tentacle is no longer
---  chasing the target, it's pulling ITSELF back.
+--  Two layers:
+--    1. bloodstreameffectzippy burst (flags=1):
+--         Fires from tipPos, spray normal points from tip
+--         toward gekko (direction the tentacle is pulling).
+--         Uses game.GetWorld() as the entity since we don't
+--         have a live entity at tip; burst mode doesn't need
+--         the entity to persist, it fires once and is done.
+--    2. Spark particles: fast, short-lived, violent orange.
+--
+--  Throttled by b.trailNextT (TRAIL_INTERVAL seconds).
 -- ============================================================
-local function BeginRetract(b, now)
-    if b.retracting then return end   -- already retracting
+local function EmitRetractTrail(tipPos, towardGekko, now, b)
+    if now < b.trailNextT then return end
+    b.trailNextT = now + TRAIL_INTERVAL
+
+    -- Spray direction: toward the gekko (tentacle is retracting that way)
+    local norm = towardGekko:GetNormalized()
+
+    -- 1. bloodstreameffectzippy burst at tip
+    local ed = EffectData()
+    ed:SetOrigin(tipPos)
+    ed:SetNormal(norm)
+    ed:SetEntity(game.GetWorld())
+    ed:SetFlags(1)  -- burst mode: 150 particles, fires once, no persistent entity needed
+    util.Effect("bloodstreameffectzippy", ed, true, true)
+
+    -- 2. Spark burst at tip
+    local sparker = ParticleEmitter(tipPos, false)
+    if sparker then
+        for _ = 1, math.random(3, 6) do
+            local p = sparker:Add("effects/spark", tipPos)
+            if not p then continue end
+            local dir = VectorRand():GetNormalized()
+            p:SetVelocity(dir * math.Rand(80, 220))
+            p:SetLifeTime(0)
+            p:SetDieTime(math.Rand(0.07, 0.20))
+            p:SetStartAlpha(255)
+            p:SetEndAlpha(0)
+            p:SetStartSize(math.Rand(0.8, 2.2))
+            p:SetEndSize(0)
+            p:SetColor(255, math.random(100, 200), 0)
+            p:SetGravity(Vector(0, 0, -200))
+            p:SetAirResistance(15)
+            p:SetCollide(true)
+            p:SetBounce(0.2)
+        end
+        sparker:Finish()
+    end
+end
+
+-- ============================================================
+--  BEGIN RETRACT
+--  isBreak = true  -> key-smash: emit bloodstream+spark trail
+--  isBreak = false -> natural expiry: silent retract, no trail
+-- ============================================================
+local function BeginRetract(b, now, isBreak)
+    if b.retracting then return end
     b.retracting      = true
+    b.breakRetracting = isBreak == true
     b.retractStartT   = now
-    -- Freeze the retract origin to wherever the tip is now.
-    -- If we're still extending, tip may not have reached the enemy;
-    -- use actual current tip position (anchorB approximation).
+    b.trailNextT      = now   -- first burst fires immediately
+
     if b.extendDone then
-        -- tip was at enemy position
-        b.retractOrigin = b.enemy:IsValid() and
+        b.retractOrigin = IsValid(b.enemy) and
             (b.enemy:GetPos() + b.endOffset) or b.extendTarget
     else
-        -- tip was somewhere along the extend path
         local elapsed  = now - b.spawnTime
         local traveled = math.min(elapsed * EXTEND_SPEED, b.extendDist)
         local t        = traveled / b.extendDist
-        local anchorA  = b.gekko:IsValid() and
+        local anchorA  = IsValid(b.gekko) and
             (b.gekko:GetPos() + b.startOffset) or b.extendTarget
         b.retractOrigin = TipPos_Cosine(
             t, anchorA, b.extendTarget,
             b.extendRight, b.extendUp, elapsed
         )
     end
-    -- retract dist: origin back to muzzle
-    local anchorA_now = b.gekko:IsValid() and
+
+    local anchorA_now = IsValid(b.gekko) and
         (b.gekko:GetPos() + b.startOffset) or b.extendTarget
-    b.retractDist   = math.max(b.retractOrigin:Distance(anchorA_now), 1)
+    b.retractDist    = math.max(b.retractOrigin:Distance(anchorA_now), 1)
     b.retractElapsed = 0
-    -- stop loop sound immediately
+
     if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
 end
 
@@ -347,14 +365,10 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
     while i <= #activeBeams do
         local b = activeBeams[i]
 
-        -- Hard removal: both entities gone and retract already done
         if not IsValid(b.gekko) then
             if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
             table.remove(activeBeams, i)
         else
-            -- ------------------------------------------------
-            --  Compute anchorA  (gekko muzzle, always live)
-            -- ------------------------------------------------
             local anchorA = b.gekko:GetPos() + b.startOffset
 
             -- ------------------------------------------------
@@ -364,28 +378,28 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
                 b.retractElapsed = b.retractElapsed + dt
 
                 local traveled = b.retractElapsed * EXTEND_SPEED
-                local t        = 1 - math.min(traveled / b.retractDist, 1)  -- 1 -> 0
+                local t        = 1 - math.min(traveled / b.retractDist, 1)
 
                 if t <= 0 then
-                    -- Retract complete -> silent removal
                     if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
                     table.remove(activeBeams, i)
                 else
-                    -- Tip travels from retractOrigin back to anchorA
-                    -- We reuse the same right/up axes so the corkscrew
-                    -- is recognisably the same tentacle in reverse.
                     local tipPos = TipPos_Cosine(
                         t, anchorA, b.retractOrigin,
                         b.extendRight, b.extendUp,
-                        now - b.spawnTime   -- elapsed keeps counting forward
+                        now - b.spawnTime
                     )
 
-                    -- Map t -> how many nodes are still "out"
-                    -- At t=1 all nodes live; at t=0 only node[1]
+                    -- Trail: blood + sparks follow the exact tipPos
+                    if b.breakRetracting then
+                        -- towardGekko: direction from tip toward muzzle
+                        local towardGekko = anchorA - tipPos
+                        EmitRetractTrail(tipPos, towardGekko, now, b)
+                    end
+
                     local tipNodeIdx = math.max(2,
                         math.floor(t * (ROPE_NODES - 1)) + 2)
 
-                    -- Jitter on the retreating tip
                     local jNode = b.nodes[math.max(1, tipNodeIdx - 1)]
                     if jNode then
                         jNode.pos.x = jNode.pos.x + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
@@ -411,12 +425,10 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
             --  EXTEND / ATTACHED PHASE
             -- ------------------------------------------------
             elseif not IsValid(b.enemy) then
-                -- Enemy removed mid-flight: start retract immediately
-                BeginRetract(b, now)
+                BeginRetract(b, now, false)
                 i = i + 1
             else
                 local anchorB = b.enemy:GetPos() + b.endOffset
-
                 local tipPos     = anchorB
                 local tipNodeIdx = ROPE_NODES
 
@@ -504,33 +516,31 @@ net.Receive("GekkoElasticRope", function()
     local upR     = right * (-math.sin(rollAng)) + upVec * math.cos(rollAng)
 
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
-    if loopSnd then
-        loopSnd:SetSoundLevel(100)
-        loopSnd:Play()
-    end
+    if loopSnd then loopSnd:SetSoundLevel(100) loopSnd:Play() end
 
     table.insert(activeBeams, {
-        gekko        = gekko,
-        enemy        = enemy,
-        startOffset  = startOffset,
-        endOffset    = endOffset,
-        width        = math.max(width, 3),
-        color        = Color(col_r, col_g, col_b, 255),
-        removeAt     = CurTime() + snapDelay,  -- kept for reference but no longer used to hard-delete
-        loopSnd      = loopSnd,
-        nodes        = RopeNodes_Create(anchorA, anchorB),
-        extendDone   = false,
-        spawnTime    = CurTime(),
-        extendDist   = math.max(dist, 1),
-        extendTarget = Vector(anchorB.x, anchorB.y, anchorB.z),
-        extendRight  = rightR,
-        extendUp     = upR,
-        -- retract state (populated by BeginRetract)
+        gekko           = gekko,
+        enemy           = enemy,
+        startOffset     = startOffset,
+        endOffset       = endOffset,
+        width           = math.max(width, 3),
+        color           = Color(col_r, col_g, col_b, 255),
+        removeAt        = CurTime() + snapDelay,
+        loopSnd         = loopSnd,
+        nodes           = RopeNodes_Create(anchorA, anchorB),
+        extendDone      = false,
+        spawnTime       = CurTime(),
+        extendDist      = math.max(dist, 1),
+        extendTarget    = Vector(anchorB.x, anchorB.y, anchorB.z),
+        extendRight     = rightR,
+        extendUp        = upR,
         retracting      = false,
+        breakRetracting = false,
         retractStartT   = 0,
         retractOrigin   = Vector(0,0,0),
         retractDist     = 1,
         retractElapsed  = 0,
+        trailNextT      = 0,
     })
 
     local ply = LocalPlayer()
@@ -543,32 +553,28 @@ net.Receive("GekkoElasticRope", function()
 end)
 
 -- ============================================================
---  NET: NATURAL RETRACT  (server says duration expired)
+--  NET: NATURAL RETRACT
 -- ============================================================
 net.Receive("GekkoElasticRetract", function()
     local enemy = net.ReadEntity()
     if not IsValid(enemy) then return end
-
     local b = FindBeamForEnemy(enemy)
     if not b then return end
-
-    sound.Play(TENTACLE_DETACH, b.enemy:IsValid() and b.enemy:GetPos() or Vector(0,0,0), 80, 100)
-    BeginRetract(b, CurTime())
+    sound.Play(TENTACLE_DETACH, IsValid(b.enemy) and b.enemy:GetPos() or Vector(0,0,0), 80, 100)
+    BeginRetract(b, CurTime(), false)   -- no trail on natural detach
 end)
 
 -- ============================================================
---  NET: CABLE BREAK  (key-smash)  -> break effects + retract
+--  NET: CABLE BREAK  (key-smash) -> burst + bloodstream trail
 -- ============================================================
 net.Receive("GekkoElasticBreak", function()
     local enemy    = net.ReadEntity()
     local breakPos = net.ReadVector()
-
     if not IsValid(enemy) then return end
-
     local b = FindBeamForEnemy(enemy)
     if b then
         SpawnBreakEffects(breakPos, enemy)
         sound.Play(TENTACLE_STAB, breakPos, 85, 100)
-        BeginRetract(b, CurTime())
+        BeginRetract(b, CurTime(), true)    -- isBreak=true -> bloodstream+spark trail
     end
 end)
