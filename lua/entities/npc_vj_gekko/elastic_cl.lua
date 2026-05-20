@@ -3,37 +3,49 @@
 --
 --  TWO PHASES per beam:
 --
---  [EXTENDING]  tipT  0 -> 1  (duration = distance / EXTEND_SPEED)
---    The tip travels from anchorA toward anchorB at EXTEND_SPEED u/s
---    in a straight line. All nodes at or beyond the tip are collapsed
---    onto the tip position each frame, so verlet has nothing to pull
---    them astray yet. Nodes behind the tip are already simulated and
---    wiggle freely. The rope visually "shoots out" of the muzzle.
+--  [EXTENDING]  t = 0 -> 1  over  dist / EXTEND_SPEED  seconds
 --
---  [ATTACHED]   tipT  == 1  (normal fully-pinned simulation)
---    Both endpoints are pinned. SpawnAttachDust fires here.
---    Full verlet + distance constraints run as before.
+--    The tip travels along a COSINE PATH:
+--      base   = straight line anchorA -> extendTarget
+--      offset = perpendicular sinusoidal wobble in the (right,up) plane
+--               amplitude starts at EXTEND_AMP at t=0, tapers to 0 at t=1
+--               frequency ramps from EXTEND_FREQ_START to EXTEND_FREQ_END
+--      The result reads as a deliberate, organic tentacle lunge.
 --
---  Break / removal logic is unchanged.
+--    Cable nodes:
+--      node[1]  pinned to anchorA always
+--      node[N]  driven to current tipPos each frame
+--      inner nodes  verlet-simulated from t=0 so they wiggle immediately
+--      All nodes are seeded along anchorA->extendTarget at spawn
+--      so segment[1->2] is visible on the very first frame.
+--
+--  [ATTACHED]   t == 1  (both endpoints fully pinned, full verlet)
+--    SpawnAttachDust fires once on phase transition.
+--
 -- ============================================================
 
 -- ============================================================
 --  CONFIG
 -- ============================================================
-local ROPE_NODES      = 12
-local ROPE_GRAVITY    = Vector(0, 0, -380)
-local ROPE_DAMPING    = 0.88
+local ROPE_NODES      = 14
+local ROPE_GRAVITY    = Vector(0, 0, -340)
+local ROPE_DAMPING    = 0.86
 local ROPE_CONSTRAINT = 6
-local ROPE_SLACK      = 1.08
+local ROPE_SLACK      = 1.06
 
--- Extension speed in units per second.
--- At 100 u/s a 400 u gap takes 4 s to bridge.
-local EXTEND_SPEED    = 100
+local EXTEND_SPEED      = 100   -- units/second for tip travel
+
+-- Cosine trajectory shape
+local EXTEND_AMP        = 28    -- peak lateral amplitude at muzzle (units)
+local EXTEND_FREQ_START = 2.5   -- cycles/second at launch (fast, nervous)
+local EXTEND_FREQ_END   = 6.0   -- cycles/second at impact  (fast snap-in)
+-- Jitter: random per-frame noise added to inner nodes during extension
+local EXTEND_JITTER     = 3.2   -- units of random XYZ kick per frame on tip
 
 -- ============================================================
 --  STATE
 -- ============================================================
-local activeBeams  = {}
+local activeBeams    = {}
 local GEKKO_ORIGIN_Z = 180
 
 -- ============================================================
@@ -51,39 +63,33 @@ local TENTACLE_STAB = "gekko/elastic/tentacle_stab.wav"
 
 -- ============================================================
 --  ROPE SIMULATION
---
---  anchorB_override: during extension this is the current tip
---  position rather than the real enemy anchor. Nodes at or
---  beyond tipNodeIdx are collapsed to that point each frame
---  so they don't fall away before the tip reaches them.
 -- ============================================================
 local function RopeNodes_Create(startPos, endPos)
+    -- Seed nodes ALONG the full line so segment[1->2] is visible frame-1.
     local nodes = {}
     local segs  = ROPE_NODES - 1
     for i = 0, segs do
         local t   = i / segs
         local pos = LerpVector(t, startPos, endPos)
-        nodes[i + 1] = { pos = Vector(pos.x, pos.y, pos.z),
-                         prev = Vector(pos.x, pos.y, pos.z) }
+        nodes[i + 1] = {
+            pos  = Vector(pos.x, pos.y, pos.z),
+            prev = Vector(pos.x, pos.y, pos.z),
+        }
     end
     return nodes
 end
 
 local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
-    local n       = #nodes
-    local dtSq    = dt * dt
-    local gravity = ROPE_GRAVITY
-    local damp    = ROPE_DAMPING
+    local n         = #nodes
+    local dtSq      = dt * dt
+    local gravity   = ROPE_GRAVITY
+    local damp      = ROPE_DAMPING
+    local freezeFrom = tipNodeIdx or n   -- nodes at/beyond frozen to tip
 
-    -- tipNodeIdx: nodes at this index and beyond are frozen to anchorB.
-    -- During extension tipNodeIdx < n, so only the "released" tail wiggles.
-    -- During attached phase tipNodeIdx == n (all nodes free except endpoints).
-    local freezeFrom = tipNodeIdx or n
-
-    -- 1. Verlet integrate
+    -- 1. Verlet integrate live inner nodes
     for i = 2, n - 1 do
         if i >= freezeFrom then
-            -- Collapse onto current tip so they don't drift
+            -- collapse to current tip, don't let them drift
             nodes[i].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
             nodes[i].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
         else
@@ -102,20 +108,21 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
         end
     end
 
-    -- 2. Pin both endpoints
+    -- 2. Pin both endpoints hard
     nodes[1].pos  = Vector(anchorA.x, anchorA.y, anchorA.z)
     nodes[1].prev = Vector(anchorA.x, anchorA.y, anchorA.z)
     nodes[n].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
     nodes[n].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
 
-    -- 3. Distance constraints (only on the released segment)
-    local segs    = freezeFrom - 1          -- only constrain live segments
-    if segs < 1 then return end
+    -- 3. Distance constraints on live segment only
+    local liveSegs = (freezeFrom - 1)
+    if liveSegs < 1 then return end
+
     local rawDist = anchorA:Distance(anchorB)
     local restLen = (rawDist / (n - 1)) * ROPE_SLACK
 
     for _ = 1, ROPE_CONSTRAINT do
-        for i = 1, segs do
+        for i = 1, liveSegs do
             local a  = nodes[i]
             local b  = nodes[i + 1]
             local dx = b.pos.x - a.pos.x
@@ -136,9 +143,44 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
                 b.pos.z = b.pos.z - cz
             end
         end
+        -- re-pin after each constraint pass
         nodes[1].pos = Vector(anchorA.x, anchorA.y, anchorA.z)
         nodes[n].pos = Vector(anchorB.x, anchorB.y, anchorB.z)
     end
+end
+
+-- ============================================================
+--  COSINE TIP POSITION
+--
+--  Returns a point along the straight line anchorA->target
+--  plus a perpendicular sinusoidal offset that tapers to zero
+--  as t -> 1.  Communicates deliberate tentacle intent.
+--
+--  right / upVec  : the perpendicular plane, computed once at
+--                   beam spawn from the travel direction.
+-- ============================================================
+local function TipPos_Cosine(t, anchorA, target, right, upVec, elapsed)
+    -- Straight-line base
+    local base = LerpVector(t, anchorA, target)
+
+    -- Amplitude envelope: sin(t*pi) peaks at midpoint then drops to 0
+    -- Multiplied by (1-t)^0.6 so it specifically shrinks near landing
+    local env = (1 - t) ^ 0.6
+    local amp = EXTEND_AMP * env
+
+    -- Frequency ramps from EXTEND_FREQ_START to EXTEND_FREQ_END
+    local freq = EXTEND_FREQ_START + (EXTEND_FREQ_END - EXTEND_FREQ_START) * t
+    local phase = elapsed * freq * math.pi * 2
+
+    -- Two-axis cosine: gives the tip a corkscrew-into-target feeling
+    local offR = math.cos(phase)              * amp
+    local offU = math.sin(phase * 0.7 + 1.1) * amp * 0.65
+
+    return Vector(
+        base.x + right.x * offR + upVec.x * offU,
+        base.y + right.y * offR + upVec.y * offU,
+        base.z + right.z * offR + upVec.z * offU
+    )
 end
 
 -- ============================================================
@@ -291,42 +333,59 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
             table.remove(activeBeams, i)
         else
             local anchorA = b.gekko:GetPos() + b.startOffset
-            local anchorB = b.enemy:GetPos()  + b.endOffset
+            local anchorB = b.enemy:GetPos() + b.endOffset
 
-            -- -----------------------------------------------
-            --  EXTENSION PHASE
-            -- -----------------------------------------------
-            local tipPos      = anchorB   -- default: fully attached
-            local tipNodeIdx  = ROPE_NODES -- default: all nodes live
+            -- ------------------------------------------------
+            --  EXTENDING PHASE
+            -- ------------------------------------------------
+            local tipPos     = anchorB
+            local tipNodeIdx = ROPE_NODES   -- default: all live
 
-            if b.extendDone == false then
+            if not b.extendDone then
                 local elapsed  = now - b.spawnTime
-                local dist     = b.extendDist
                 local traveled = elapsed * EXTEND_SPEED
 
-                if traveled >= dist then
-                    -- Transition to attached phase
+                if traveled >= b.extendDist then
+                    -- Phase transition
                     b.extendDone = true
                     SpawnAttachDust(anchorB)
                 else
-                    -- Tip is still in flight
-                    local t   = traveled / dist
-                    tipPos    = LerpVector(t, anchorA, b.extendTarget)
+                    local t = traveled / b.extendDist
 
-                    -- Which node index the tip has reached.
-                    -- Behind tipNodeIdx nodes wiggle; at/beyond are frozen.
-                    tipNodeIdx = math.max(2, math.floor(t * (ROPE_NODES - 1)) + 1)
+                    -- Cosine tip: uses the fixed perpendicular axes
+                    -- computed at spawn so the path is stable
+                    tipPos = TipPos_Cosine(
+                        t, anchorA, b.extendTarget,
+                        b.extendRight, b.extendUp, elapsed
+                    )
+
+                    -- Map t -> which node index the tip has reached
+                    -- Minimum 2 so at least segment[1->2] always draws
+                    tipNodeIdx = math.max(2,
+                        math.floor(t * (ROPE_NODES - 1)) + 2)
+
+                    -- Tip jitter: small random kick on the node just
+                    -- behind the tip to add organic nervousness
+                    local jNode = b.nodes[math.max(1, tipNodeIdx - 1)]
+                    if jNode then
+                        jNode.pos.x = jNode.pos.x + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
+                        jNode.pos.y = jNode.pos.y + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
+                        jNode.pos.z = jNode.pos.z + math.Rand(-EXTEND_JITTER * 0.5, EXTEND_JITTER * 0.5)
+                    end
                 end
             end
 
             RopeNodes_Simulate(b.nodes, anchorA, tipPos, dt, tipNodeIdx)
 
-            -- -----------------------------------------------
-            --  DRAW  (only segments up to tipNodeIdx)
-            -- -----------------------------------------------
+            -- ------------------------------------------------
+            --  DRAW  (all segments from node[1] to tipNodeIdx)
+            -- ------------------------------------------------
             render.SetMaterial(mat)
-            local nodes   = b.nodes
-            local drawTo  = b.extendDone and (ROPE_NODES - 1) or (tipNodeIdx - 1)
+            local nodes  = b.nodes
+            local drawTo = b.extendDone and (ROPE_NODES - 1) or (tipNodeIdx - 1)
+            -- clamp so we never overshoot the node table
+            drawTo = math.min(drawTo, ROPE_NODES - 1)
+
             for s = 1, drawTo do
                 render.DrawBeam(
                     nodes[s].pos,
@@ -372,6 +431,19 @@ net.Receive("GekkoElasticRope", function()
     local anchorB     = enemy:GetPos() + endOffset
     local dist        = anchorA:Distance(anchorB)
 
+    -- Build stable perpendicular axes for cosine path.
+    -- Computed once at spawn so the path doesn't wobble.
+    local fwd   = (anchorB - anchorA):GetNormalized()
+    local right = fwd:Cross(Vector(0, 0, 1))
+    if right:LengthSqr() < 0.001 then right = fwd:Cross(Vector(1, 0, 0)) end
+    right:Normalize()
+    local upVec = right:Cross(fwd):GetNormalized()
+
+    -- Give it a random roll so each shot's corkscrew looks different
+    local rollAng = math.Rand(0, math.pi * 2)
+    local rightR  = right * math.cos(rollAng) + upVec * math.sin(rollAng)
+    local upR     = right * (-math.sin(rollAng)) + upVec * math.cos(rollAng)
+
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
     if loopSnd then
         loopSnd:SetSoundLevel(75)
@@ -387,12 +459,15 @@ net.Receive("GekkoElasticRope", function()
         color        = Color(col_r, col_g, col_b, 255),
         removeAt     = CurTime() + snapDelay,
         loopSnd      = loopSnd,
-        nodes        = RopeNodes_Create(anchorA, anchorA), -- start collapsed at muzzle
+        -- Seed nodes along full line so cable is visible from frame 1
+        nodes        = RopeNodes_Create(anchorA, anchorB),
         -- Extension state
         extendDone   = false,
         spawnTime    = CurTime(),
         extendDist   = math.max(dist, 1),
         extendTarget = Vector(anchorB.x, anchorB.y, anchorB.z),
+        extendRight  = rightR,
+        extendUp     = upR,
     })
 
     local ply = LocalPlayer()

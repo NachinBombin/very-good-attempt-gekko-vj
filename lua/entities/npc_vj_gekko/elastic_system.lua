@@ -2,7 +2,6 @@
 --  ELASTIC SLING SYSTEM  (server-side)
 --
 --  Two frozen prop_physics anchors connected by a phys_spring.
---  The spring is wired synchronously via SetPhysicsAttacker.
 --  A repeated velocity kick each Think tick drives the pull on
 --  players and NPCs (physics simulation on living ents is weak).
 --
@@ -11,6 +10,11 @@
 --    self:GekkoElastic_Think()
 --    self:GekkoElastic_Fire(enemy)
 --    self:GekkoElastic_OnRemove()
+--
+--  PULL DELAY:
+--    The first velocity kick is delayed by  dist / EXTEND_SPEED
+--    seconds after Detonate so the server-side pull matches the
+--    moment the visual tentacle tip actually reaches the target.
 --
 --  PLAYER CABLE-BREAK:
 --    Tracked entirely server-side via hook.Add("PlayerButtonDown").
@@ -30,31 +34,28 @@ local ELASTIC_MAX_RANGE     = 600
 local ELASTIC_COOLDOWN_MIN  = 30
 local ELASTIC_COOLDOWN_MAX  = 65
 local ELASTIC_DAMAGE        = 5
-local ELASTIC_DURATION      = 2.8    -- seconds the pull lasts
-local ELASTIC_PULL_SPEED    = 420    -- velocity magnitude toward Gekko
-local ELASTIC_PULL_INTERVAL = 0.08   -- how often the velocity kick repeats
+local ELASTIC_DURATION      = 2.8
+local ELASTIC_PULL_SPEED    = 420
+local ELASTIC_PULL_INTERVAL = 0.08
 local ELASTIC_ROPE_WIDTH    = 1.4
 local ELASTIC_ROPE_R        = 0
 local ELASTIC_ROPE_G        = 0
 local ELASTIC_ROPE_B        = 0
-local ELASTIC_SNAP_DELAY    = 2.8    -- matches ELASTIC_DURATION
+local ELASTIC_SNAP_DELAY    = 2.8
 local ANCHOR_MODEL          = "models/hunter/blocks/cube025x025x025.mdl"
 
--- The origin Z offset for the rope / pull.
 local GEKKO_ORIGIN_Z        = 380
-
--- Pre-fire delay: shoot sound plays NOW, actual logic starts after.
 local ELASTIC_PREFIRE_DELAY = 0.9
 
--- Cable-break: player must hit this many button-down events
--- within BREAK_WINDOW seconds to snap the elastic.
+-- Must match EXTEND_SPEED in elastic_cl.lua.
+-- Used to delay the first pull until the visual tip arrives.
+local EXTEND_SPEED          = 100
+
 local BREAK_THRESHOLD = 7
 local BREAK_WINDOW    = 1.0
 
 util.AddNetworkString("GekkoElasticRope")
 util.AddNetworkString("GekkoElasticShootSound")
--- Broadcast server->all clients when a player snaps the cable.
--- Carries: Entity(player), Vector(break position)
 util.AddNetworkString("GekkoElasticBreak")
 util.PrecacheModel(ANCHOR_MODEL)
 
@@ -66,24 +67,17 @@ local _breakTimes = {}
 hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply, button)
     if not IsValid(ply) or not ply:Alive() then return end
 
-    if not _breakTimes[ply] then
-        _breakTimes[ply] = {}
-    end
+    if not _breakTimes[ply] then _breakTimes[ply] = {} end
 
     local now   = CurTime()
     local times = _breakTimes[ply]
-
     times[#times + 1] = now
 
-    -- Prune events outside the rolling window.
     local cutoff = now - BREAK_WINDOW
     local i = 1
     while i <= #times do
-        if times[i] < cutoff then
-            table.remove(times, i)
-        else
-            i = i + 1
-        end
+        if times[i] < cutoff then table.remove(times, i)
+        else i = i + 1 end
     end
 
     if #times < BREAK_THRESHOLD then return end
@@ -93,23 +87,14 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply, button)
         if not ent._elasticActive then continue end
         if ent._elasticEnemy ~= ply then continue end
 
-        -- Capture break position BEFORE cleanup clears the enemy ref.
         local breakPos = ply:GetPos() + Vector(0, 0, 40)
-
-        print(string.format(
-            "[GekkoElastic] CABLE BROKEN by player %s (button mash)",
-            ply:Nick()))
-
         _breakTimes[ply] = {}
-
         ent:_GekkoElastic_Cleanup()
 
-        -- Tell all clients: kill the beam and play blood+sound at breakPos.
         net.Start("GekkoElasticBreak")
             net.WriteEntity(ply)
             net.WriteVector(breakPos)
         net.Broadcast()
-
         break
     end
 end)
@@ -124,14 +109,12 @@ end)
 local function GekkoElastic_HasLOS(gekko, enemy)
     local fromPos = gekko:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
     local toPos   = enemy:GetPos() + Vector(0, 0, 40)
-
     local tr = util.TraceLine({
         start  = fromPos,
         endpos = toPos,
         filter = { gekko, enemy },
         mask   = MASK_SOLID_BRUSHONLY,
     })
-
     return not tr.Hit
 end
 
@@ -169,6 +152,7 @@ function ENT:GekkoElastic_Init()
     self._elasticPendingEnemy = nil
     self._elasticCleanupT     = 0
     self._elasticNextKickT    = 0
+    self._elasticPullStartT   = 0     -- when pull kicks are allowed to begin
     self._elasticAnchorG      = nil
     self._elasticAnchorE      = nil
     self._elasticEnemy        = nil
@@ -180,16 +164,14 @@ end
 function ENT:GekkoElastic_Think()
     local now = CurTime()
 
-    -- ---- pending pre-fire delay ----
+    -- pending pre-fire delay
     if self._elasticPending then
         if now >= self._elasticPendingT then
             self._elasticPending = false
             local pendEnemy = self._elasticPendingEnemy
             self._elasticPendingEnemy = nil
-
             if IsValid(pendEnemy) then
                 if not GekkoElastic_HasLOS(self, pendEnemy) then
-                    print("[GekkoElastic] DETONATE BLOCKED (no LOS) -- re-queuing")
                     self._elasticNextShotT = now + 2.0
                     return
                 end
@@ -200,7 +182,6 @@ function ENT:GekkoElastic_Think()
     end
 
     if self._elasticActive then
-        -- cleanup when duration expires
         if now >= self._elasticCleanupT then
             self:_GekkoElastic_Cleanup()
             return
@@ -223,8 +204,8 @@ function ENT:GekkoElastic_Think()
             self._elasticAnchorE:SetPos(epos)
         end
 
-        -- repeated velocity kick toward Gekko
-        if now >= self._elasticNextKickT then
+        -- velocity kick: only after the tip has visually arrived
+        if now >= self._elasticPullStartT and now >= self._elasticNextKickT then
             self._elasticNextKickT = now + ELASTIC_PULL_INTERVAL
             local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
             local enemyPos = enemy:GetPos() + Vector(0, 0, 40)
@@ -246,14 +227,12 @@ function ENT:GekkoElastic_Think()
         return
     end
 
-    -- ---- passive fire gate ----
+    -- passive fire gate
     if now < (self._elasticNextShotT or 0) then return end
     local enemy = self:GetEnemy()
     if not IsValid(enemy) then return end
     if self:GetPos():Distance(enemy:GetPos()) > ELASTIC_MAX_RANGE then return end
-
     if not GekkoElastic_HasLOS(self, enemy) then return end
-
     if math.random() > 0.18 then return end
     self:GekkoElastic_Fire(enemy)
 end
@@ -275,13 +254,11 @@ function ENT:GekkoElastic_Fire(enemy)
     self._elasticPending      = true
     self._elasticPendingT     = CurTime() + ELASTIC_PREFIRE_DELAY
     self._elasticPendingEnemy = enemy
-
-    print(string.format("[GekkoElastic] PRE-FIRE  delay=%.1fs", ELASTIC_PREFIRE_DELAY))
     return true
 end
 
 -- ============================================================
---  _GekkoElastic_Detonate  (runs after pre-fire delay)
+--  _GekkoElastic_Detonate
 -- ============================================================
 function ENT:_GekkoElastic_Detonate(enemy)
     if not IsValid(enemy) then return end
@@ -297,39 +274,20 @@ function ENT:_GekkoElastic_Detonate(enemy)
         return
     end
 
-    -- initial damage
-    local dmg = DamageInfo()
-    dmg:SetDamage(ELASTIC_DAMAGE)
-    dmg:SetAttacker(self)
-    dmg:SetInflictor(self)
-    dmg:SetDamageType(DMG_CLUB)
-    dmg:SetDamageForce((enemyPos - gekkoPos):GetNormalized() * 55000)
-    dmg:SetDamagePosition(enemyPos)
-    enemy:TakeDamageInfo(dmg)
-
-    -- first velocity kick immediately
-    local dir = (gekkoPos - enemyPos):GetNormalized()
-    local vel = dir * ELASTIC_PULL_SPEED
-    if enemy:IsPlayer() then
-        enemy:SetVelocity(vel)
-    else
-        local phys = enemy:GetPhysicsObject()
-        if IsValid(phys) then
-            phys:SetVelocity(vel)
-            phys:Wake()
-        elseif enemy.SetVelocity then
-            enemy:SetVelocity(vel)
-        end
-    end
+    -- Calculate travel time so pull delay matches visual arrival
+    local dist       = gekkoPos:Distance(enemyPos)
+    local travelTime = dist / EXTEND_SPEED
 
     self._elasticActive    = true
     self._elasticCleanupT  = CurTime() + ELASTIC_DURATION
-    self._elasticNextKickT = CurTime() + ELASTIC_PULL_INTERVAL
+    -- Pull begins only after the tip visually arrives
+    self._elasticPullStartT = CurTime() + travelTime
+    self._elasticNextKickT  = CurTime() + travelTime
     self._elasticAnchorG   = anchorG
     self._elasticAnchorE   = anchorE
     self._elasticEnemy     = enemy
 
-    -- VFX net message (beam + tentacle loop sound)
+    -- Broadcast VFX (beam + tentacle loop sound)
     net.Start("GekkoElasticRope")
         net.WriteEntity(self)
         net.WriteEntity(enemy)
@@ -340,8 +298,19 @@ function ENT:_GekkoElastic_Detonate(enemy)
         net.WriteUInt(ELASTIC_ROPE_B, 8)
     net.Broadcast()
 
-    print(string.format("[GekkoElastic] FIRE  dist=%.0f  dur=%.1fs",
-        self:GetPos():Distance(enemy:GetPos()), ELASTIC_DURATION))
+    -- Initial damage fires immediately on attach (not on pull start)
+    -- so the player has visual feedback the tentacle landed
+    timer.Simple(travelTime, function()
+        if not IsValid(enemy) then return end
+        local dmg = DamageInfo()
+        dmg:SetDamage(ELASTIC_DAMAGE)
+        dmg:SetAttacker(self)
+        dmg:SetInflictor(self)
+        dmg:SetDamageType(DMG_CLUB)
+        dmg:SetDamageForce((enemyPos - gekkoPos):GetNormalized() * 55000)
+        dmg:SetDamagePosition(enemyPos)
+        enemy:TakeDamageInfo(dmg)
+    end)
 end
 
 -- ============================================================
@@ -356,6 +325,7 @@ function ENT:_GekkoElastic_Cleanup()
     self._elasticAnchorG      = nil
     self._elasticAnchorE      = nil
     self._elasticEnemy        = nil
+    self._elasticPullStartT   = 0
 end
 
 -- ============================================================
