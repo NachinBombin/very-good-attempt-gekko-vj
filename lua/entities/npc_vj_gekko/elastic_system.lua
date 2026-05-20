@@ -1,28 +1,5 @@
 -- ============================================================
 --  ELASTIC SLING SYSTEM  (server-side)
---
---  Two frozen prop_physics anchors connected by a phys_spring.
---  A repeated velocity kick each Think tick drives the pull on
---  players and NPCs (physics simulation on living ents is weak).
---
---  Called from init.lua:
---    self:GekkoElastic_Init()
---    self:GekkoElastic_Think()
---    self:GekkoElastic_Fire(enemy)
---    self:GekkoElastic_OnRemove()
---
---  PULL DELAY:
---    The first velocity kick is delayed by  dist / EXTEND_SPEED
---    seconds after Detonate so the server-side pull matches the
---    moment the visual tentacle tip actually reaches the target.
---
---  PLAYER CABLE-BREAK:
---    Tracked entirely server-side via hook.Add("PlayerButtonDown").
---    Every button-down event for a living player is timestamped.
---    If >= 7 presses fall within a rolling 1-second window AND
---    that player is the current elastic target of any Gekko,
---    the cable is cut immediately and GekkoElasticBreak is
---    broadcast to all clients to remove the beam.
 -- ============================================================
 
 AddCSLuaFile("elastic_cl.lua")
@@ -31,32 +8,32 @@ AddCSLuaFile("elastic_cl.lua")
 --  TUNABLES
 -- ------------------------------------------------------------
 local ELASTIC_MAX_RANGE     = 600
-local ELASTIC_COOLDOWN_MIN  = 15
-local ELASTIC_COOLDOWN_MAX  = 40
+local ELASTIC_COOLDOWN_MIN  = 30
+local ELASTIC_COOLDOWN_MAX  = 65
 local ELASTIC_DAMAGE        = 5
-local ELASTIC_DURATION      = 4.8
+local ELASTIC_DURATION      = 2.8
 local ELASTIC_PULL_SPEED    = 420
 local ELASTIC_PULL_INTERVAL = 0.08
-local ELASTIC_ROPE_WIDTH    = 1.0
+local ELASTIC_ROPE_WIDTH    = 1.4
 local ELASTIC_ROPE_R        = 0
 local ELASTIC_ROPE_G        = 0
 local ELASTIC_ROPE_B        = 0
-local ELASTIC_SNAP_DELAY    = 4.8
+local ELASTIC_SNAP_DELAY    = 2.8   -- kept for net msg compat; server controls real timing
 local ANCHOR_MODEL          = "models/hunter/blocks/cube025x025x025.mdl"
 
-local GEKKO_ORIGIN_Z        = 180
+local GEKKO_ORIGIN_Z        = 380
 local ELASTIC_PREFIRE_DELAY = 0.9
 
 -- Must match EXTEND_SPEED in elastic_cl.lua.
--- Used to delay the first pull until the visual tip arrives.
 local EXTEND_SPEED          = 600
 
-local BREAK_THRESHOLD = 9
+local BREAK_THRESHOLD = 7
 local BREAK_WINDOW    = 1.0
 
 util.AddNetworkString("GekkoElasticRope")
 util.AddNetworkString("GekkoElasticShootSound")
 util.AddNetworkString("GekkoElasticBreak")
+util.AddNetworkString("GekkoElasticRetract")   -- NEW: natural expiry signal
 util.PrecacheModel(ANCHOR_MODEL)
 
 -- ============================================================
@@ -152,7 +129,7 @@ function ENT:GekkoElastic_Init()
     self._elasticPendingEnemy = nil
     self._elasticCleanupT     = 0
     self._elasticNextKickT    = 0
-    self._elasticPullStartT   = 0     -- when pull kicks are allowed to begin
+    self._elasticPullStartT   = 0
     self._elasticAnchorG      = nil
     self._elasticAnchorE      = nil
     self._elasticEnemy        = nil
@@ -164,7 +141,6 @@ end
 function ENT:GekkoElastic_Think()
     local now = CurTime()
 
-    -- pending pre-fire delay
     if self._elasticPending then
         if now >= self._elasticPendingT then
             self._elasticPending = false
@@ -183,7 +159,18 @@ function ENT:GekkoElastic_Think()
 
     if self._elasticActive then
         if now >= self._elasticCleanupT then
+            -- Natural expiry: tell clients to retract BEFORE cleaning up server state.
+            -- The client retract animation takes  dist/EXTEND_SPEED  seconds.
+            -- We clean up server anchors immediately (pull stops) but let the
+            -- visual retract play out on the client.
+            local enemy = self._elasticEnemy
             self:_GekkoElastic_Cleanup()
+
+            if IsValid(enemy) then
+                net.Start("GekkoElasticRetract")
+                    net.WriteEntity(enemy)
+                net.Broadcast()
+            end
             return
         end
 
@@ -193,7 +180,6 @@ function ENT:GekkoElastic_Think()
             return
         end
 
-        -- pin anchorE to enemy every tick
         if IsValid(self._elasticAnchorE) then
             local epos = enemy:GetPos() + Vector(0, 0, 40)
             local phys = self._elasticAnchorE:GetPhysicsObject()
@@ -204,7 +190,6 @@ function ENT:GekkoElastic_Think()
             self._elasticAnchorE:SetPos(epos)
         end
 
-        -- velocity kick: only after the tip has visually arrived
         if now >= self._elasticPullStartT and now >= self._elasticNextKickT then
             self._elasticNextKickT = now + ELASTIC_PULL_INTERVAL
             local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
@@ -227,7 +212,6 @@ function ENT:GekkoElastic_Think()
         return
     end
 
-    -- passive fire gate
     if now < (self._elasticNextShotT or 0) then return end
     local enemy = self:GetEnemy()
     if not IsValid(enemy) then return end
@@ -274,20 +258,17 @@ function ENT:_GekkoElastic_Detonate(enemy)
         return
     end
 
-    -- Calculate travel time so pull delay matches visual arrival
     local dist       = gekkoPos:Distance(enemyPos)
     local travelTime = dist / EXTEND_SPEED
 
-    self._elasticActive    = true
-    self._elasticCleanupT  = CurTime() + ELASTIC_DURATION
-    -- Pull begins only after the tip visually arrives
+    self._elasticActive     = true
+    self._elasticCleanupT   = CurTime() + ELASTIC_DURATION
     self._elasticPullStartT = CurTime() + travelTime
     self._elasticNextKickT  = CurTime() + travelTime
-    self._elasticAnchorG   = anchorG
-    self._elasticAnchorE   = anchorE
-    self._elasticEnemy     = enemy
+    self._elasticAnchorG    = anchorG
+    self._elasticAnchorE    = anchorE
+    self._elasticEnemy      = enemy
 
-    -- Broadcast VFX (beam + tentacle loop sound)
     net.Start("GekkoElasticRope")
         net.WriteEntity(self)
         net.WriteEntity(enemy)
@@ -298,8 +279,6 @@ function ENT:_GekkoElastic_Detonate(enemy)
         net.WriteUInt(ELASTIC_ROPE_B, 8)
     net.Broadcast()
 
-    -- Initial damage fires immediately on attach (not on pull start)
-    -- so the player has visual feedback the tentacle landed
     timer.Simple(travelTime, function()
         if not IsValid(enemy) then return end
         local dmg = DamageInfo()

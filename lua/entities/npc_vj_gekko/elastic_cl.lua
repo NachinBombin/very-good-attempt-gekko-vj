@@ -1,27 +1,20 @@
 -- ============================================================
 --  ELASTIC SLING SYSTEM  (client-side)
 --
---  TWO PHASES per beam:
+--  THREE PHASES per beam:
 --
---  [EXTENDING]  t = 0 -> 1  over  dist / EXTEND_SPEED  seconds
+--  [EXTENDING]  t = 0->1  over  dist / EXTEND_SPEED  seconds
+--    Cosine/corkscrew tip path, jitter, visible from frame 1.
 --
---    The tip travels along a COSINE PATH:
---      base   = straight line anchorA -> extendTarget
---      offset = perpendicular sinusoidal wobble in the (right,up) plane
---               amplitude starts at EXTEND_AMP at t=0, tapers to 0 at t=1
---               frequency ramps from EXTEND_FREQ_START to EXTEND_FREQ_END
---      The result reads as a deliberate, organic tentacle lunge.
+--  [ATTACHED]   t == 1 until retract is triggered
+--    Both endpoints live, full verlet sag.
 --
---    Cable nodes:
---      node[1]  pinned to anchorA always
---      node[N]  driven to current tipPos each frame
---      inner nodes  verlet-simulated from t=0 so they wiggle immediately
---      All nodes are seeded along anchorA->extendTarget at spawn
---      so segment[1->2] is visible on the very first frame.
---
---  [ATTACHED]   t == 1  (both endpoints fully pinned, full verlet)
---    SpawnAttachDust fires once on phase transition.
---
+--  [RETRACTING] tip travels back from enemy to gekko
+--    Same cosine path, same speed, run in reverse.
+--    Triggered by:
+--      • GekkoElasticRetract  (natural expiry)
+--      • GekkoElasticBreak    (key-smash, includes break effects)
+--    On completion the beam entry is silently removed.
 -- ============================================================
 
 -- ============================================================
@@ -33,14 +26,12 @@ local ROPE_DAMPING    = 0.86
 local ROPE_CONSTRAINT = 6
 local ROPE_SLACK      = 1.06
 
-local EXTEND_SPEED      = 600   -- units/second for tip travel
+local EXTEND_SPEED      = 600
 
--- Cosine trajectory shape
-local EXTEND_AMP        = 28    -- peak lateral amplitude at muzzle (units)
-local EXTEND_FREQ_START = 2.5   -- cycles/second at launch (fast, nervous)
-local EXTEND_FREQ_END   = 6.0   -- cycles/second at impact  (fast snap-in)
--- Jitter: random per-frame noise added to inner nodes during extension
-local EXTEND_JITTER     = 3.2   -- units of random XYZ kick per frame on tip
+local EXTEND_AMP        = 28
+local EXTEND_FREQ_START = 2.5
+local EXTEND_FREQ_END   = 6.0
+local EXTEND_JITTER     = 3.2
 
 -- ============================================================
 --  STATE
@@ -58,14 +49,14 @@ local SHOOT_SOUNDS = {
     "gekko/elastic/shoot_4.wav",
     "gekko/elastic/shoot_5.wav",
 }
-local TENTACLE_LOOP = "gekko/elastic/tentaclepull_1.wav"
-local TENTACLE_STAB = "gekko/elastic/tentacle_stab.wav"
+local TENTACLE_LOOP   = "gekko/elastic/tentaclepull_1.wav"
+local TENTACLE_STAB   = "gekko/elastic/tentacle_stab.wav"
+local TENTACLE_DETACH = "gekko/elastic/tentacle_stab.wav"  -- same sfx for natural detach
 
 -- ============================================================
 --  ROPE SIMULATION
 -- ============================================================
 local function RopeNodes_Create(startPos, endPos)
-    -- Seed nodes ALONG the full line so segment[1->2] is visible frame-1.
     local nodes = {}
     local segs  = ROPE_NODES - 1
     for i = 0, segs do
@@ -80,16 +71,13 @@ local function RopeNodes_Create(startPos, endPos)
 end
 
 local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
-    local n         = #nodes
-    local dtSq      = dt * dt
-    local gravity   = ROPE_GRAVITY
-    local damp      = ROPE_DAMPING
-    local freezeFrom = tipNodeIdx or n   -- nodes at/beyond frozen to tip
+    local n          = #nodes
+    local dtSq       = dt * dt
+    local damp       = ROPE_DAMPING
+    local freezeFrom = tipNodeIdx or n
 
-    -- 1. Verlet integrate live inner nodes
     for i = 2, n - 1 do
         if i >= freezeFrom then
-            -- collapse to current tip, don't let them drift
             nodes[i].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
             nodes[i].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
         else
@@ -101,21 +89,19 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
             local vz  = (cur.z - prv.z) * damp
             nd.prev = Vector(cur.x, cur.y, cur.z)
             nd.pos  = Vector(
-                cur.x + vx + gravity.x * dtSq,
-                cur.y + vy + gravity.y * dtSq,
-                cur.z + vz + gravity.z * dtSq
+                cur.x + vx + ROPE_GRAVITY.x * dtSq,
+                cur.y + vy + ROPE_GRAVITY.y * dtSq,
+                cur.z + vz + ROPE_GRAVITY.z * dtSq
             )
         end
     end
 
-    -- 2. Pin both endpoints hard
     nodes[1].pos  = Vector(anchorA.x, anchorA.y, anchorA.z)
     nodes[1].prev = Vector(anchorA.x, anchorA.y, anchorA.z)
     nodes[n].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
     nodes[n].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
 
-    -- 3. Distance constraints on live segment only
-    local liveSegs = (freezeFrom - 1)
+    local liveSegs = freezeFrom - 1
     if liveSegs < 1 then return end
 
     local rawDist = anchorA:Distance(anchorB)
@@ -143,7 +129,6 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
                 b.pos.z = b.pos.z - cz
             end
         end
-        -- re-pin after each constraint pass
         nodes[1].pos = Vector(anchorA.x, anchorA.y, anchorA.z)
         nodes[n].pos = Vector(anchorB.x, anchorB.y, anchorB.z)
     end
@@ -152,27 +137,26 @@ end
 -- ============================================================
 --  COSINE TIP POSITION
 --
---  Returns a point along the straight line anchorA->target
---  plus a perpendicular sinusoidal offset that tapers to zero
---  as t -> 1.  Communicates deliberate tentacle intent.
+--  t=0  -> anchorA  (gekko side)
+--  t=1  -> target   (enemy side)
 --
---  right / upVec  : the perpendicular plane, computed once at
---                   beam spawn from the travel direction.
+--  Used for BOTH extend (t: 0->1) and retract (t: 1->0).
+--  The "elapsed" clock always runs forward, so the corkscrew
+--  continues spinning in the same direction during retract,
+--  which reads as the tentacle pulling itself back deliberately.
 -- ============================================================
 local function TipPos_Cosine(t, anchorA, target, right, upVec, elapsed)
-    -- Straight-line base
     local base = LerpVector(t, anchorA, target)
 
-    -- Amplitude envelope: sin(t*pi) peaks at midpoint then drops to 0
-    -- Multiplied by (1-t)^0.6 so it specifically shrinks near landing
-    local env = (1 - t) ^ 0.6
+    -- Amplitude: envelope around the midpoint, zero at both ends.
+    -- (1-t)^0.6 shrinks toward target; t^0.6 shrinks toward origin.
+    -- Combine so amplitude is zero at BOTH t=0 and t=1.
+    local env = (math.sin(t * math.pi)) ^ 0.7
     local amp = EXTEND_AMP * env
 
-    -- Frequency ramps from EXTEND_FREQ_START to EXTEND_FREQ_END
-    local freq = EXTEND_FREQ_START + (EXTEND_FREQ_END - EXTEND_FREQ_START) * t
+    local freq  = EXTEND_FREQ_START + (EXTEND_FREQ_END - EXTEND_FREQ_START) * math.abs(t - 0.5) * 2
     local phase = elapsed * freq * math.pi * 2
 
-    -- Two-axis cosine: gives the tip a corkscrew-into-target feeling
     local offR = math.cos(phase)              * amp
     local offU = math.sin(phase * 0.7 + 1.1) * amp * 0.65
 
@@ -211,7 +195,7 @@ local function SpawnAttachDust(pos)
 end
 
 -- ============================================================
---  BREAK EFFECTS  (all GUARANTEED)
+--  BREAK EFFECTS
 -- ============================================================
 local _breakFlashEnd = 0
 
@@ -293,18 +277,55 @@ hook.Add("HUDPaint", "GekkoElasticBreakFlash", function()
 end)
 
 -- ============================================================
---  REMOVE BEAMS FOR ENEMY
+--  BEGIN RETRACT  (shared by natural expiry and key-smash)
+--
+--  Captures the enemy's CURRENT world position as the retract
+--  origin so the tip starts exactly where it is now.
+--  The retract tip travels from that position back to anchorA
+--  using the same cosine path reversed (t: 1->0).
+--
+--  While retracting, the beam's anchorB is frozen to the
+--  captured retract origin — the tentacle is no longer
+--  chasing the target, it's pulling ITSELF back.
 -- ============================================================
-local function RemoveBeamsForEnemy(enemy)
-    local i = 1
-    while i <= #activeBeams do
-        local b = activeBeams[i]
-        if b.enemy == enemy then
-            if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
-            table.remove(activeBeams, i)
-        else
-            i = i + 1
-        end
+local function BeginRetract(b, now)
+    if b.retracting then return end   -- already retracting
+    b.retracting      = true
+    b.retractStartT   = now
+    -- Freeze the retract origin to wherever the tip is now.
+    -- If we're still extending, tip may not have reached the enemy;
+    -- use actual current tip position (anchorB approximation).
+    if b.extendDone then
+        -- tip was at enemy position
+        b.retractOrigin = b.enemy:IsValid() and
+            (b.enemy:GetPos() + b.endOffset) or b.extendTarget
+    else
+        -- tip was somewhere along the extend path
+        local elapsed  = now - b.spawnTime
+        local traveled = math.min(elapsed * EXTEND_SPEED, b.extendDist)
+        local t        = traveled / b.extendDist
+        local anchorA  = b.gekko:IsValid() and
+            (b.gekko:GetPos() + b.startOffset) or b.extendTarget
+        b.retractOrigin = TipPos_Cosine(
+            t, anchorA, b.extendTarget,
+            b.extendRight, b.extendUp, elapsed
+        )
+    end
+    -- retract dist: origin back to muzzle
+    local anchorA_now = b.gekko:IsValid() and
+        (b.gekko:GetPos() + b.startOffset) or b.extendTarget
+    b.retractDist   = math.max(b.retractOrigin:Distance(anchorA_now), 1)
+    b.retractElapsed = 0
+    -- stop loop sound immediately
+    if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
+end
+
+-- ============================================================
+--  FIND BEAM FOR ENEMY
+-- ============================================================
+local function FindBeamForEnemy(enemy)
+    for _, b in ipairs(activeBeams) do
+        if b.enemy == enemy then return b end
     end
 end
 
@@ -326,77 +347,118 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
     while i <= #activeBeams do
         local b = activeBeams[i]
 
-        if now >= b.removeAt
-        or not IsValid(b.gekko)
-        or not IsValid(b.enemy) then
+        -- Hard removal: both entities gone and retract already done
+        if not IsValid(b.gekko) then
             if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
             table.remove(activeBeams, i)
         else
+            -- ------------------------------------------------
+            --  Compute anchorA  (gekko muzzle, always live)
+            -- ------------------------------------------------
             local anchorA = b.gekko:GetPos() + b.startOffset
-            local anchorB = b.enemy:GetPos() + b.endOffset
 
             -- ------------------------------------------------
-            --  EXTENDING PHASE
+            --  RETRACT PHASE
             -- ------------------------------------------------
-            local tipPos     = anchorB
-            local tipNodeIdx = ROPE_NODES   -- default: all live
+            if b.retracting then
+                b.retractElapsed = b.retractElapsed + dt
 
-            if not b.extendDone then
-                local elapsed  = now - b.spawnTime
-                local traveled = elapsed * EXTEND_SPEED
+                local traveled = b.retractElapsed * EXTEND_SPEED
+                local t        = 1 - math.min(traveled / b.retractDist, 1)  -- 1 -> 0
 
-                if traveled >= b.extendDist then
-                    -- Phase transition
-                    b.extendDone = true
-                    SpawnAttachDust(anchorB)
+                if t <= 0 then
+                    -- Retract complete -> silent removal
+                    if b.loopSnd then b.loopSnd:Stop() b.loopSnd = nil end
+                    table.remove(activeBeams, i)
                 else
-                    local t = traveled / b.extendDist
-
-                    -- Cosine tip: uses the fixed perpendicular axes
-                    -- computed at spawn so the path is stable
-                    tipPos = TipPos_Cosine(
-                        t, anchorA, b.extendTarget,
-                        b.extendRight, b.extendUp, elapsed
+                    -- Tip travels from retractOrigin back to anchorA
+                    -- We reuse the same right/up axes so the corkscrew
+                    -- is recognisably the same tentacle in reverse.
+                    local tipPos = TipPos_Cosine(
+                        t, anchorA, b.retractOrigin,
+                        b.extendRight, b.extendUp,
+                        now - b.spawnTime   -- elapsed keeps counting forward
                     )
 
-                    -- Map t -> which node index the tip has reached
-                    -- Minimum 2 so at least segment[1->2] always draws
-                    tipNodeIdx = math.max(2,
+                    -- Map t -> how many nodes are still "out"
+                    -- At t=1 all nodes live; at t=0 only node[1]
+                    local tipNodeIdx = math.max(2,
                         math.floor(t * (ROPE_NODES - 1)) + 2)
 
-                    -- Tip jitter: small random kick on the node just
-                    -- behind the tip to add organic nervousness
+                    -- Jitter on the retreating tip
                     local jNode = b.nodes[math.max(1, tipNodeIdx - 1)]
                     if jNode then
                         jNode.pos.x = jNode.pos.x + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
                         jNode.pos.y = jNode.pos.y + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
                         jNode.pos.z = jNode.pos.z + math.Rand(-EXTEND_JITTER * 0.5, EXTEND_JITTER * 0.5)
                     end
+
+                    RopeNodes_Simulate(b.nodes, anchorA, tipPos, dt, tipNodeIdx)
+
+                    render.SetMaterial(mat)
+                    local drawTo = math.min(tipNodeIdx - 1, ROPE_NODES - 1)
+                    for s = 1, drawTo do
+                        render.DrawBeam(
+                            b.nodes[s].pos,
+                            b.nodes[s + 1].pos,
+                            b.width, 0, 1, b.color
+                        )
+                    end
+                    i = i + 1
                 end
-            end
-
-            RopeNodes_Simulate(b.nodes, anchorA, tipPos, dt, tipNodeIdx)
 
             -- ------------------------------------------------
-            --  DRAW  (all segments from node[1] to tipNodeIdx)
+            --  EXTEND / ATTACHED PHASE
             -- ------------------------------------------------
-            render.SetMaterial(mat)
-            local nodes  = b.nodes
-            local drawTo = b.extendDone and (ROPE_NODES - 1) or (tipNodeIdx - 1)
-            -- clamp so we never overshoot the node table
-            drawTo = math.min(drawTo, ROPE_NODES - 1)
+            elseif not IsValid(b.enemy) then
+                -- Enemy removed mid-flight: start retract immediately
+                BeginRetract(b, now)
+                i = i + 1
+            else
+                local anchorB = b.enemy:GetPos() + b.endOffset
 
-            for s = 1, drawTo do
-                render.DrawBeam(
-                    nodes[s].pos,
-                    nodes[s + 1].pos,
-                    b.width,
-                    0, 1,
-                    b.color
-                )
+                local tipPos     = anchorB
+                local tipNodeIdx = ROPE_NODES
+
+                if not b.extendDone then
+                    local elapsed  = now - b.spawnTime
+                    local traveled = elapsed * EXTEND_SPEED
+
+                    if traveled >= b.extendDist then
+                        b.extendDone = true
+                        SpawnAttachDust(anchorB)
+                    else
+                        local t = traveled / b.extendDist
+                        tipPos = TipPos_Cosine(
+                            t, anchorA, b.extendTarget,
+                            b.extendRight, b.extendUp, elapsed
+                        )
+                        tipNodeIdx = math.max(2,
+                            math.floor(t * (ROPE_NODES - 1)) + 2)
+
+                        local jNode = b.nodes[math.max(1, tipNodeIdx - 1)]
+                        if jNode then
+                            jNode.pos.x = jNode.pos.x + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
+                            jNode.pos.y = jNode.pos.y + math.Rand(-EXTEND_JITTER, EXTEND_JITTER)
+                            jNode.pos.z = jNode.pos.z + math.Rand(-EXTEND_JITTER * 0.5, EXTEND_JITTER * 0.5)
+                        end
+                    end
+                end
+
+                RopeNodes_Simulate(b.nodes, anchorA, tipPos, dt, tipNodeIdx)
+
+                render.SetMaterial(mat)
+                local drawTo = b.extendDone and (ROPE_NODES - 1) or (tipNodeIdx - 1)
+                drawTo = math.min(drawTo, ROPE_NODES - 1)
+                for s = 1, drawTo do
+                    render.DrawBeam(
+                        b.nodes[s].pos,
+                        b.nodes[s + 1].pos,
+                        b.width, 0, 1, b.color
+                    )
+                end
+                i = i + 1
             end
-
-            i = i + 1
         end
     end
 end)
@@ -431,15 +493,12 @@ net.Receive("GekkoElasticRope", function()
     local anchorB     = enemy:GetPos() + endOffset
     local dist        = anchorA:Distance(anchorB)
 
-    -- Build stable perpendicular axes for cosine path.
-    -- Computed once at spawn so the path doesn't wobble.
     local fwd   = (anchorB - anchorA):GetNormalized()
     local right = fwd:Cross(Vector(0, 0, 1))
     if right:LengthSqr() < 0.001 then right = fwd:Cross(Vector(1, 0, 0)) end
     right:Normalize()
     local upVec = right:Cross(fwd):GetNormalized()
 
-    -- Give it a random roll so each shot's corkscrew looks different
     local rollAng = math.Rand(0, math.pi * 2)
     local rightR  = right * math.cos(rollAng) + upVec * math.sin(rollAng)
     local upR     = right * (-math.sin(rollAng)) + upVec * math.cos(rollAng)
@@ -457,17 +516,21 @@ net.Receive("GekkoElasticRope", function()
         endOffset    = endOffset,
         width        = math.max(width, 3),
         color        = Color(col_r, col_g, col_b, 255),
-        removeAt     = CurTime() + snapDelay,
+        removeAt     = CurTime() + snapDelay,  -- kept for reference but no longer used to hard-delete
         loopSnd      = loopSnd,
-        -- Seed nodes along full line so cable is visible from frame 1
         nodes        = RopeNodes_Create(anchorA, anchorB),
-        -- Extension state
         extendDone   = false,
         spawnTime    = CurTime(),
         extendDist   = math.max(dist, 1),
         extendTarget = Vector(anchorB.x, anchorB.y, anchorB.z),
         extendRight  = rightR,
         extendUp     = upR,
+        -- retract state (populated by BeginRetract)
+        retracting      = false,
+        retractStartT   = 0,
+        retractOrigin   = Vector(0,0,0),
+        retractDist     = 1,
+        retractElapsed  = 0,
     })
 
     local ply = LocalPlayer()
@@ -480,7 +543,21 @@ net.Receive("GekkoElasticRope", function()
 end)
 
 -- ============================================================
---  NET: CABLE BREAK
+--  NET: NATURAL RETRACT  (server says duration expired)
+-- ============================================================
+net.Receive("GekkoElasticRetract", function()
+    local enemy = net.ReadEntity()
+    if not IsValid(enemy) then return end
+
+    local b = FindBeamForEnemy(enemy)
+    if not b then return end
+
+    sound.Play(TENTACLE_DETACH, b.enemy:IsValid() and b.enemy:GetPos() or Vector(0,0,0), 80, 100)
+    BeginRetract(b, CurTime())
+end)
+
+-- ============================================================
+--  NET: CABLE BREAK  (key-smash)  -> break effects + retract
 -- ============================================================
 net.Receive("GekkoElasticBreak", function()
     local enemy    = net.ReadEntity()
@@ -488,7 +565,10 @@ net.Receive("GekkoElasticBreak", function()
 
     if not IsValid(enemy) then return end
 
-    RemoveBeamsForEnemy(enemy)
-    SpawnBreakEffects(breakPos, enemy)
-    sound.Play(TENTACLE_STAB, breakPos, 85, 100)
+    local b = FindBeamForEnemy(enemy)
+    if b then
+        SpawnBreakEffects(breakPos, enemy)
+        sound.Play(TENTACLE_STAB, breakPos, 85, 100)
+        BeginRetract(b, CurTime())
+    end
 end)
