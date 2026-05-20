@@ -1,25 +1,20 @@
 -- ============================================================
 --  ELASTIC SLING SYSTEM  (client-side)
 --
---  Beam drawn as a SIMULATED ROPE each frame:
---    - N nodes with verlet integration (gravity + damping)
---    - Endpoint nodes pinned to gekko / enemy each frame
---    - render.DrawBeam called per segment between neighbours
---    - Rope wiggles, sags, and swings naturally
+--  TWO PHASES per beam:
 --
---  Sounds:
---    shoot_1..5     : played immediately on GekkoElasticShootSound
---    tentaclepull_1 : looped via CreateSound for beam's full lifetime
---    tentacle_stab  : played at break position on cable snap
+--  [EXTENDING]  tipT  0 -> 1  (duration = distance / EXTEND_SPEED)
+--    The tip travels from anchorA toward anchorB at EXTEND_SPEED u/s
+--    in a straight line. All nodes at or beyond the tip are collapsed
+--    onto the tip position each frame, so verlet has nothing to pull
+--    them astray yet. Nodes behind the tip are already simulated and
+--    wiggle freely. The rope visually "shoots out" of the muzzle.
 --
---  Effects:
---    Dust emitter      : spawned at target attach point on beam land
---    Break blood mist  : GUARANTEED heavy mist on cable snap
---    Break sparks      : GUARANTEED spark burst on cable snap
---    Break decals      : blood splats on nearby surfaces
---    Screen flash      : white overlay flash on cable snap (nearby only)
+--  [ATTACHED]   tipT  == 1  (normal fully-pinned simulation)
+--    Both endpoints are pinned. SpawnAttachDust fires here.
+--    Full verlet + distance constraints run as before.
 --
---  SERVER SIDE IS COMPLETELY UNCHANGED.
+--  Break / removal logic is unchanged.
 -- ============================================================
 
 -- ============================================================
@@ -31,14 +26,14 @@ local ROPE_DAMPING    = 0.88
 local ROPE_CONSTRAINT = 6
 local ROPE_SLACK      = 1.08
 
--- ============================================================
---  ACTIVE BEAM TABLE
--- ============================================================
-local activeBeams = {}
+-- Extension speed in units per second.
+-- At 100 u/s a 400 u gap takes 4 s to bridge.
+local EXTEND_SPEED    = 100
 
--- Mid-body visual origin. Intentionally 180, NOT the server physics
--- anchor (380). 180 places the rope at the Gekko's torso / bushmaster
--- muzzle height as it appeared before the rope rewrite.
+-- ============================================================
+--  STATE
+-- ============================================================
+local activeBeams  = {}
 local GEKKO_ORIGIN_Z = 180
 
 -- ============================================================
@@ -56,6 +51,11 @@ local TENTACLE_STAB = "gekko/elastic/tentacle_stab.wav"
 
 -- ============================================================
 --  ROPE SIMULATION
+--
+--  anchorB_override: during extension this is the current tip
+--  position rather than the real enemy anchor. Nodes at or
+--  beyond tipNodeIdx are collapsed to that point each frame
+--  so they don't fall away before the tip reaches them.
 -- ============================================================
 local function RopeNodes_Create(startPos, endPos)
     local nodes = {}
@@ -63,43 +63,56 @@ local function RopeNodes_Create(startPos, endPos)
     for i = 0, segs do
         local t   = i / segs
         local pos = LerpVector(t, startPos, endPos)
-        nodes[i + 1] = { pos = pos, prev = Vector(pos.x, pos.y, pos.z) }
+        nodes[i + 1] = { pos = Vector(pos.x, pos.y, pos.z),
+                         prev = Vector(pos.x, pos.y, pos.z) }
     end
     return nodes
 end
 
-local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
+local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt, tipNodeIdx)
     local n       = #nodes
     local dtSq    = dt * dt
     local gravity = ROPE_GRAVITY
     local damp    = ROPE_DAMPING
 
-    -- 1. Verlet integrate inner nodes
+    -- tipNodeIdx: nodes at this index and beyond are frozen to anchorB.
+    -- During extension tipNodeIdx < n, so only the "released" tail wiggles.
+    -- During attached phase tipNodeIdx == n (all nodes free except endpoints).
+    local freezeFrom = tipNodeIdx or n
+
+    -- 1. Verlet integrate
     for i = 2, n - 1 do
-        local nd  = nodes[i]
-        local cur = nd.pos
-        local prv = nd.prev
-        local vx  = (cur.x - prv.x) * damp
-        local vy  = (cur.y - prv.y) * damp
-        local vz  = (cur.z - prv.z) * damp
-        nd.prev = Vector(cur.x, cur.y, cur.z)
-        nd.pos  = Vector(
-            cur.x + vx + gravity.x * dtSq,
-            cur.y + vy + gravity.y * dtSq,
-            cur.z + vz + gravity.z * dtSq
-        )
+        if i >= freezeFrom then
+            -- Collapse onto current tip so they don't drift
+            nodes[i].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
+            nodes[i].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
+        else
+            local nd  = nodes[i]
+            local cur = nd.pos
+            local prv = nd.prev
+            local vx  = (cur.x - prv.x) * damp
+            local vy  = (cur.y - prv.y) * damp
+            local vz  = (cur.z - prv.z) * damp
+            nd.prev = Vector(cur.x, cur.y, cur.z)
+            nd.pos  = Vector(
+                cur.x + vx + gravity.x * dtSq,
+                cur.y + vy + gravity.y * dtSq,
+                cur.z + vz + gravity.z * dtSq
+            )
+        end
     end
 
-    -- 2. Pin endpoints
+    -- 2. Pin both endpoints
     nodes[1].pos  = Vector(anchorA.x, anchorA.y, anchorA.z)
     nodes[1].prev = Vector(anchorA.x, anchorA.y, anchorA.z)
     nodes[n].pos  = Vector(anchorB.x, anchorB.y, anchorB.z)
     nodes[n].prev = Vector(anchorB.x, anchorB.y, anchorB.z)
 
-    -- 3. Distance constraints
-    local segs    = n - 1
+    -- 3. Distance constraints (only on the released segment)
+    local segs    = freezeFrom - 1          -- only constrain live segments
+    if segs < 1 then return end
     local rawDist = anchorA:Distance(anchorB)
-    local restLen = (rawDist / segs) * ROPE_SLACK
+    local restLen = (rawDist / (n - 1)) * ROPE_SLACK
 
     for _ = 1, ROPE_CONSTRAINT do
         for i = 1, segs do
@@ -110,14 +123,14 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
             local dz = b.pos.z - a.pos.z
             local d  = math.sqrt(dx*dx + dy*dy + dz*dz)
             if d < 0.001 then continue end
-            local diff     = (d - restLen) / d * 0.5
+            local diff       = (d - restLen) / d * 0.5
             local cx, cy, cz = dx*diff, dy*diff, dz*diff
             if i ~= 1 then
                 a.pos.x = a.pos.x + cx
                 a.pos.y = a.pos.y + cy
                 a.pos.z = a.pos.z + cz
             end
-            if i + 1 ~= n then
+            if i + 1 <= freezeFrom then
                 b.pos.x = b.pos.x - cx
                 b.pos.y = b.pos.y - cy
                 b.pos.z = b.pos.z - cz
@@ -129,7 +142,7 @@ local function RopeNodes_Simulate(nodes, anchorA, anchorB, dt)
 end
 
 -- ============================================================
---  ATTACH DUST  (on beam landing)
+--  ATTACH DUST
 -- ============================================================
 local function SpawnAttachDust(pos)
     local emitter = ParticleEmitter(pos, false)
@@ -156,21 +169,14 @@ local function SpawnAttachDust(pos)
 end
 
 -- ============================================================
---  BREAK EFFECTS  (all GUARANTEED - no probability rolls)
---
---  Called directly instead of util.Effect("gekko_bloodstream")
---  because that effect has internal 80%/23%/23% probability
---  rolls that silently skip the visuals most of the time.
+--  BREAK EFFECTS  (all GUARANTEED)
 -- ============================================================
 local _breakFlashEnd = 0
 
 local function SpawnBreakEffects(pos, enemy)
     local norm = Vector(0, 0, 1)
-    if IsValid(enemy) then
-        norm = enemy:GetForward() * -1
-    end
+    if IsValid(enemy) then norm = enemy:GetForward() * -1 end
 
-    -- Blood mist (heavy, 25 particles)
     local emitter = ParticleEmitter(pos, true)
     if emitter then
         for _ = 1, 25 do
@@ -193,7 +199,6 @@ local function SpawnBreakEffects(pos, enemy)
         emitter:Finish()
     end
 
-    -- Sparks (20-35 particles)
     local sparker = ParticleEmitter(pos, true)
     if sparker then
         local right = norm:Cross(Vector(0, 0, 1))
@@ -223,7 +228,6 @@ local function SpawnBreakEffects(pos, enemy)
         sparker:Finish()
     end
 
-    -- Blood decals on nearby surfaces
     for _ = 1, math.random(3, 6) do
         local ox = math.Rand(-30, 30)
         local oy = math.Rand(-30, 30)
@@ -233,7 +237,6 @@ local function SpawnBreakEffects(pos, enemy)
         )
     end
 
-    -- Screen flash (only for nearby local player)
     local ply = LocalPlayer()
     if IsValid(ply) and ply:GetPos():Distance(pos) < 700 then
         _breakFlashEnd = CurTime() + 0.18
@@ -290,11 +293,41 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
             local anchorA = b.gekko:GetPos() + b.startOffset
             local anchorB = b.enemy:GetPos()  + b.endOffset
 
-            RopeNodes_Simulate(b.nodes, anchorA, anchorB, dt)
+            -- -----------------------------------------------
+            --  EXTENSION PHASE
+            -- -----------------------------------------------
+            local tipPos      = anchorB   -- default: fully attached
+            local tipNodeIdx  = ROPE_NODES -- default: all nodes live
 
+            if b.extendDone == false then
+                local elapsed  = now - b.spawnTime
+                local dist     = b.extendDist
+                local traveled = elapsed * EXTEND_SPEED
+
+                if traveled >= dist then
+                    -- Transition to attached phase
+                    b.extendDone = true
+                    SpawnAttachDust(anchorB)
+                else
+                    -- Tip is still in flight
+                    local t   = traveled / dist
+                    tipPos    = LerpVector(t, anchorA, b.extendTarget)
+
+                    -- Which node index the tip has reached.
+                    -- Behind tipNodeIdx nodes wiggle; at/beyond are frozen.
+                    tipNodeIdx = math.max(2, math.floor(t * (ROPE_NODES - 1)) + 1)
+                end
+            end
+
+            RopeNodes_Simulate(b.nodes, anchorA, tipPos, dt, tipNodeIdx)
+
+            -- -----------------------------------------------
+            --  DRAW  (only segments up to tipNodeIdx)
+            -- -----------------------------------------------
             render.SetMaterial(mat)
-            local nodes = b.nodes
-            for s = 1, #nodes - 1 do
+            local nodes   = b.nodes
+            local drawTo  = b.extendDone and (ROPE_NODES - 1) or (tipNodeIdx - 1)
+            for s = 1, drawTo do
                 render.DrawBeam(
                     nodes[s].pos,
                     nodes[s + 1].pos,
@@ -333,7 +366,11 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
-    SpawnAttachDust(enemy:GetPos() + Vector(0, 0, 40))
+    local startOffset = Vector(0, 0, GEKKO_ORIGIN_Z)
+    local endOffset   = Vector(0, 0, 40)
+    local anchorA     = gekko:GetPos() + startOffset
+    local anchorB     = enemy:GetPos() + endOffset
+    local dist        = anchorA:Distance(anchorB)
 
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
     if loopSnd then
@@ -341,21 +378,21 @@ net.Receive("GekkoElasticRope", function()
         loopSnd:Play()
     end
 
-    local startOffset = Vector(0, 0, GEKKO_ORIGIN_Z)
-    local endOffset   = Vector(0, 0, 40)
-    local anchorA     = gekko:GetPos() + startOffset
-    local anchorB     = enemy:GetPos() + endOffset
-
     table.insert(activeBeams, {
-        gekko       = gekko,
-        enemy       = enemy,
-        startOffset = startOffset,
-        endOffset   = endOffset,
-        width       = math.max(width, 3),
-        color       = Color(col_r, col_g, col_b, 255),
-        removeAt    = CurTime() + snapDelay,
-        loopSnd     = loopSnd,
-        nodes       = RopeNodes_Create(anchorA, anchorB),
+        gekko        = gekko,
+        enemy        = enemy,
+        startOffset  = startOffset,
+        endOffset    = endOffset,
+        width        = math.max(width, 3),
+        color        = Color(col_r, col_g, col_b, 255),
+        removeAt     = CurTime() + snapDelay,
+        loopSnd      = loopSnd,
+        nodes        = RopeNodes_Create(anchorA, anchorA), -- start collapsed at muzzle
+        -- Extension state
+        extendDone   = false,
+        spawnTime    = CurTime(),
+        extendDist   = math.max(dist, 1),
+        extendTarget = Vector(anchorB.x, anchorB.y, anchorB.z),
     })
 
     local ply = LocalPlayer()
