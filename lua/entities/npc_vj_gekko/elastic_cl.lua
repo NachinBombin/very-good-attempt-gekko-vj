@@ -33,7 +33,7 @@ local ROPE_DAMPING    = 0.86
 local ROPE_CONSTRAINT = 6
 local ROPE_SLACK      = 1.06
 
-local EXTEND_SPEED      = 100   -- units/second for tip travel
+local EXTEND_SPEED      = 600   -- units/second for tip travel
 
 -- Cosine trajectory shape
 local EXTEND_AMP        = 28    -- peak lateral amplitude at muzzle (units)
@@ -446,7 +446,7 @@ net.Receive("GekkoElasticRope", function()
 
     local loopSnd = CreateSound(gekko, TENTACLE_LOOP)
     if loopSnd then
-        loopSnd:SetSoundLevel(75)
+        loopSnd:SetSoundLevel(100)
         loopSnd:Play()
     end
 

@@ -31,27 +31,27 @@ AddCSLuaFile("elastic_cl.lua")
 --  TUNABLES
 -- ------------------------------------------------------------
 local ELASTIC_MAX_RANGE     = 600
-local ELASTIC_COOLDOWN_MIN  = 30
-local ELASTIC_COOLDOWN_MAX  = 65
+local ELASTIC_COOLDOWN_MIN  = 15
+local ELASTIC_COOLDOWN_MAX  = 40
 local ELASTIC_DAMAGE        = 5
-local ELASTIC_DURATION      = 2.8
+local ELASTIC_DURATION      = 4.8
 local ELASTIC_PULL_SPEED    = 420
 local ELASTIC_PULL_INTERVAL = 0.08
-local ELASTIC_ROPE_WIDTH    = 1.4
+local ELASTIC_ROPE_WIDTH    = 1.0
 local ELASTIC_ROPE_R        = 0
 local ELASTIC_ROPE_G        = 0
 local ELASTIC_ROPE_B        = 0
-local ELASTIC_SNAP_DELAY    = 2.8
+local ELASTIC_SNAP_DELAY    = 4.8
 local ANCHOR_MODEL          = "models/hunter/blocks/cube025x025x025.mdl"
 
-local GEKKO_ORIGIN_Z        = 380
+local GEKKO_ORIGIN_Z        = 180
 local ELASTIC_PREFIRE_DELAY = 0.9
 
 -- Must match EXTEND_SPEED in elastic_cl.lua.
 -- Used to delay the first pull until the visual tip arrives.
-local EXTEND_SPEED          = 100
+local EXTEND_SPEED          = 600
 
-local BREAK_THRESHOLD = 7
+local BREAK_THRESHOLD = 9
 local BREAK_WINDOW    = 1.0
 
 util.AddNetworkString("GekkoElasticRope")
