@@ -1,5 +1,5 @@
 -- cl_init.lua  (CLIENT)
--- Visual: GAU-style tracer beam + glow sprites.
+-- Visual: 25mm API-T tracer beam + glow sprites.
 -- Impact: decal + dust puff + bullet-impact sounds + visual ricochet tracer
 --         + 3-tier explosive flash effects (small / medium / large).
 include("shared.lua")
@@ -7,7 +7,7 @@ include("shared.lua")
 local mat_beam  = Material("effects/laser1")
 local mat_glow  = Material("sprites/light_glow02_add")
 local mat_smoke = Material("particle/smokestack")
-local mat_exp   = Material("sprites/physbeam")   -- tight bright sprite for flash core
+local mat_exp   = Material("sprites/physbeam")
 
 -- ─── Ricochet store ───────────────────────────────────────────────────────────
 local RICO_CHANCE    = 0.009
@@ -15,6 +15,7 @@ local RICO_SPEED_MIN = 8000
 local RICO_SPEED_MAX = 18000
 local RICO_DUR_MIN   = 0.30
 local RICO_DUR_MAX   = 0.70
+local RICO_TRAIL_LEN = 180   -- fixed visual trail length in units
 
 local active_ricos = {}
 
@@ -52,10 +53,13 @@ local function spawn_visual_rico(hitPos, hitNormal)
 
     local spd = m_rand(RICO_SPEED_MIN, RICO_SPEED_MAX)
 
+    -- vel_dir is the normalised travel direction, used by the renderer to
+    -- synthesise a fixed-length tail that is always visible regardless of
+    -- how many Think ticks fire between render frames.
     active_ricos[#active_ricos + 1] = {
         pos      = Vector(hitPos.x, hitPos.y, hitPos.z),
-        old_pos  = Vector(hitPos.x, hitPos.y, hitPos.z),
         vel      = Vector(dx * spd, dy * spd, dz * spd),
+        vel_dir  = Vector(dx, dy, dz),   -- normalised direction, never changes
         die_time = CurTime() + m_rand(RICO_DUR_MIN, RICO_DUR_MAX),
     }
 end
@@ -73,7 +77,7 @@ local IMPACT_SOUNDS = {
     "physics/metal/metal_solid_impact_bullet3.wav",
 }
 
--- ─── Dust puff (existing) ─────────────────────────────────────────────────────
+-- ─── Dust puff ────────────────────────────────────────────────────────────────
 local function SpawnDustPuff(hitPos, hitNormal)
     local emitter = ParticleEmitter(hitPos, false)
     if not emitter then return end
@@ -105,20 +109,17 @@ local function SpawnDustPuff(hitPos, hitNormal)
 end
 
 -- ─── IMPACT LIGHT ─────────────────────────────────────────────────────────────
--- Single-frame DynamicLight at the hit position, sized by tier.
--- Die quickly so it reads as a sharp crack not a glow.
 local IMPACT_LIGHT = {
-    [1] = { r=255, g=200, b=100, brightness=2.5, size=180, decay=3800 }, -- small: snap flash
-    [2] = { r=255, g=160, b=60,  brightness=3.5, size=280, decay=3200 }, -- medium
-    [3] = { r=255, g=120, b=30,  brightness=5.0, size=420, decay=2600 }, -- large: hottest
+    [1] = { r=255, g=200, b=100, brightness=2.5, size=180, decay=3800 },
+    [2] = { r=255, g=160, b=60,  brightness=3.5, size=280, decay=3200 },
+    [3] = { r=255, g=120, b=30,  brightness=5.0, size=420, decay=2600 },
 }
 
-local light_uid = 1  -- unique per-impact DynamicLight index (cycles 1-64)
+local light_uid = 1
 
 local function SpawnImpactLight(hitPos, tier)
     local cfg = IMPACT_LIGHT[tier]
     if not cfg then return end
-    -- Use a cycling uid in range 1-64 to avoid stomping entity dlights
     light_uid = (light_uid % 64) + 1
     local dl = DynamicLight(1000 + light_uid)
     if not dl then return end
@@ -129,16 +130,12 @@ local function SpawnImpactLight(hitPos, tier)
     dl.brightness = cfg.brightness
     dl.Size       = cfg.size
     dl.Decay      = cfg.decay
-    dl.DieTime    = CurTime() + 0.08   -- very short: sharp crack flash
+    dl.DieTime    = CurTime() + 0.08
 end
 
 -- ─── TIER 1: SMALL ────────────────────────────────────────────────────────────
--- A tight crack: bright core flash + 2-3 fast spark streaks, minimal smoke.
--- Reads as a hard surface hit with barely any explosive yield showing.
 local function ImpactTier1(hitPos, hitNormal)
     SpawnImpactLight(hitPos, 1)
-
-    -- Core flash: 1 bright snap particle
     local emitter = ParticleEmitter(hitPos, false)
     if emitter then
         local p = emitter:Add("effects/yellowflare", hitPos)
@@ -154,7 +151,6 @@ local function ImpactTier1(hitPos, hitNormal)
             p:SetColor(255, 220, 140)
             p:SetLighting(false)
         end
-        -- 2-3 fast white spark streaks
         for _ = 1, m_random(2, 3) do
             local sp = emitter:Add("effects/spark", hitPos)
             if sp then
@@ -178,14 +174,10 @@ local function ImpactTier1(hitPos, hitNormal)
 end
 
 -- ─── TIER 2: MEDIUM ───────────────────────────────────────────────────────────
--- Confined detonation: flash + fragment sparks fanning out + thin smoke wisp.
--- The primary visual of a 25mm HEDP on a hard surface.
 local function ImpactTier2(hitPos, hitNormal)
     SpawnImpactLight(hitPos, 2)
-
     local emitter = ParticleEmitter(hitPos, false)
     if emitter then
-        -- Flash core: 2 overlapping bright puffs
         for _ = 1, 2 do
             local p = emitter:Add("effects/yellowflare", hitPos)
             if p then
@@ -201,7 +193,6 @@ local function ImpactTier2(hitPos, hitNormal)
                 p:SetLighting(false)
             end
         end
-        -- Fragment sparks: 5-7 medium-speed streaks
         for _ = 1, m_random(5, 7) do
             local sp = emitter:Add("effects/spark", hitPos)
             if sp then
@@ -220,7 +211,6 @@ local function ImpactTier2(hitPos, hitNormal)
                 sp:SetLighting(false)
             end
         end
-        -- Thin smoke wisp: 2 particles
         for _ = 1, 2 do
             local sm = emitter:Add("particle/smokestack", hitPos)
             if sm then
@@ -244,14 +234,10 @@ local function ImpactTier2(hitPos, hitNormal)
 end
 
 -- ─── TIER 3: LARGE ────────────────────────────────────────────────────────────
--- Maximum 25mm yield: hot debris spray, brighter flash, rolling smoke curl.
--- Still NOT a rocket explosion — tight, fast, spent in under 0.3s.
 local function ImpactTier3(hitPos, hitNormal)
     SpawnImpactLight(hitPos, 3)
-
     local emitter = ParticleEmitter(hitPos, false)
     if emitter then
-        -- Flash core: 3 overlapping blasts
         for _ = 1, 3 do
             local p = emitter:Add("effects/yellowflare", hitPos)
             if p then
@@ -268,7 +254,6 @@ local function ImpactTier3(hitPos, hitNormal)
                 p:SetLighting(false)
             end
         end
-        -- Hot debris fragments: 8-11 fast streaks with gravity drop
         for _ = 1, m_random(8, 11) do
             local sp = emitter:Add("effects/spark", hitPos)
             if sp then
@@ -287,7 +272,6 @@ local function ImpactTier3(hitPos, hitNormal)
                 sp:SetLighting(false)
             end
         end
-        -- Rolling smoke curl: 3-4 darker, faster-expanding puffs
         for _ = 1, m_random(3, 4) do
             local sm = emitter:Add("particle/smokestack", hitPos)
             if sm then
@@ -315,12 +299,11 @@ net.Receive("GekkoBushImpact", function()
     local hitPos    = net.ReadVector()
     local hitNormal = net.ReadVector()
     local sndIdx    = net.ReadUInt(8)
-    local tier      = net.ReadUInt(2)   -- 1=small 2=medium 3=large
+    local tier      = net.ReadUInt(2)
     sndIdx = m_clamp(sndIdx, 1, #IMPACT_SOUNDS)
     if tier < 1 then tier = 1 end
     if tier > 3 then tier = 3 end
 
-    -- Always: decal + existing dust puff + sound + possible ricochet
     util.Decal("Impact.Concrete", hitPos + hitNormal * 2, hitPos - hitNormal * 4)
     SpawnDustPuff(hitPos, hitNormal)
     sound.Play(IMPACT_SOUNDS[sndIdx], hitPos, 75, m_random(95, 110), 1.0)
@@ -329,20 +312,23 @@ net.Receive("GekkoBushImpact", function()
         spawn_visual_rico(hitPos, hitNormal)
     end
 
-    -- Tier-specific explosive flash effect
     if     tier == 1 then ImpactTier1(hitPos, hitNormal)
     elseif tier == 2 then ImpactTier2(hitPos, hitNormal)
     else                   ImpactTier3(hitPos, hitNormal)
     end
 end)
 
--- ─── Ricochet ticker ─────────────────────────────────────────────────────────
+-- ─── Ricochet ticker ──────────────────────────────────────────────────────────
+-- Advances rico positions using raw CurTime() delta.
+-- old_pos is intentionally NOT stored here; the renderer derives the tail
+-- from vel_dir (normalised direction) so it is always the correct length.
 local last_think = 0
 
 hook.Add("Think", "gekko_bushmaster_rico_tick", function()
     local now = CurTime()
     local dt  = now - last_think
     last_think = now
+    -- clamp dt: skip stall frames, prevent large jumps
     if dt <= 0 or dt > 0.1 then return end
 
     local rc = #active_ricos
@@ -354,9 +340,6 @@ hook.Add("Think", "gekko_bushmaster_rico_tick", function()
             active_ricos[rc] = nil
             rc = rc - 1
         else
-            r.old_pos.x = r.pos.x
-            r.old_pos.y = r.pos.y
-            r.old_pos.z = r.pos.z
             r.pos.x = r.pos.x + r.vel.x * dt
             r.pos.y = r.pos.y + r.vel.y * dt
             r.pos.z = r.pos.z + r.vel.z * dt
@@ -365,13 +348,14 @@ hook.Add("Think", "gekko_bushmaster_rico_tick", function()
     end
 end)
 
--- ─── Per-entity tracer + ricochet renderer ───────────────────────────────────
+-- ─── Per-entity tracer + ricochet renderer ────────────────────────────────────
 local g_bush_renderers = {}
 
 local function render_bush_tracers()
     local cam_pos   = EyePos()
     local min_trail = 120
 
+    -- ─ live projectile tracers ─
     for entIdx, _ in pairs(g_bush_renderers) do
         local ent = Entity(entIdx)
         if not IsValid(ent) then
@@ -386,17 +370,21 @@ local function render_bush_tracers()
         local dist  = m_sqrt(cam_pos:DistToSqr(render_pos))
         local scale = m_clamp(dist / 1200, 1.5, 5)
 
+        -- FIX: correct 25mm API-T tracer colors.
+        -- Core: bright yellow-white (same family as GAU, slightly warmer)
+        -- Halo: orange glow
         render.SetMaterial(mat_beam)
         if render_pos:DistToSqr(tail_end) > 4 then
-            render.DrawBeam(tail_end, render_pos, 6 * scale, 0, 1, Color(255, 30, 10, 255))
+            render.DrawBeam(tail_end, render_pos, 8 * scale, 0, 1, Color(255, 240, 160, 255))
         end
-        render.DrawBeam(tail_end, render_pos, 18 * scale, 0, 1, Color(200, 0, 0, 110))
+        render.DrawBeam(tail_end, render_pos, 22 * scale, 0, 1, Color(255, 120, 0, 120))
 
         render.SetMaterial(mat_glow)
-        render.DrawSprite(render_pos, 60 * scale, 60 * scale, Color(255, 40, 0, 180))
-        render.DrawSprite(render_pos, 16 * scale, 16 * scale, Color(255, 200, 180, 255))
+        render.DrawSprite(render_pos, 70 * scale, 70 * scale, Color(255, 160, 20, 200))
+        render.DrawSprite(render_pos, 18 * scale, 18 * scale, Color(255, 255, 200, 255))
     end
 
+    -- ─ visual ricochets ─
     local rc = #active_ricos
     if rc > 0 then
         local now = CurTime()
@@ -405,7 +393,17 @@ local function render_bush_tracers()
             if not r or now >= r.die_time then continue end
 
             local render_pos = r.pos
-            local tail_end   = r.old_pos
+
+            -- FIX: derive tail from normalised direction + fixed trail length.
+            -- The old code used r.old_pos which was being overwritten many times
+            -- per render frame by the Think ticker, making the tail always
+            -- near-zero length and therefore invisible.
+            local tail_end = Vector(
+                render_pos.x - r.vel_dir.x * RICO_TRAIL_LEN,
+                render_pos.y - r.vel_dir.y * RICO_TRAIL_LEN,
+                render_pos.z - r.vel_dir.z * RICO_TRAIL_LEN
+            )
+
             local life_frac  = m_clamp((r.die_time - now) / RICO_DUR_MAX, 0, 1)
 
             local alpha_core = life_frac * 255
@@ -416,15 +414,16 @@ local function render_bush_tracers()
             local dist  = m_sqrt(cam_pos:DistToSqr(render_pos))
             local scale = m_clamp(dist / 1200, 1.2, 4.5)
 
+            -- FIX: rico colors match the tracer family (yellow-white core,
+            -- orange halo) so ricochets read as hotter sparks of the same
+            -- round, not foreign red tracers.
             render.SetMaterial(mat_beam)
-            if render_pos:DistToSqr(tail_end) > 4 then
-                render.DrawBeam(tail_end, render_pos, 8 * scale, 0, 1, Color(255, 60, 20, alpha_core))
-            end
-            render.DrawBeam(tail_end, render_pos, 24 * scale, 0, 1, Color(220, 10, 0, alpha_halo))
+            render.DrawBeam(tail_end, render_pos, 10 * scale, 0, 1, Color(255, 255, 180, alpha_core))
+            render.DrawBeam(tail_end, render_pos, 28 * scale, 0, 1, Color(255, 140, 0,   alpha_halo))
 
             render.SetMaterial(mat_glow)
-            render.DrawSprite(render_pos, 80 * scale, 80 * scale, Color(255, 60, 0, alpha_glow))
-            render.DrawSprite(render_pos, 22 * scale, 22 * scale, Color(255, 220, 200, alpha_tip))
+            render.DrawSprite(render_pos, 100 * scale, 100 * scale, Color(255, 180, 30,  alpha_glow))
+            render.DrawSprite(render_pos,  26 * scale,  26 * scale, Color(255, 255, 220, alpha_tip))
         end
     end
 end
@@ -451,7 +450,7 @@ function ENT:Draw()
     if dlight then
         dlight.pos        = pos
         dlight.r          = 255
-        dlight.g          = 80
+        dlight.g          = 160
         dlight.b          = 20
         dlight.brightness = 4
         dlight.Decay      = 1400
