@@ -10,7 +10,7 @@ local mat_smoke = Material("particle/smokestack")
 local mat_exp   = Material("sprites/physbeam")
 
 -- ─── Ricochet store ───────────────────────────────────────────────────────────
-local RICO_CHANCE    = 0.009
+local RICO_CHANCE    = 1.0
 local RICO_SPEED_MIN = 8000
 local RICO_SPEED_MAX = 18000
 local RICO_DUR_MIN   = 0.30
@@ -29,14 +29,28 @@ local m_cos    = math.cos
 local m_sin    = math.sin
 
 local function spawn_visual_rico(hitPos, hitNormal)
+    -- Normalise the incoming normal; fall back to Vector(0,0,1) when zero
+    -- (can happen when Touch()'s short forward-trace misses geometry).
+    local nx, ny, nz = hitNormal.x, hitNormal.y, hitNormal.z
+    local nlen = m_sqrt(nx*nx + ny*ny + nz*nz)
+    if nlen < 0.001 then
+        nx, ny, nz = 0, 0, 1
+    else
+        nx = nx / nlen
+        ny = ny / nlen
+        nz = nz / nlen
+    end
+
     local helper
-    if m_abs(hitNormal.z) < 0.9 then
+    if m_abs(nz) < 0.9 then
         helper = Vector(0, 0, 1)
     else
         helper = Vector(1, 0, 0)
     end
-    local tangent   = hitNormal:Cross(helper)  tangent:Normalize()
-    local bitangent = hitNormal:Cross(tangent) bitangent:Normalize()
+
+    local n = Vector(nx, ny, nz)
+    local tangent   = n:Cross(helper)  tangent:Normalize()
+    local bitangent = n:Cross(tangent) bitangent:Normalize()
 
     local cos_theta = m_random()
     local sin_theta = m_sqrt(1 - cos_theta * cos_theta)
@@ -44,9 +58,9 @@ local function spawn_visual_rico(hitPos, hitNormal)
     local cp        = m_cos(phi)
     local sp        = m_sin(phi)
 
-    local dx = hitNormal.x * cos_theta + tangent.x * (sin_theta * cp) + bitangent.x * (sin_theta * sp)
-    local dy = hitNormal.y * cos_theta + tangent.y * (sin_theta * cp) + bitangent.y * (sin_theta * sp)
-    local dz = hitNormal.z * cos_theta + tangent.z * (sin_theta * cp) + bitangent.z * (sin_theta * sp)
+    local dx = nx * cos_theta + tangent.x * (sin_theta * cp) + bitangent.x * (sin_theta * sp)
+    local dy = ny * cos_theta + tangent.y * (sin_theta * cp) + bitangent.y * (sin_theta * sp)
+    local dz = nz * cos_theta + tangent.z * (sin_theta * cp) + bitangent.z * (sin_theta * sp)
     local len = m_sqrt(dx*dx + dy*dy + dz*dz)
     if len < 0.001 then return end
     dx = dx / len  dy = dy / len  dz = dz / len
@@ -308,9 +322,8 @@ net.Receive("GekkoBushImpact", function()
     SpawnDustPuff(hitPos, hitNormal)
     sound.Play(IMPACT_SOUNDS[sndIdx], hitPos, 75, m_random(95, 110), 1.0)
 
-    if m_random() < RICO_CHANCE then
-        spawn_visual_rico(hitPos, hitNormal)
-    end
+    -- Always spawn a rico; spawn_visual_rico handles zero/denormal normals.
+    spawn_visual_rico(hitPos, hitNormal)
 
     if     tier == 1 then ImpactTier1(hitPos, hitNormal)
     elseif tier == 2 then ImpactTier2(hitPos, hitNormal)
@@ -370,9 +383,6 @@ local function render_bush_tracers()
         local dist  = m_sqrt(cam_pos:DistToSqr(render_pos))
         local scale = m_clamp(dist / 1200, 1.5, 5)
 
-        -- FIX: correct 25mm API-T tracer colors.
-        -- Core: bright yellow-white (same family as GAU, slightly warmer)
-        -- Halo: orange glow
         render.SetMaterial(mat_beam)
         if render_pos:DistToSqr(tail_end) > 4 then
             render.DrawBeam(tail_end, render_pos, 8 * scale, 0, 1, Color(255, 240, 160, 255))
@@ -394,10 +404,6 @@ local function render_bush_tracers()
 
             local render_pos = r.pos
 
-            -- FIX: derive tail from normalised direction + fixed trail length.
-            -- The old code used r.old_pos which was being overwritten many times
-            -- per render frame by the Think ticker, making the tail always
-            -- near-zero length and therefore invisible.
             local tail_end = Vector(
                 render_pos.x - r.vel_dir.x * RICO_TRAIL_LEN,
                 render_pos.y - r.vel_dir.y * RICO_TRAIL_LEN,
@@ -414,9 +420,6 @@ local function render_bush_tracers()
             local dist  = m_sqrt(cam_pos:DistToSqr(render_pos))
             local scale = m_clamp(dist / 1200, 1.2, 4.5)
 
-            -- FIX: rico colors match the tracer family (yellow-white core,
-            -- orange halo) so ricochets read as hotter sparks of the same
-            -- round, not foreign red tracers.
             render.SetMaterial(mat_beam)
             render.DrawBeam(tail_end, render_pos, 10 * scale, 0, 1, Color(255, 255, 180, alpha_core))
             render.DrawBeam(tail_end, render_pos, 28 * scale, 0, 1, Color(255, 140, 0,   alpha_halo))
