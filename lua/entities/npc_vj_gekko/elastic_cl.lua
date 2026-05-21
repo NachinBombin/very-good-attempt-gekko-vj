@@ -10,7 +10,7 @@
 --  On key-smash break (b.breakRetracting == true):
 --    Every frame the retracting tip position is computed.
 --    EmitRetractTrail() fires at that exact world position:
---      * bloodstreameffectzippy burst  (flags=1, via util.Effect)
+--      * gekko_bloodstream effect (blood mist + stream)
 --      * orange spark particles
 --    Throttled by b.trailNextT at TRAIL_INTERVAL seconds.
 -- ============================================================
@@ -179,6 +179,35 @@ local function SpawnAttachDust(pos)
 end
 
 -- ============================================================
+--  BLOOD MIST  (direct ParticleEmitter — no util.Effect needed)
+--  Used for both break burst and retract trail.
+-- ============================================================
+local function SpawnBloodMist(pos, norm, count, speedScale)
+    local emitter = ParticleEmitter(pos, true)
+    if not emitter then return end
+    count      = count or 14
+    speedScale = speedScale or 1.0
+    for _ = 1, count do
+        local p = emitter:Add("particle/smokesprites_000" .. math.random(1, 9), pos)
+        if not p then continue end
+        local vel = norm * math.Rand(40, 90) * speedScale + VectorRand() * (25 * speedScale)
+        p:SetVelocity(vel)
+        p:SetLifeTime(0)
+        p:SetDieTime(math.Rand(0.3, 0.75))
+        p:SetStartAlpha(math.Rand(140, 200))
+        p:SetEndAlpha(0)
+        p:SetStartSize(math.Rand(5, 11))
+        p:SetEndSize(math.Rand(20, 45))
+        p:SetColor(210, 25, 25)
+        p:SetAirResistance(45)
+        p:SetGravity(Vector(0, 0, -14))
+        p:SetRoll(math.Rand(0, 360))
+        p:SetRollDelta(math.Rand(-0.5, 0.5))
+    end
+    emitter:Finish()
+end
+
+-- ============================================================
 --  BREAK EFFECTS  (one-shot burst at snap point)
 -- ============================================================
 local _breakFlashEnd = 0
@@ -187,13 +216,17 @@ local function SpawnBreakEffects(pos, enemy)
     local norm = Vector(0, 0, 1)
     if IsValid(enemy) then norm = enemy:GetForward() * -1 end
 
+    -- Blood mist burst — large, obvious, 22 particles
+    SpawnBloodMist(pos, norm, 22, 1.4)
+
+    -- gekko_bloodstream effect for the dripping stream trail
     local ed = EffectData()
     ed:SetOrigin(pos)
     ed:SetNormal(norm)
     ed:SetEntity(IsValid(enemy) and enemy or game.GetWorld())
-    ed:SetFlags(1)  -- burst
-    util.Effect("bloodstreameffectzippy", ed, true, true)
+    util.Effect("gekko_bloodstream", ed, true, true)
 
+    -- Orange sparks
     local sparker = ParticleEmitter(pos, true)
     if sparker then
         local right = norm:Cross(Vector(0, 0, 1))
@@ -244,6 +277,10 @@ end)
 
 -- ============================================================
 --  RETRACT TRAIL TICK
+--
+--  Called every frame during break-retract.
+--  Blood mist + spark burst at the exact moving tip position.
+--  Throttled by b.trailNextT at TRAIL_INTERVAL seconds.
 -- ============================================================
 local function EmitRetractTrail(tipPos, towardGekko, now, b)
     if now < b.trailNextT then return end
@@ -251,13 +288,10 @@ local function EmitRetractTrail(tipPos, towardGekko, now, b)
 
     local norm = towardGekko:GetNormalized()
 
-    local ed = EffectData()
-    ed:SetOrigin(tipPos)
-    ed:SetNormal(norm)
-    ed:SetEntity(game.GetWorld())
-    ed:SetFlags(1)
-    util.Effect("bloodstreameffectzippy", ed, true, true)
+    -- Blood mist: small burst, 6 particles per tick to avoid spam
+    SpawnBloodMist(tipPos, norm, 6, 0.7)
 
+    -- Spark burst at tip
     local sparker = ParticleEmitter(tipPos, false)
     if sparker then
         for _ = 1, math.random(3, 6) do
@@ -325,8 +359,6 @@ end
 
 -- ============================================================
 --  FIX: force-drop all beams targeting the local player
---  Called on PlayerInitialSpawn (client) so beams are cleared
---  even if the server net message races the spawn event.
 -- ============================================================
 local function DropLocalPlayerBeams()
     local ply = LocalPlayer()
@@ -340,15 +372,10 @@ local function DropLocalPlayerBeams()
 end
 
 hook.Add("InitPostEntity", "GekkoElasticClearOnSpawn", function()
-    -- Fired when the client fully initialises after (re)connecting.
-    -- Clears any beams that survived a disconnect/reconnect cycle.
     DropLocalPlayerBeams()
 end)
 
 hook.Add("PostEntityCreated", "GekkoElasticRespawnClear", function(ent)
-    -- Fired every time an entity is created on the client.
-    -- When our own player entity is (re)created after a respawn,
-    -- force-retract any beam that was attached to us.
     if not IsValid(ent) then return end
     if not ent:IsPlayer() then return end
     if ent ~= LocalPlayer() then return end
@@ -427,20 +454,12 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
                     i = i + 1
                 end
 
-            -- ------------------------------------------------
-            --  FIX: if the enemy is the local player and they
-            --  are no longer in the "tetherable" state (dead or
-            --  freshly spawned with health reset), force retract.
-            -- ------------------------------------------------
             elseif IsValid(b.enemy) and b.enemy:IsPlayer()
                    and b.enemy == LocalPlayer()
                    and not b.enemy:Alive() then
                 BeginRetract(b, now, false)
                 i = i + 1
 
-            -- ------------------------------------------------
-            --  EXTEND / ATTACHED PHASE
-            -- ------------------------------------------------
             elseif not IsValid(b.enemy) then
                 BeginRetract(b, now, false)
                 i = i + 1
@@ -516,9 +535,6 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
-    -- FIX: never attach a new beam to a dead/respawning local player.
-    -- The server might fire the net message just as the player dies;
-    -- reject it on the client side so no ghost beam is ever created.
     local ply = LocalPlayer()
     if IsValid(ply) and enemy == ply and not ply:Alive() then return end
 
@@ -587,14 +603,12 @@ net.Receive("GekkoElasticRetract", function()
 end)
 
 -- ============================================================
---  NET: CABLE BREAK  (key-smash / death) -> burst + bloodstream trail
+--  NET: CABLE BREAK  (key-smash / death)
 -- ============================================================
 net.Receive("GekkoElasticBreak", function()
     local enemy    = net.ReadEntity()
     local breakPos = net.ReadVector()
 
-    -- FIX: find the beam even when enemy entity is no longer considered
-    -- "valid" mid-respawn. We search by reference identity, not IsValid.
     local b
     for _, beam in ipairs(activeBeams) do
         if beam.enemy == enemy then b = beam break end
