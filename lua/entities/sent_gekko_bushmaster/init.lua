@@ -37,54 +37,62 @@ local IMPACT_SOUNDS = {
     "physics/metal/metal_solid_impact_bullet2.wav",
     "physics/metal/metal_solid_impact_bullet3.wav",
 }
-for _, s in ipairs(IMPACT_SOUNDS) do util.PrecacheSound(s) end
 
-local GIB_RICO_CHANCE = 0.009
-local GIB_MODEL       = "models/gibs/wood_gib01e.mdl"
-util.PrecacheModel(GIB_MODEL)
+local GIB_RICO_CHANCE = 0.15
+local GIB_LIFETIME    = 3.5
+local GIB_MODELS = {
+    "models/props_junk/PopCan01a.mdl",
+    "models/props_junk/MetalBucket01a.mdl",
+    "models/props_debris/concrete_chunk01a.mdl",
+}
 
+-- =========================================================================
+-- Gib helper
+-- =========================================================================
 local function SpawnIgnitedGib(hitPos, hitNormal)
+    local mdl = GIB_MODELS[math.random(#GIB_MODELS)]
     local gib = ents.Create("prop_physics")
     if not IsValid(gib) then return end
-    gib:SetModel(GIB_MODEL)
-    gib:SetPos(hitPos + hitNormal * 3)
-    gib:SetAngles(Angle(math.random(0,360), math.random(0,360), math.random(0,360)))
-    gib:Spawn()
-    gib:Activate()
+    gib:SetModel(mdl)
+    gib:SetPos(hitPos + hitNormal * 4)
+    gib:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+    gib:Spawn(); gib:Activate()
+    gib:DrawShadow(false)
+    timer.Simple(GIB_LIFETIME, function()
+        if IsValid(gib) then gib:Remove() end
+    end)
     local phys = gib:GetPhysicsObject()
-    if IsValid(phys) then
-        phys:Wake()
-        local helper
-        if math.abs(hitNormal.z) < 0.9 then
-            helper = Vector(0, 0, 1)
-        else
-            helper = Vector(1, 0, 0)
-        end
-        local tangent   = hitNormal:Cross(helper)  tangent:Normalize()
-        local bitangent = hitNormal:Cross(tangent) bitangent:Normalize()
-        local cos_theta = math.random()
-        local sin_theta = math.sqrt(1 - cos_theta * cos_theta)
-        local phi       = math.random() * (2 * math.pi)
-        local cp        = math.cos(phi)
-        local sp        = math.sin(phi)
-        local nx, ny, nz = hitNormal.x, hitNormal.y, hitNormal.z
-        local dx = nx * cos_theta + tangent.x * (sin_theta * cp) + bitangent.x * (sin_theta * sp)
-        local dy = ny * cos_theta + tangent.y * (sin_theta * cp) + bitangent.y * (sin_theta * sp)
-        local dz = nz * cos_theta + tangent.z * (sin_theta * cp) + bitangent.z * (sin_theta * sp)
-        local dlen = math.sqrt(dx*dx + dy*dy + dz*dz)
-        if dlen < 0.001 then gib:Remove() return end
-        dx = dx / dlen  dy = dy / dlen  dz = dz / dlen
-        local speed = math.Rand(120, 340)
-        phys:SetVelocity(Vector(dx * speed, dy * speed, dz * speed))
-        phys:SetAngleVelocity(Vector(math.Rand(-400,400), math.Rand(-400,400), math.Rand(-400,400)))
+    if not IsValid(phys) then gib:Remove() return end
+    local helper
+    if math.abs(hitNormal.z) < 0.9 then
+        helper = Vector(0, 0, 1)
+    else
+        helper = Vector(1, 0, 0)
     end
+    local tangent   = hitNormal:Cross(helper)  tangent:Normalize()
+    local bitangent = hitNormal:Cross(tangent) bitangent:Normalize()
+    local cos_theta = math.random()
+    local sin_theta = math.sqrt(1 - cos_theta * cos_theta)
+    local phi       = math.random() * (2 * math.pi)
+    local cp        = math.cos(phi)
+    local sp        = math.sin(phi)
+    local nx, ny, nz = hitNormal.x, hitNormal.y, hitNormal.z
+    local dx = nx * cos_theta + tangent.x * (sin_theta * cp) + bitangent.x * (sin_theta * sp)
+    local dy = ny * cos_theta + tangent.y * (sin_theta * cp) + bitangent.y * (sin_theta * sp)
+    local dz = nz * cos_theta + tangent.z * (sin_theta * cp) + bitangent.z * (sin_theta * sp)
+    local dlen = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if dlen < 0.001 then gib:Remove() return end
+    dx = dx / dlen  dy = dy / dlen  dz = dz / dlen
+    local speed = math.Rand(120, 340)
+    phys:SetVelocity(Vector(dx * speed, dy * speed, dz * speed))
+    phys:SetAngleVelocity(Vector(math.Rand(-400,400), math.Rand(-400,400), math.Rand(-400,400)))
     gib:Ignite(0, 0)
 end
 
 -- =========================================================================
 -- Falloff blast helpers
 -- =========================================================================
-local FALLOFF_MIN_FRAC = 0.08   -- 8% damage at the very edge
+local FALLOFF_MIN_FRAC = 0.08
 
 local function EntAimPos( ent )
     local phys = ent:GetPhysicsObject()
@@ -98,7 +106,6 @@ local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg
         if ent == inflictor   then continue end
 
         local entPos = EntAimPos( ent )
-        -- Skip entities with no line of sight (behind walls/roofs)
         local los = util.TraceLine({
             start  = origin,
             endpos = entPos,
@@ -247,11 +254,16 @@ function ENT:Explode(hitPos, hitNormal, hitEnt)
 
     local sndIdx = math.random(#IMPACT_SOUNDS)
 
-    -- Dust puff + decal + impact sounds (handled by cl_init.lua of this entity)
+    -- Roll impact tier: 1=small(40%) 2=medium(40%) 3=large(20%)
+    local r = math.random(100)
+    local impactTier = (r <= 40) and 1 or (r <= 80) and 2 or 3
+
+    -- Dust puff + decal + impact sounds + tier effect (handled by cl_init.lua)
     net.Start("GekkoBushImpact")
         net.WriteVector(hitPos)
         net.WriteVector(hitNormal)
         net.WriteUInt(sndIdx, 8)
+        net.WriteUInt(impactTier, 2)
     net.Broadcast()
 
     -- Projected-light impact flash (preset 2 = BUSHMASTER, handled by bullet_impact_system.lua)
