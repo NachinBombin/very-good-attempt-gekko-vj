@@ -52,11 +52,10 @@ end
 
 -- ============================================================
 --  SnapToFloor
---  Uses SetAbsOrigin (not SetPos — SetPos is a no-op for live
---  AI entities with a physics object). Traces from 500u above
---  straight down, places the NPC origin exactly on the hit point
---  so the feet touch the geometry. Bone manipulation in
---  GekkoLegs_ApplyPose then handles the visual collapse.
+--  Must be called AFTER SetMoveType(MOVETYPE_NONE).
+--  On MOVETYPE_NONE entities SetPos is respected by the engine
+--  and moves the origin directly. Traces from 500u above to
+--  find the floor, then places the origin on the hit point.
 -- ============================================================
 local function SnapToFloor(ent)
     local pos = ent:GetPos()
@@ -79,13 +78,13 @@ local function SnapToFloor(ent)
 
     if tr.Hit and not tr.StartSolid then
         local newPos = Vector(pos.x, pos.y, tr.HitPos.z)
-        ent:SetAbsOrigin(newPos)
+        ent:SetPos(newPos)
         print(string.format(
-            "[GekkoLegs] SnapToFloor | was Z=%.1f  snapped to Z=%.1f  (floor at Z=%.1f)",
-            pos.z, tr.HitPos.z, tr.HitPos.z
+            "[GekkoLegs] SnapToFloor | was Z=%.1f  snapped to Z=%.1f",
+            pos.z, tr.HitPos.z
         ))
     else
-        print("[GekkoLegs] WARNING: SnapToFloor trace missed — NPC may float")
+        print("[GekkoLegs] WARNING: SnapToFloor trace missed")
     end
 end
 
@@ -106,15 +105,15 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self._jumpDidLiftoff      = false
 
     -- 2. Kill targeted_jump_system state
-    self._tjStateLOCAL    = 0
-    self._tjCooldown      = CurTime() + 999999
-    self._tjLandCooldown  = CurTime() + 999999
-    self._tjDidLiftoff    = false
+    self._tjStateLOCAL   = 0
+    self._tjCooldown     = CurTime() + 999999
+    self._tjLandCooldown = CurTime() + 999999
+    self._tjDidLiftoff   = false
 
     -- 3. Kill sprint / run
-    self._gekkoRunning      = false
-    self._gekkoSprinting    = false
-    self._gekkoSprintEndT   = 0
+    self._gekkoRunning    = false
+    self._gekkoSprinting  = false
+    self._gekkoSprintEndT = 0
     if self._preSprint_MoveSpeed then
         self.MoveSpeed = self._preSprint_MoveSpeed
         self.RunSpeed  = self._preSprint_RunSpeed
@@ -124,22 +123,21 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         self._preSprint_WalkSpeed = nil
     end
 
-    -- 4. Reset hull
+    -- 4. Reset hull / crouch
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching    = false
     self.VJ_IsBeingCrouched = false
 
-    -- 5. MOVETYPE_STEP first so SetAbsOrigin works, zero velocity
-    self:SetMoveType(MOVETYPE_STEP)
+    -- 5. Zero velocity
     self:SetAbsVelocity(Vector(0, 0, 0))
 
-    -- 6. Snap to floor using SetAbsOrigin
-    SnapToFloor(self)
-
-    -- 7. Hard freeze
+    -- 6. Hard freeze FIRST — SetPos works on MOVETYPE_NONE
     self:SetMoveType(MOVETYPE_NONE)
     HardLockMovement(self)
+
+    -- 7. Snap to floor (SetPos respected now that type is NONE)
+    SnapToFloor(self)
 
     -- 8. Apply bone pose
     self:GekkoLegs_ApplyPose()
