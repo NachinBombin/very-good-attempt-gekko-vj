@@ -1,31 +1,12 @@
 -- ============================================================
 --  npc_vj_gekko / targeted_jump_system.lua
---
---  Ballistic targeted jump system for the Gekko NPC.
---  Uses the same animation sequences (jump / fall / land) and
---  the same JUMP_RISING / JUMP_FALLING / JUMP_LAND state values
---  as jump_system.lua, but instead of a random vertical force it
---  solves the correct launch velocity to land on the current enemy.
---
---  KEY DESIGN RULE: this system owns _tjStateLOCAL, a completely
---  separate variable from jump_system.lua's _jumpStateLOCAL.
---  Both systems write to SetGekkoJumpState() (the shared NW int
---  read by the client), but they guard each other by checking
---  GetGekkoJumpState() == JUMP_NONE before firing.
---
---  Integration in init.lua (already present):
---    include("targeted_jump_system.lua")   -- top of file
---    self:GekkoTargetJump_Init()           -- inside Init()
---    self:GekkoTargetJump_Think()          -- inside OnThink()
 -- ============================================================
 
--- Shared state constants (must match jump_system.lua)
 local JUMP_NONE    = 0
 local JUMP_RISING  = 1
 local JUMP_FALLING = 2
 local JUMP_LAND    = 3
 
--- ── Ballistic tuning ──────────────────────────────────────
 local TJ_GRAVITY              = 600
 local TJ_VZ_ASCENDING         = 1200
 local TJ_VZ_DESCENDING        = 700
@@ -35,7 +16,6 @@ local TJ_VXY_MIN              = 80
 local TJ_VZ_BOOST_STEP        = 200
 local TJ_VZ_BOOST_MAX         = 1600
 
--- ── Cooldown / distance guards ───────────────────────────
 local TJ_COOLDOWN_MIN         = 7.0
 local TJ_COOLDOWN_MAX         = 20.0
 local TJ_MIN_ENEMY_DIST       = 500
@@ -47,16 +27,12 @@ local TJ_RISING_TIMEOUT       = 1.8
 local TJ_GROUND_DIST          = 24
 local TJ_JITTER_XY            = 5
 
--- ── Stuck-Z recovery (matches jump_system.lua tuning) ───────────
-local TJ_STUCK_Z_THRESHOLD    = 2.0   -- was 8.0
-local TJ_STUCK_Z_WINDOW       = 0.08  -- was 0.6
+local TJ_STUCK_Z_THRESHOLD    = 2.0
+local TJ_STUCK_Z_WINDOW       = 0.08
 local TJ_UNSTUCK_NUDGE        = 28
-local TJ_STUCK_MAX_ATTEMPTS   = 1     -- was 2
+local TJ_STUCK_MAX_ATTEMPTS   = 1
 
 -- ============================================================
---  Internal helpers
--- ============================================================
-
 local function TJ_GetLocalState(ent)
     return ent._tjStateLOCAL or JUMP_NONE
 end
@@ -115,9 +91,6 @@ local function TJ_FindNudgeDir(ent)
     return bestDir
 end
 
--- ============================================================
---  Ballistic solver
--- ============================================================
 local function TJ_Solve(selfPos, targetPos)
     local dXY = Vector(targetPos.x - selfPos.x, targetPos.y - selfPos.y, 0):Length()
     local dZ  = targetPos.z - selfPos.z
@@ -152,8 +125,6 @@ local function TJ_Solve(selfPos, targetPos)
 end
 
 -- ============================================================
---  Init
--- ============================================================
 function ENT:GekkoTargetJump_Init()
     self._tjStateLOCAL      = JUMP_NONE
     self._tjCooldown        = CurTime() + TJ_POST_LAND_COOLDOWN
@@ -170,9 +141,10 @@ function ENT:GekkoTargetJump_Init()
 end
 
 -- ============================================================
---  ShouldJump
--- ============================================================
 function ENT:GekkoTargetJump_ShouldJump()
+    -- GATE: legs disabled = never jump
+    if self._gekkoLegsDisabled then return false end
+
     if self._tjCooldown          > CurTime() then return false end
     if self._tjLandCooldown      > CurTime() then return false end
     if TJ_GetLocalState(self)   ~= JUMP_NONE  then return false end
@@ -187,9 +159,9 @@ function ENT:GekkoTargetJump_ShouldJump()
 end
 
 -- ============================================================
---  Execute
--- ============================================================
 function ENT:GekkoTargetJump_Execute()
+    -- GATE: legs disabled = no jumping
+    if self._gekkoLegsDisabled then return end
     if TJ_GetLocalState(self) ~= JUMP_NONE then return end
 
     local enemy = self:GetEnemy()
@@ -244,8 +216,6 @@ function ENT:GekkoTargetJump_Execute()
 end
 
 -- ============================================================
---  Stuck-Z recovery
--- ============================================================
 function ENT:GekkoTargetJump_CheckStuckZ(velZ, now)
     if math.abs(velZ - self._tjStuckZLastVelZ) > TJ_STUCK_Z_THRESHOLD then
         self._tjStuckZLastVelZ = velZ
@@ -257,7 +227,6 @@ function ENT:GekkoTargetJump_CheckStuckZ(velZ, now)
     end
 
     if self._tjStuckAttempts >= TJ_STUCK_MAX_ATTEMPTS then
-        -- Hard abort
         TJ_SetLocalState(self, JUMP_NONE)
         self._tjLastState           = JUMP_NONE
         self:SetGekkoJumpTimer(0)
@@ -313,9 +282,10 @@ function ENT:GekkoTargetJump_CheckStuckZ(velZ, now)
 end
 
 -- ============================================================
---  Think
--- ============================================================
 function ENT:GekkoTargetJump_Think()
+    -- GATE: legs disabled = jump system fully dead
+    if self._gekkoLegsDisabled then return end
+
     if self:GekkoTargetJump_ShouldJump() then
         self:GekkoTargetJump_Execute()
     end
@@ -363,7 +333,6 @@ function ENT:GekkoTargetJump_Think()
         self._tjThinkPrint = now + 0.25
     end
 
-    -- ── RISING ────────────────────────────────────────────────
     if state == JUMP_RISING then
         if vel.z > 50 then self._tjDidLiftoff = true end
 
@@ -406,7 +375,6 @@ function ENT:GekkoTargetJump_Think()
         end
     end
 
-    -- ── FALLING ───────────────────────────────────────────────
     if state == JUMP_FALLING then
         if self:GekkoTargetJump_CheckStuckZ(vel.z, now) then return end
         if self._seqFall and self._seqFall ~= -1 then
@@ -418,7 +386,6 @@ function ENT:GekkoTargetJump_Think()
         end
     end
 
-    -- ── FALLING → LAND ────────────────────────────────────────
     if state == JUMP_FALLING and grounded then
         TJ_SetLocalState(self, JUMP_LAND)
         self._tjLastState = JUMP_LAND
@@ -442,7 +409,6 @@ function ENT:GekkoTargetJump_Think()
         return
     end
 
-    -- ── LAND → NONE ─────────────────────────────────────────
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         TJ_SetLocalState(self, JUMP_NONE)
         self._tjLastState           = JUMP_NONE
@@ -462,8 +428,6 @@ function ENT:GekkoTargetJump_Think()
     end
 end
 
--- ============================================================
---  Utility
 -- ============================================================
 function ENT:GekkoTargetJump_IsAirborne()
     local s = TJ_GetLocalState(self)

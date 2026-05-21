@@ -1,6 +1,5 @@
 -- ============================================================
 --  npc_vj_gekko / leg_disable_system.lua
---  Gekko VJ NPC — Leg disabling / grounded state
 -- ============================================================
 
 local GROUNDED_HEALTH_FRACTION = 0.30
@@ -10,16 +9,6 @@ local PELVIS_OFFSET_Z = -125
 local L_THIGH_ANG     = Angle(0, 0, -50)
 local R_THIGH_ANG     = Angle(100, -80, 0)
 
--- The spine3 bone sits roughly this many units above the NPC origin
--- when the NPC is upright. When grounded/collapsed the pelvis drops
--- PELVIS_OFFSET_Z, so the effective spine3 floor contact point is
--- approximately (origin + SPINE3_HEIGHT_UPRIGHT + PELVIS_OFFSET_Z).
--- We want THAT point touching the geometry, so we offset the origin
--- UP by this amount when placing the NPC on the floor.
-local SPINE3_HEIGHT_UPRIGHT = 96   -- tune if needed
-
--- ============================================================
---  Init
 -- ============================================================
 function ENT:GekkoLegs_Init()
     self._gekkoLegsDisabled    = false
@@ -30,8 +19,6 @@ function ENT:GekkoLegs_Init()
     self.GekkoRThighBone       = self:LookupBone("b_r_thigh")  or -1
 end
 
--- ============================================================
---  Damage hook
 -- ============================================================
 function ENT:GekkoLegs_OnDamage(dmginfo)
     if self._gekkoLegsDisabled then return end
@@ -49,8 +36,6 @@ function ENT:GekkoLegs_OnDamage(dmginfo)
 end
 
 -- ============================================================
---  Hard locomotion lock (called on trigger + every tick)
--- ============================================================
 local function HardLockMovement(ent)
     ent.MoveSpeed    = 0
     ent.RunSpeed     = 0
@@ -66,80 +51,67 @@ local function HardLockMovement(ent)
 end
 
 -- ============================================================
---  Floor snap
---  Goal: the spine3 bone contact point (body centre when
---  collapsed) must be touching the floor geometry.
---
---  Strategy:
---   1. Trace straight down from well above the NPC to find
---      the floor Z (MASK_SOLID_BRUSHONLY, fallback PLAYERSOLID).
---   2. Place the NPC origin so that spine3 sits on that Z:
---        origin_z = floor_z - (SPINE3_HEIGHT_UPRIGHT + PELVIS_OFFSET_Z)
---      Because the pelvis drops PELVIS_OFFSET_Z when the pose
---      is applied, spine3 ends up at exactly floor_z.
+--  SnapToFloor
+--  Uses SetAbsOrigin (not SetPos — SetPos is a no-op for live
+--  AI entities with a physics object). Traces from 500u above
+--  straight down, places the NPC origin exactly on the hit point
+--  so the feet touch the geometry. Bone manipulation in
+--  GekkoLegs_ApplyPose then handles the visual collapse.
 -- ============================================================
 local function SnapToFloor(ent)
     local pos = ent:GetPos()
 
-    -- Start the trace well above to avoid starting inside geometry
-    local traceStart = Vector(pos.x, pos.y, pos.z + 500)
-    local traceEnd   = Vector(pos.x, pos.y, pos.z - 2048)
-
     local tr = util.TraceLine({
-        start  = traceStart,
-        endpos = traceEnd,
+        start  = Vector(pos.x, pos.y, pos.z + 500),
+        endpos = Vector(pos.x, pos.y, pos.z - 2048),
         filter = ent,
         mask   = MASK_SOLID_BRUSHONLY,
     })
 
     if not tr.Hit or tr.StartSolid then
-        -- Fallback: include player-solid props
         tr = util.TraceLine({
-            start  = traceStart,
-            endpos = traceEnd,
+            start  = Vector(pos.x, pos.y, pos.z + 500),
+            endpos = Vector(pos.x, pos.y, pos.z - 2048),
             filter = ent,
             mask   = MASK_PLAYERSOLID_BRUSHONLY,
         })
     end
 
     if tr.Hit and not tr.StartSolid then
-        local floorZ     = tr.HitPos.z
-        -- spine3 contact offset: upright height + pelvis drop
-        local contactOfs = SPINE3_HEIGHT_UPRIGHT + PELVIS_OFFSET_Z
-        -- We want: origin_z + contactOfs == floorZ
-        -- => origin_z = floorZ - contactOfs
-        local newZ = floorZ - contactOfs
-        ent:SetPos(Vector(pos.x, pos.y, newZ))
+        local newPos = Vector(pos.x, pos.y, tr.HitPos.z)
+        ent:SetAbsOrigin(newPos)
         print(string.format(
-            "[GekkoLegs] SnapToFloor | floorZ=%.1f  originZ=%.1f  spine3Z=%.1f (target)",
-            floorZ, newZ, newZ + contactOfs
+            "[GekkoLegs] SnapToFloor | was Z=%.1f  snapped to Z=%.1f  (floor at Z=%.1f)",
+            pos.z, tr.HitPos.z, tr.HitPos.z
         ))
     else
-        print("[GekkoLegs] WARNING: SnapToFloor trace missed entirely")
+        print("[GekkoLegs] WARNING: SnapToFloor trace missed — NPC may float")
     end
 end
 
--- ============================================================
---  Grounded trigger
 -- ============================================================
 function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     if self._gekkoLegsDisabled then return end
     self._gekkoLegsDisabled   = true
     self._gekkoLegsTriggeredT = CurTime()
 
-    -- ---- 1. Fully kill the jump system state -------------------
-    -- Set local jump state variable that GekkoJump_Think reads
-    self._jumpStateLOCAL = 0   -- JUMP_NONE
+    -- 1. Kill jump_system state
+    self._jumpStateLOCAL  = 0
     if self.SetGekkoJumpState then self:SetGekkoJumpState(0) end
     if self.SetGekkoJumpTimer  then self:SetGekkoJumpTimer(0) end
     if self.GekkoJump_StopJetFX then self:GekkoJump_StopJetFX() end
-    -- Push cooldowns far into the future so _ShouldJump always returns false
-    self._jumpCooldown     = CurTime() + 999999
-    self._jumpLandCooldown = CurTime() + 999999
+    self._jumpCooldown        = CurTime() + 999999
+    self._jumpLandCooldown    = CurTime() + 999999
     self._jumpRisingStartTime = 0
-    self._jumpDidLiftoff   = false
+    self._jumpDidLiftoff      = false
 
-    -- ---- 2. Kill sprint / run ----------------------------------
+    -- 2. Kill targeted_jump_system state
+    self._tjStateLOCAL    = 0
+    self._tjCooldown      = CurTime() + 999999
+    self._tjLandCooldown  = CurTime() + 999999
+    self._tjDidLiftoff    = false
+
+    -- 3. Kill sprint / run
     self._gekkoRunning      = false
     self._gekkoSprinting    = false
     self._gekkoSprintEndT   = 0
@@ -152,28 +124,27 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         self._preSprint_WalkSpeed = nil
     end
 
-    -- ---- 3. Clear crouch / hull --------------------------------
+    -- 4. Reset hull
     self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching    = false
     self.VJ_IsBeingCrouched = false
 
-    -- ---- 4. Make sure we are on MOVETYPE_STEP so SetPos works --
-    --        (if mid-jump the type is FLYGRAVITY; reset it first)
+    -- 5. MOVETYPE_STEP first so SetAbsOrigin works, zero velocity
     self:SetMoveType(MOVETYPE_STEP)
     self:SetAbsVelocity(Vector(0, 0, 0))
 
-    -- ---- 5. Snap spine3 to the floor --------------------------
+    -- 6. Snap to floor using SetAbsOrigin
     SnapToFloor(self)
 
-    -- ---- 6. Now hard-freeze all locomotion --------------------
+    -- 7. Hard freeze
     self:SetMoveType(MOVETYPE_NONE)
     HardLockMovement(self)
 
-    -- ---- 7. Apply the bone pose --------------------------------
+    -- 8. Apply bone pose
     self:GekkoLegs_ApplyPose()
 
-    -- ---- 8. Gib burst ------------------------------------------
+    -- 9. Gibs
     local hitPos = dmginfo:GetDamagePosition()
     if (not hitPos) or hitPos == vector_origin then
         hitPos = self:GetPos() + Vector(0, 0, 80)
@@ -195,8 +166,6 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
 end
 
 -- ============================================================
---  Pose application
--- ============================================================
 function ENT:GekkoLegs_ApplyPose()
     if not self._gekkoLegsDisabled then return end
     if self.GekkoPelvisBone and self.GekkoPelvisBone >= 0 then
@@ -211,20 +180,14 @@ function ENT:GekkoLegs_ApplyPose()
 end
 
 -- ============================================================
---  Per-tick update while grounded
--- ============================================================
 function ENT:GekkoLegs_Think()
     if not self._gekkoLegsDisabled then return end
 
-    -- Keep locomotion dead every tick
-    HardLockMovement(self)
     self:SetMoveType(MOVETYPE_NONE)
     self:SetAbsVelocity(Vector(0, 0, 0))
-
-    -- Keep pose
+    HardLockMovement(self)
     self:GekkoLegs_ApplyPose()
 
-    -- Passive bleeding
     local now = CurTime()
     if now >= (self._gekkoLegsBleedNextT or 0) then
         self._gekkoLegsBleedNextT = now + math.Rand(0.4, 0.9)
@@ -234,6 +197,5 @@ function ENT:GekkoLegs_Think()
     end
 end
 
--- Stub: legacy callers
 function ENT:GekkoLegs_GroundToFloor() end
 function ENT:GekkoLegs_GroundToFloorOnce() end
