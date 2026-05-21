@@ -254,11 +254,11 @@ function ENT:Explode(hitPos, hitNormal, hitEnt)
 
     local sndIdx = math.random(#IMPACT_SOUNDS)
 
-    -- Roll impact tier: 1=small(40%) 2=medium(40%) 3=large(20%)
+    -- Roll impact tier: 1=small(40%)  2=medium(40%)  3=large(20%)
     local r = math.random(100)
     local impactTier = (r <= 40) and 1 or (r <= 80) and 2 or 3
 
-    -- Dust puff + decal + impact sounds + tier effect (handled by cl_init.lua)
+    -- Existing dust/decal/sound + new tier flash (cl_init.lua reads tier)
     net.Start("GekkoBushImpact")
         net.WriteVector(hitPos)
         net.WriteVector(hitNormal)
@@ -266,7 +266,7 @@ function ENT:Explode(hitPos, hitNormal, hitEnt)
         net.WriteUInt(impactTier, 2)
     net.Broadcast()
 
-    -- Projected-light impact flash (preset 2 = BUSHMASTER, handled by bullet_impact_system.lua)
+    -- Projected-light impact flash (bullet_impact_system.lua preset 2)
     net.Start("GekkoBulletImpact")
         net.WriteVector(hitPos)
         net.WriteVector(hitNormal)

@@ -1,24 +1,22 @@
 -- cl_init.lua  (CLIENT)
--- Visual: GAU-style tracer beam + glow sprites, identical rendering pipeline
--- to ent_ac47_m134_bullet/cl_init.lua.  Flame/spark emitter removed.
--- Impact: decal + dust puff + bullet-impact sounds + visual ricochet tracer.
+-- Visual: GAU-style tracer beam + glow sprites.
+-- Impact: decal + dust puff + bullet-impact sounds + visual ricochet tracer
+--         + 3-tier explosive flash effects (small / medium / large).
 include("shared.lua")
 
-local mat_beam = Material("effects/laser1")
-local mat_glow = Material("sprites/light_glow02_add")
+local mat_beam  = Material("effects/laser1")
+local mat_glow  = Material("sprites/light_glow02_add")
+local mat_smoke = Material("particle/smokestack")
+local mat_exp   = Material("sprites/physbeam")   -- tight bright sprite for flash core
 
--- ─── Visual ricochet store ────────────────────────────────────────────────────
--- Each entry is an independent table so rapid-fire hits can't corrupt each
--- other.  The old ring-buffer reused slots by reference, meaning a new impact
--- would overwrite the pos/vel of a slot that was already in active_visuals,
--- corrupting every live ricochet that pointed at the same slot.
+-- ─── Ricochet store ───────────────────────────────────────────────────────────
 local RICO_CHANCE    = 0.009
 local RICO_SPEED_MIN = 8000
 local RICO_SPEED_MAX = 18000
 local RICO_DUR_MIN   = 0.30
 local RICO_DUR_MAX   = 0.70
 
-local active_ricos = {}   -- flat list of independent ricochet tables
+local active_ricos = {}
 
 local m_random = math.random
 local m_rand   = math.Rand
@@ -54,7 +52,6 @@ local function spawn_visual_rico(hitPos, hitNormal)
 
     local spd = m_rand(RICO_SPEED_MIN, RICO_SPEED_MAX)
 
-    -- Each spawn gets its own independent table — no shared slot aliasing.
     active_ricos[#active_ricos + 1] = {
         pos      = Vector(hitPos.x, hitPos.y, hitPos.z),
         old_pos  = Vector(hitPos.x, hitPos.y, hitPos.z),
@@ -76,6 +73,7 @@ local IMPACT_SOUNDS = {
     "physics/metal/metal_solid_impact_bullet3.wav",
 }
 
+-- ─── Dust puff (existing) ─────────────────────────────────────────────────────
 local function SpawnDustPuff(hitPos, hitNormal)
     local emitter = ParticleEmitter(hitPos, false)
     if not emitter then return end
@@ -106,13 +104,223 @@ local function SpawnDustPuff(hitPos, hitNormal)
     emitter:Finish()
 end
 
--- ─── Net: impact (broadcasted from server Explode()) ─────────────────────────
+-- ─── IMPACT LIGHT ─────────────────────────────────────────────────────────────
+-- Single-frame DynamicLight at the hit position, sized by tier.
+-- Die quickly so it reads as a sharp crack not a glow.
+local IMPACT_LIGHT = {
+    [1] = { r=255, g=200, b=100, brightness=2.5, size=180, decay=3800 }, -- small: snap flash
+    [2] = { r=255, g=160, b=60,  brightness=3.5, size=280, decay=3200 }, -- medium
+    [3] = { r=255, g=120, b=30,  brightness=5.0, size=420, decay=2600 }, -- large: hottest
+}
+
+local light_uid = 1  -- unique per-impact DynamicLight index (cycles 1-64)
+
+local function SpawnImpactLight(hitPos, tier)
+    local cfg = IMPACT_LIGHT[tier]
+    if not cfg then return end
+    -- Use a cycling uid in range 1-64 to avoid stomping entity dlights
+    light_uid = (light_uid % 64) + 1
+    local dl = DynamicLight(1000 + light_uid)
+    if not dl then return end
+    dl.pos        = hitPos
+    dl.r          = cfg.r
+    dl.g          = cfg.g
+    dl.b          = cfg.b
+    dl.brightness = cfg.brightness
+    dl.Size       = cfg.size
+    dl.Decay      = cfg.decay
+    dl.DieTime    = CurTime() + 0.08   -- very short: sharp crack flash
+end
+
+-- ─── TIER 1: SMALL ────────────────────────────────────────────────────────────
+-- A tight crack: bright core flash + 2-3 fast spark streaks, minimal smoke.
+-- Reads as a hard surface hit with barely any explosive yield showing.
+local function ImpactTier1(hitPos, hitNormal)
+    SpawnImpactLight(hitPos, 1)
+
+    -- Core flash: 1 bright snap particle
+    local emitter = ParticleEmitter(hitPos, false)
+    if emitter then
+        local p = emitter:Add("effects/yellowflare", hitPos)
+        if p then
+            p:SetVelocity(hitNormal * m_rand(8, 18))
+            p:SetLifeTime(0)
+            p:SetDieTime(m_rand(0.04, 0.07))
+            p:SetStartAlpha(220)
+            p:SetEndAlpha(0)
+            p:SetStartSize(m_rand(5, 9))
+            p:SetEndSize(m_rand(1, 3))
+            p:SetRoll(m_rand(0, 360))
+            p:SetColor(255, 220, 140)
+            p:SetLighting(false)
+        end
+        -- 2-3 fast white spark streaks
+        for _ = 1, m_random(2, 3) do
+            local sp = emitter:Add("effects/spark", hitPos)
+            if sp then
+                local scatter = VectorRand() * 120
+                scatter.z = m_abs(scatter.z) * 1.4
+                sp:SetVelocity(hitNormal * m_rand(60, 140) + scatter)
+                sp:SetLifeTime(0)
+                sp:SetDieTime(m_rand(0.08, 0.18))
+                sp:SetStartAlpha(255)
+                sp:SetEndAlpha(0)
+                sp:SetStartSize(m_rand(1, 2))
+                sp:SetEndSize(0)
+                sp:SetColor(255, 240, 200)
+                sp:SetGravity(Vector(0, 0, -160))
+                sp:SetAirResistance(40)
+                sp:SetLighting(false)
+            end
+        end
+        emitter:Finish()
+    end
+end
+
+-- ─── TIER 2: MEDIUM ───────────────────────────────────────────────────────────
+-- Confined detonation: flash + fragment sparks fanning out + thin smoke wisp.
+-- The primary visual of a 25mm HEDP on a hard surface.
+local function ImpactTier2(hitPos, hitNormal)
+    SpawnImpactLight(hitPos, 2)
+
+    local emitter = ParticleEmitter(hitPos, false)
+    if emitter then
+        -- Flash core: 2 overlapping bright puffs
+        for _ = 1, 2 do
+            local p = emitter:Add("effects/yellowflare", hitPos)
+            if p then
+                p:SetVelocity(hitNormal * m_rand(12, 28) + VectorRand() * 10)
+                p:SetLifeTime(0)
+                p:SetDieTime(m_rand(0.05, 0.09))
+                p:SetStartAlpha(200)
+                p:SetEndAlpha(0)
+                p:SetStartSize(m_rand(8, 14))
+                p:SetEndSize(m_rand(2, 5))
+                p:SetRoll(m_rand(0, 360))
+                p:SetColor(255, 200, 100)
+                p:SetLighting(false)
+            end
+        end
+        -- Fragment sparks: 5-7 medium-speed streaks
+        for _ = 1, m_random(5, 7) do
+            local sp = emitter:Add("effects/spark", hitPos)
+            if sp then
+                local scatter = VectorRand() * 180
+                scatter.z = m_abs(scatter.z) * 1.6
+                sp:SetVelocity(hitNormal * m_rand(80, 200) + scatter)
+                sp:SetLifeTime(0)
+                sp:SetDieTime(m_rand(0.12, 0.28))
+                sp:SetStartAlpha(255)
+                sp:SetEndAlpha(0)
+                sp:SetStartSize(m_rand(1, 3))
+                sp:SetEndSize(0)
+                sp:SetColor(255, 200, 100)
+                sp:SetGravity(Vector(0, 0, -240))
+                sp:SetAirResistance(30)
+                sp:SetLighting(false)
+            end
+        end
+        -- Thin smoke wisp: 2 particles
+        for _ = 1, 2 do
+            local sm = emitter:Add("particle/smokestack", hitPos)
+            if sm then
+                local scatter = VectorRand() * 12
+                sm:SetVelocity(hitNormal * m_rand(18, 40) + scatter)
+                sm:SetLifeTime(0)
+                sm:SetDieTime(m_rand(0.35, 0.65))
+                sm:SetStartAlpha(m_random(45, 70))
+                sm:SetEndAlpha(0)
+                sm:SetStartSize(m_rand(6, 11))
+                sm:SetEndSize(m_rand(18, 32))
+                sm:SetRoll(m_rand(0, 360))
+                sm:SetRollDelta(m_rand(-1, 1))
+                sm:SetColor(m_random(100, 140), m_random(90, 120), m_random(60, 90))
+                sm:SetGravity(Vector(0, 0, 18))
+                sm:SetAirResistance(60)
+            end
+        end
+        emitter:Finish()
+    end
+end
+
+-- ─── TIER 3: LARGE ────────────────────────────────────────────────────────────
+-- Maximum 25mm yield: hot debris spray, brighter flash, rolling smoke curl.
+-- Still NOT a rocket explosion — tight, fast, spent in under 0.3s.
+local function ImpactTier3(hitPos, hitNormal)
+    SpawnImpactLight(hitPos, 3)
+
+    local emitter = ParticleEmitter(hitPos, false)
+    if emitter then
+        -- Flash core: 3 overlapping blasts
+        for _ = 1, 3 do
+            local p = emitter:Add("effects/yellowflare", hitPos)
+            if p then
+                local jitter = VectorRand() * 14
+                p:SetVelocity(hitNormal * m_rand(18, 40) + jitter)
+                p:SetLifeTime(0)
+                p:SetDieTime(m_rand(0.06, 0.11))
+                p:SetStartAlpha(230)
+                p:SetEndAlpha(0)
+                p:SetStartSize(m_rand(12, 20))
+                p:SetEndSize(m_rand(3, 7))
+                p:SetRoll(m_rand(0, 360))
+                p:SetColor(255, 170, 60)
+                p:SetLighting(false)
+            end
+        end
+        -- Hot debris fragments: 8-11 fast streaks with gravity drop
+        for _ = 1, m_random(8, 11) do
+            local sp = emitter:Add("effects/spark", hitPos)
+            if sp then
+                local scatter = VectorRand() * 260
+                scatter.z = m_abs(scatter.z) * 1.8
+                sp:SetVelocity(hitNormal * m_rand(120, 320) + scatter)
+                sp:SetLifeTime(0)
+                sp:SetDieTime(m_rand(0.18, 0.38))
+                sp:SetStartAlpha(255)
+                sp:SetEndAlpha(0)
+                sp:SetStartSize(m_rand(2, 4))
+                sp:SetEndSize(0)
+                sp:SetColor(255, 160, 50)
+                sp:SetGravity(Vector(0, 0, -320))
+                sp:SetAirResistance(22)
+                sp:SetLighting(false)
+            end
+        end
+        -- Rolling smoke curl: 3-4 darker, faster-expanding puffs
+        for _ = 1, m_random(3, 4) do
+            local sm = emitter:Add("particle/smokestack", hitPos)
+            if sm then
+                local scatter = VectorRand() * 22
+                sm:SetVelocity(hitNormal * m_rand(28, 60) + scatter)
+                sm:SetLifeTime(0)
+                sm:SetDieTime(m_rand(0.45, 0.80))
+                sm:SetStartAlpha(m_random(55, 80))
+                sm:SetEndAlpha(0)
+                sm:SetStartSize(m_rand(9, 16))
+                sm:SetEndSize(m_rand(26, 46))
+                sm:SetRoll(m_rand(0, 360))
+                sm:SetRollDelta(m_rand(-1.2, 1.2))
+                sm:SetColor(m_random(70, 110), m_random(60, 95), m_random(40, 70))
+                sm:SetGravity(Vector(0, 0, 28))
+                sm:SetAirResistance(50)
+            end
+        end
+        emitter:Finish()
+    end
+end
+
+-- ─── Net: impact ──────────────────────────────────────────────────────────────
 net.Receive("GekkoBushImpact", function()
     local hitPos    = net.ReadVector()
     local hitNormal = net.ReadVector()
     local sndIdx    = net.ReadUInt(8)
+    local tier      = net.ReadUInt(2)   -- 1=small 2=medium 3=large
     sndIdx = m_clamp(sndIdx, 1, #IMPACT_SOUNDS)
+    if tier < 1 then tier = 1 end
+    if tier > 3 then tier = 3 end
 
+    -- Always: decal + existing dust puff + sound + possible ricochet
     util.Decal("Impact.Concrete", hitPos + hitNormal * 2, hitPos - hitNormal * 4)
     SpawnDustPuff(hitPos, hitNormal)
     sound.Play(IMPACT_SOUNDS[sndIdx], hitPos, 75, m_random(95, 110), 1.0)
@@ -120,11 +328,15 @@ net.Receive("GekkoBushImpact", function()
     if m_random() < RICO_CHANCE then
         spawn_visual_rico(hitPos, hitNormal)
     end
+
+    -- Tier-specific explosive flash effect
+    if     tier == 1 then ImpactTier1(hitPos, hitNormal)
+    elseif tier == 2 then ImpactTier2(hitPos, hitNormal)
+    else                   ImpactTier3(hitPos, hitNormal)
+    end
 end)
 
 -- ─── Ricochet ticker ─────────────────────────────────────────────────────────
--- Think instead of CreateMove: runs even when player isn't sending input
--- (spectator, dead, paused). dt from CurTime() is never stale or zero.
 local last_think = 0
 
 hook.Add("Think", "gekko_bushmaster_rico_tick", function()
@@ -154,13 +366,12 @@ hook.Add("Think", "gekko_bushmaster_rico_tick", function()
 end)
 
 -- ─── Per-entity tracer + ricochet renderer ───────────────────────────────────
-local g_bush_renderers = {}   -- [entIndex] = true while entity alive
+local g_bush_renderers = {}
 
 local function render_bush_tracers()
     local cam_pos   = EyePos()
     local min_trail = 120
 
-    -- ─ live rounds ─
     for entIdx, _ in pairs(g_bush_renderers) do
         local ent = Entity(entIdx)
         if not IsValid(ent) then
@@ -186,7 +397,6 @@ local function render_bush_tracers()
         render.DrawSprite(render_pos, 16 * scale, 16 * scale, Color(255, 200, 180, 255))
     end
 
-    -- ─ visual ricochets ─
     local rc = #active_ricos
     if rc > 0 then
         local now = CurTime()
