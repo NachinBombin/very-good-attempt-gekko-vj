@@ -109,8 +109,16 @@ hook.Add("PlayerDeath", "GekkoElasticPlayerDeath", function(ply)
     ForceBreakOnTarget(ply)
 end)
 
+-- FIX: delay the respawn break by one frame so the net message
+-- arrives AFTER the client has finished re-initialising the player.
+-- Without the delay, PlayerSpawn fires before the client entity is
+-- ready, FindBeamForEnemy succeeds but the beam immediately sees
+-- b.enemy as valid again and refuses to retract cleanly.
 hook.Add("PlayerSpawn", "GekkoElasticPlayerSpawn", function(ply)
-    ForceBreakOnTarget(ply)
+    timer.Simple(0.1, function()
+        if not IsValid(ply) then return end
+        ForceBreakOnTarget(ply)
+    end)
 end)
 
 -- ============================================================

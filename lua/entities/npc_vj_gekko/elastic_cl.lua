@@ -187,10 +187,6 @@ local function SpawnBreakEffects(pos, enemy)
     local norm = Vector(0, 0, 1)
     if IsValid(enemy) then norm = enemy:GetForward() * -1 end
 
-    -- bloodstreameffectzippy burst at snap point
-    -- flags=1 -> burst mode (150 particles, fires once)
-    -- SetNormal sets the spray direction (backward relative to tentacle forward)
-    -- SetEntity must be a valid entity; use enemy if alive, else world
     local ed = EffectData()
     ed:SetOrigin(pos)
     ed:SetNormal(norm)
@@ -248,38 +244,20 @@ end)
 
 -- ============================================================
 --  RETRACT TRAIL TICK
---
---  Called every draw frame during break-retract.
---  Emits at the exact tipPos computed that same frame so
---  effects are always glued to the moving tip.
---
---  Two layers:
---    1. bloodstreameffectzippy burst (flags=1):
---         Fires from tipPos, spray normal points from tip
---         toward gekko (direction the tentacle is pulling).
---         Uses game.GetWorld() as the entity since we don't
---         have a live entity at tip; burst mode doesn't need
---         the entity to persist, it fires once and is done.
---    2. Spark particles: fast, short-lived, violent orange.
---
---  Throttled by b.trailNextT (TRAIL_INTERVAL seconds).
 -- ============================================================
 local function EmitRetractTrail(tipPos, towardGekko, now, b)
     if now < b.trailNextT then return end
     b.trailNextT = now + TRAIL_INTERVAL
 
-    -- Spray direction: toward the gekko (tentacle is retracting that way)
     local norm = towardGekko:GetNormalized()
 
-    -- 1. bloodstreameffectzippy burst at tip
     local ed = EffectData()
     ed:SetOrigin(tipPos)
     ed:SetNormal(norm)
     ed:SetEntity(game.GetWorld())
-    ed:SetFlags(1)  -- burst mode: 150 particles, fires once, no persistent entity needed
+    ed:SetFlags(1)
     util.Effect("bloodstreameffectzippy", ed, true, true)
 
-    -- 2. Spark burst at tip
     local sparker = ParticleEmitter(tipPos, false)
     if sparker then
         for _ = 1, math.random(3, 6) do
@@ -305,15 +283,13 @@ end
 
 -- ============================================================
 --  BEGIN RETRACT
---  isBreak = true  -> key-smash: emit bloodstream+spark trail
---  isBreak = false -> natural expiry: silent retract, no trail
 -- ============================================================
 local function BeginRetract(b, now, isBreak)
     if b.retracting then return end
     b.retracting      = true
     b.breakRetracting = isBreak == true
     b.retractStartT   = now
-    b.trailNextT      = now   -- first burst fires immediately
+    b.trailNextT      = now
 
     if b.extendDone then
         b.retractOrigin = IsValid(b.enemy) and
@@ -346,6 +322,38 @@ local function FindBeamForEnemy(enemy)
         if b.enemy == enemy then return b end
     end
 end
+
+-- ============================================================
+--  FIX: force-drop all beams targeting the local player
+--  Called on PlayerInitialSpawn (client) so beams are cleared
+--  even if the server net message races the spawn event.
+-- ============================================================
+local function DropLocalPlayerBeams()
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return end
+    local now = CurTime()
+    for _, b in ipairs(activeBeams) do
+        if b.enemy == ply and not b.retracting then
+            BeginRetract(b, now, false)
+        end
+    end
+end
+
+hook.Add("InitPostEntity", "GekkoElasticClearOnSpawn", function()
+    -- Fired when the client fully initialises after (re)connecting.
+    -- Clears any beams that survived a disconnect/reconnect cycle.
+    DropLocalPlayerBeams()
+end)
+
+hook.Add("PostEntityCreated", "GekkoElasticRespawnClear", function(ent)
+    -- Fired every time an entity is created on the client.
+    -- When our own player entity is (re)created after a respawn,
+    -- force-retract any beam that was attached to us.
+    if not IsValid(ent) then return end
+    if not ent:IsPlayer() then return end
+    if ent ~= LocalPlayer() then return end
+    DropLocalPlayerBeams()
+end)
 
 -- ============================================================
 --  DRAW HOOK
@@ -390,9 +398,7 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
                         now - b.spawnTime
                     )
 
-                    -- Trail: blood + sparks follow the exact tipPos
                     if b.breakRetracting then
-                        -- towardGekko: direction from tip toward muzzle
                         local towardGekko = anchorA - tipPos
                         EmitRetractTrail(tipPos, towardGekko, now, b)
                     end
@@ -420,6 +426,17 @@ hook.Add("PostDrawOpaqueRenderables", "GekkoElasticBeamDraw", function()
                     end
                     i = i + 1
                 end
+
+            -- ------------------------------------------------
+            --  FIX: if the enemy is the local player and they
+            --  are no longer in the "tetherable" state (dead or
+            --  freshly spawned with health reset), force retract.
+            -- ------------------------------------------------
+            elseif IsValid(b.enemy) and b.enemy:IsPlayer()
+                   and b.enemy == LocalPlayer()
+                   and not b.enemy:Alive() then
+                BeginRetract(b, now, false)
+                i = i + 1
 
             -- ------------------------------------------------
             --  EXTEND / ATTACHED PHASE
@@ -499,6 +516,12 @@ net.Receive("GekkoElasticRope", function()
 
     if not IsValid(gekko) or not IsValid(enemy) then return end
 
+    -- FIX: never attach a new beam to a dead/respawning local player.
+    -- The server might fire the net message just as the player dies;
+    -- reject it on the client side so no ghost beam is ever created.
+    local ply = LocalPlayer()
+    if IsValid(ply) and enemy == ply and not ply:Alive() then return end
+
     local startOffset = Vector(0, 0, GEKKO_ORIGIN_Z)
     local endOffset   = Vector(0, 0, 40)
     local anchorA     = gekko:GetPos() + startOffset
@@ -543,7 +566,6 @@ net.Receive("GekkoElasticRope", function()
         trailNextT      = 0,
     })
 
-    local ply = LocalPlayer()
     if IsValid(ply) then
         local d = ply:GetPos():Distance(enemy:GetPos())
         if d < 600 then
@@ -561,20 +583,26 @@ net.Receive("GekkoElasticRetract", function()
     local b = FindBeamForEnemy(enemy)
     if not b then return end
     sound.Play(TENTACLE_DETACH, IsValid(b.enemy) and b.enemy:GetPos() or Vector(0,0,0), 80, 100)
-    BeginRetract(b, CurTime(), false)   -- no trail on natural detach
+    BeginRetract(b, CurTime(), false)
 end)
 
 -- ============================================================
---  NET: CABLE BREAK  (key-smash) -> burst + bloodstream trail
+--  NET: CABLE BREAK  (key-smash / death) -> burst + bloodstream trail
 -- ============================================================
 net.Receive("GekkoElasticBreak", function()
     local enemy    = net.ReadEntity()
     local breakPos = net.ReadVector()
-    if not IsValid(enemy) then return end
-    local b = FindBeamForEnemy(enemy)
+
+    -- FIX: find the beam even when enemy entity is no longer considered
+    -- "valid" mid-respawn. We search by reference identity, not IsValid.
+    local b
+    for _, beam in ipairs(activeBeams) do
+        if beam.enemy == enemy then b = beam break end
+    end
+
     if b then
         SpawnBreakEffects(breakPos, enemy)
         sound.Play(TENTACLE_STAB, breakPos, 85, 100)
-        BeginRetract(b, CurTime(), true)    -- isBreak=true -> bloodstream+spark trail
+        BeginRetract(b, CurTime(), true)
     end
 end)
