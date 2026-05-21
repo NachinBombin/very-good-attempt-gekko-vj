@@ -246,10 +246,19 @@ function ENT:Explode(hitPos, hitNormal, hitEnt)
     DoFalloffBlastDamage( self, owner, hitPos, BLAST_RADIUS, DAMAGE )
 
     local sndIdx = math.random(#IMPACT_SOUNDS)
+
+    -- Dust puff + decal + impact sounds (handled by cl_init.lua of this entity)
     net.Start("GekkoBushImpact")
         net.WriteVector(hitPos)
         net.WriteVector(hitNormal)
         net.WriteUInt(sndIdx, 8)
+    net.Broadcast()
+
+    -- Projected-light impact flash (preset 2 = BUSHMASTER, handled by bullet_impact_system.lua)
+    net.Start("GekkoBulletImpact")
+        net.WriteVector(hitPos)
+        net.WriteVector(hitNormal)
+        net.WriteUInt(2, 3)
     net.Broadcast()
 
     if math.random() < GIB_RICO_CHANCE then
