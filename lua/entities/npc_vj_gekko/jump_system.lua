@@ -20,13 +20,11 @@ local JUMP_RISING_TIMEOUT  = 1.5
 local JUMP_LAND_SUPPRESS_PAD  = 1.1
 local JUMP_POST_LAND_COOLDOWN = 3.0
 
--- Stuck-Z: reacts within ~2 ticks, one nudge attempt then hard abort
-local JUMP_STUCK_Z_THRESHOLD  = 2.0   -- was 8.0
-local JUMP_STUCK_Z_WINDOW     = 0.08  -- was 0.6  (~2 think ticks at 24hz)
+local JUMP_STUCK_Z_THRESHOLD  = 2.0
+local JUMP_STUCK_Z_WINDOW     = 0.08
 local JUMP_UNSTUCK_NUDGE      = 28
-local JUMP_STUCK_MAX_ATTEMPTS = 1     -- was 2
+local JUMP_STUCK_MAX_ATTEMPTS = 1
 
--- Land impact tuning
 local LAND_PARTICLE     = "astw2_nightfire_explosion_ground"
 local LAND_BLAST_RADIUS = 220
 local LAND_BLAST_DAMAGE = 55
@@ -37,9 +35,6 @@ local LAND_SND = {
 local LAND_SND_LEVEL = 100
 
 -- ============================================================
---  Internal helpers
--- ============================================================
-
 local function GetLocalState(ent)
     return ent._jumpStateLOCAL or JUMP_NONE
 end
@@ -123,8 +118,6 @@ function ENT:GekkoJump_Activate()
 end
 
 -- ============================================================
---  GekkoJump_LandImpact
--- ============================================================
 function ENT:GekkoJump_LandImpact()
     local pos = self:GetPos()
     if LAND_SND and #LAND_SND > 0 then
@@ -147,6 +140,9 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_ShouldJump()
+    -- GATE: never jump while legs are disabled
+    if self._gekkoLegsDisabled then return false end
+
     if self._jumpCooldown     > CurTime() then return false end
     if self._jumpLandCooldown > CurTime() then return false end
     if GetLocalState(self) ~= JUMP_NONE   then return false end
@@ -173,6 +169,8 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_Execute()
+    -- GATE: legs disabled = no jumping
+    if self._gekkoLegsDisabled then return end
     if GetLocalState(self) ~= JUMP_NONE then return end
 
     local jumpForce    = math.Rand(JUMP_FORCE_MIN, JUMP_FORCE_MAX)
@@ -224,9 +222,7 @@ function ENT:GekkoJump_CheckStuckZ(velZ, now)
     if (now - self._jumpStuckZSince) < JUMP_STUCK_Z_WINDOW then
         return false
     end
-    -- Stuck confirmed in ~2 ticks
     if self._jumpStuckAttempts >= JUMP_STUCK_MAX_ATTEMPTS then
-        -- Hard abort
         SetLocalState(self, JUMP_NONE)
         self._jumpLastState         = JUMP_NONE
         self:SetGekkoJumpTimer(0)
@@ -266,6 +262,10 @@ end
 
 -- ============================================================
 function ENT:GekkoJump_Think()
+    -- GATE: while legs are disabled the jump system must not run at all.
+    -- leg_disable_system.lua owns MOVETYPE and velocity when grounded.
+    if self._gekkoLegsDisabled then return end
+
     local state = GetLocalState(self)
     if state == JUMP_NONE then
         self._jumpLastState = JUMP_NONE
@@ -309,7 +309,6 @@ function ENT:GekkoJump_Think()
         self._jumpThinkPrint = now + 0.2
     end
 
-    -- ── RISING ──────────────────────────────────────────────
     if state == JUMP_RISING then
         if vel.z > 50 then self._jumpDidLiftoff = true end
 
@@ -352,7 +351,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING ─────────────────────────────────────────────
     if state == JUMP_FALLING then
         if self:GekkoJump_CheckStuckZ(vel.z, now) then return end
         if self._seqFall ~= -1 then
@@ -364,7 +362,6 @@ function ENT:GekkoJump_Think()
         end
     end
 
-    -- ── FALLING → LAND ──────────────────────────────────────
     if state == JUMP_FALLING and grounded then
         SetLocalState(self, JUMP_LAND)
         self._jumpLastState = JUMP_LAND
@@ -388,7 +385,6 @@ function ENT:GekkoJump_Think()
         return
     end
 
-    -- ── LAND → NONE ───────────────────────────────────────
     if state == JUMP_LAND and now > self:GetGekkoJumpTimer() then
         SetLocalState(self, JUMP_NONE)
         self._jumpLastState         = JUMP_NONE
