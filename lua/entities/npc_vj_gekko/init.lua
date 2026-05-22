@@ -2,6 +2,7 @@
 -- npc_vj_gekko / init.lua
 -- INTEGRATED WITH: Juicy Bleeding Effect (Hemo-fluid-stream)
 -- NEW BLEEDING TYPE: gekko_juicy_bleeding (NPC bleeding on hit)
+-- INTEGRATED WITH: Active Protection System (aps_system.lua)
 -- ============================================================
 -- Weapon list:
 -- 1. Machine-gun burst (FireBullets)
@@ -28,6 +29,7 @@ include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
 include("elastic_system.lua")
+include("aps_system.lua")   -- Active Protection System
 
 -- NOTE: extensions.lua is loaded + AddCSLuaFile'd by
 -- lua/autorun/server/gekko_juicy_bleeding.lua which runs first.
@@ -632,20 +634,16 @@ local function FireNikita(ent, enemy)
     return true
 end
 
-local BM_INTERVAL2        = 0.72  -- Task 3: double-delay interval (10% chance per shot)
-local BM_DROP_COMP        = 70    -- Task 1: base bullet-drop compensation (units up)
-local BM_DROP_JITTER      = 17    -- Task 1: +/- vertical jitter on top of drop comp
-local BM_VEL_LEAD_FRAC    = 0.55  -- Task 2: lead fraction (0=no lead, 1=perfect lead)
+local BM_INTERVAL2        = 0.72
+local BM_DROP_COMP        = 70
+local BM_DROP_JITTER      = 17
+local BM_VEL_LEAD_FRAC    = 0.55
 
--- Task 2: Estimate where the target will be when the shell arrives.
--- Uses a single Newton step: travel_time = dist / SPEED (approx),
--- then offsets aim by velocity * travel_time * lead_fraction.
--- Not perfect by design -- BM_VEL_LEAD_FRAC < 1 keeps it human-like.
 local BM_SHELL_SPEED = 3950
 local function BM_PredictAimPos(src, targetEnt, baseAimPos)
     if not IsValid(targetEnt) then return baseAimPos end
     local vel = targetEnt:GetVelocity()
-    if vel:LengthSqr() < 4 then return baseAimPos end  -- target standing still
+    if vel:LengthSqr() < 4 then return baseAimPos end
     local dist = src:Distance(baseAimPos)
     local travelTime = dist / BM_SHELL_SPEED
     return baseAimPos + vel * (travelTime * BM_VEL_LEAD_FRAC)
@@ -655,9 +653,6 @@ local function FireBushmaster(ent, enemy)
     local aimPos = enemy:GetPos() + Vector(0, 0, 40)
     local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
 
-    -- Task 3: pre-roll delay overrides for each shot in the salvo.
-    -- 10% of shots get BM_INTERVAL2 instead of BM_INTERVAL.
-    -- We accumulate absolute fire times so a late shot pushes all later shots.
     local fireTimes = {}
     local t = 0
     for i = 0, rounds - 1 do
@@ -684,16 +679,13 @@ local function FireBushmaster(ent, enemy)
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
             local curEnemy = GetActiveEnemy(ent)
 
-            -- Task 1 + 2: build aim position with drop comp, jitter, and velocity lead.
             local baseAim
             if IsValid(curEnemy) then
                 baseAim = curEnemy:GetPos() + Vector(0, 0, 40)
             else
                 baseAim = aimPos
             end
-            -- Task 2: velocity lead prediction
             local leadAim = BM_PredictAimPos(src, curEnemy, baseAim)
-            -- Task 1: drop compensation +70u + jitter +-17u
             local jitter  = math.Rand(-BM_DROP_JITTER, BM_DROP_JITTER)
             local curAim  = leadAim + Vector(0, 0, BM_DROP_COMP + jitter)
 
@@ -712,13 +704,11 @@ local function FireBushmaster(ent, enemy)
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-            -- ---- Bushmaster fire-recoil signal (server -> client) ----
             net.Start("GekkoBushRecoil")
                 net.WriteEntity(ent)
                 net.WriteVector(src)
-                net.WriteVector(-dir)   -- recoil direction = opposite of shot
+                net.WriteVector(-dir)
             net.Broadcast()
-            -- -----------------------------------------------------------
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
@@ -799,6 +789,9 @@ function ENT:Initialize()
     GekkoDeathPose_Init(self)
     self:GekkoElastic_Init()
 
+    -- ---- Active Protection System ----
+    GekkoAPS_Init(self)
+
     self:SetSchedule(SCHED_IDLE_WANDER)
     self:SetNPCState(NPC_STATE_IDLE)
 end
@@ -817,6 +810,9 @@ end
 
 function ENT:Think()
     local now = CurTime()
+
+    -- ---- Active Protection System (always-on) ----
+    GekkoAPS_Think(self, now)
 
     GekkoSprint_Think(self, now)
     GekkoJump_Think(self, now)
