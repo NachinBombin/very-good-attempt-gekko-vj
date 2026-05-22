@@ -40,7 +40,6 @@ local APS_WHITELIST = {
     ["sent_npc_trackmissile"] = true,
     ["sent_gekko_bushmaster"] = true,
     ["obj_vj_rocket"]         = true,
-    ["obj_gekko_rocket"]      = true,
     ["sent_orbital_rpg"]      = true,
     -- Grenade launcher grenades (Gekko-fired)
     ["bombin_gas_grenade"]    = true,
@@ -116,7 +115,7 @@ local function DoInterceptExplosion(pos)
     e:SetScale(1)
     e:SetRadius(APS_EXPLODE_RADIUS)
     util.Effect("Explosion", e)
-end
+ end
 
 -- Sends a tight burst of muzzle flashes from the Gekko's body
 -- toward the interception position, using the existing MuzzleFlash
@@ -154,9 +153,9 @@ end
 -- INIT  (called from ENT:Initialize in init.lua)
 -- ============================================================
 function GekkoAPS_Init(ent)
-    ent._apsNextScan    = 0
-    ent._apsRearmTime   = 0
-    ent._apsIntercepted = {}  -- table of recently intercepted entity IDs
+    ent._apsNextScan  = 0
+    ent._apsRearmTime = 0
+    ent._apsIntercepted = {}  -- weak table of recently intercepted entity IDs
 end
 
 -- ============================================================
@@ -165,13 +164,8 @@ end
 function GekkoAPS_Think(ent, now)
     if not IsValid(ent) then return end
 
-    -- nil-safe guards: if Init didn't run yet (e.g. error during spawn),
-    -- treat both timers as 0 so we don't error on comparison.
-    local nextScan  = ent._apsNextScan  or 0
-    local rearmTime = ent._apsRearmTime or 0
-
-    if now < nextScan  then return end
-    if now < rearmTime then return end
+    if now < ent._apsNextScan  then return end
+    if now < ent._apsRearmTime then return end
 
     ent._apsNextScan = now + APS_TICK
 
@@ -188,7 +182,7 @@ function GekkoAPS_Think(ent, now)
         local vel     = IsValid(phys) and phys:GetVelocity() or proj:GetVelocity()
         local toGekko = (origin - proj:GetPos()):GetNormalized()
         local dot     = vel:GetNormalized():Dot(toGekko)
-        if dot < 0.35 then continue end  -- travelling away or perpendicular -- ignore
+        if dot < 0.35 then continue end  -- travelling away or perpendicular — ignore
 
         -- ---- INTERCEPT ----
         local interceptPos = proj:GetPos()
