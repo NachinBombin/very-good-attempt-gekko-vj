@@ -29,7 +29,8 @@ include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
 include("elastic_system.lua")
-include("aps_system.lua")   -- Active Protection System
+include("sprint_system.lua")  -- GekkoSprint_Init / Think / End
+include("aps_system.lua")     -- Active Protection System
 
 -- NOTE: extensions.lua is loaded + AddCSLuaFile'd by
 -- lua/autorun/server/gekko_juicy_bleeding.lua which runs first.
@@ -50,18 +51,6 @@ local ANIM_WALK_SPEED = 184
 local ANIM_RUN_SPEED = 20
 local RUN_ENGAGE_DIST = 2200
 local RUN_DISENGAGE_DIST = 1600
-
--- ============================================================
--- CLOSE-RANGE SPRINT BURST SYSTEM
--- ============================================================
-local SPRINT_ENGAGE_DIST    = 1500
-local SPRINT_DUR_MIN        = 2.0
-local SPRINT_DUR_MAX        = 4.0
-local SPRINT_COOLDOWN_MIN   = 4.0
-local SPRINT_COOLDOWN_MAX   = 9.0
-local SPRINT_MOVE_SPEED     = 420
-local SPRINT_RUN_SPEED      = 420
-local SPRINT_WALK_SPEED     = 420
 
 local MG_ROUNDS_MIN = 11
 local MG_ROUNDS_MAX = 36
@@ -776,9 +765,6 @@ function ENT:Initialize()
     self._gekkoDead         = false
     self._bloodSplatPulse   = 0
     self._lastReload        = 0
-    self._gekkoSprinting    = false
-    self._sprintEndTime     = 0
-    self._sprintCooldownEnd = 0
 
     GekkoSprint_Init(self)
     GekkoJump_Init(self)
