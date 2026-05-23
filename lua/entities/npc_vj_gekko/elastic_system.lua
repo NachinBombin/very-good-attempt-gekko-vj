@@ -57,6 +57,9 @@ local function MakeAnchor(pos)
     a:SetCollisionGroup(COLLISION_GROUP_IN_VEHICLE)
     a:Spawn()
     a:Activate()
+    -- APS SAFETY: mark this anchor so aps_system.lua skips it
+    -- unconditionally before evaluating any threat pillar.
+    a._gekkoOwnedGib = true
     local phys = a:GetPhysicsObject()
     if not IsValid(phys) then a:Remove() return nil end
     phys:SetMass(1)
@@ -111,9 +114,6 @@ end)
 
 -- FIX: delay the respawn break by one frame so the net message
 -- arrives AFTER the client has finished re-initialising the player.
--- Without the delay, PlayerSpawn fires before the client entity is
--- ready, FindBeamForEnemy succeeds but the beam immediately sees
--- b.enemy as valid again and refuses to retract cleanly.
 hook.Add("PlayerSpawn", "GekkoElasticPlayerSpawn", function(ply)
     timer.Simple(0.1, function()
         if not IsValid(ply) then return end
@@ -135,7 +135,6 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply)
     local times = _breakTimes[ply]
     times[#times + 1] = now
 
-    -- prune presses outside the window
     local cutoff = now - BREAK_WINDOW
     local i = 1
     while i <= #times do
@@ -145,9 +144,6 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply)
 
     if #times < BREAK_THRESHOLD then return end
 
-    -- FIX (key-smash reset): always wipe the table, even when no cable
-    -- is active for this player. This prevents stale presses from
-    -- triggering an instant-break the moment a new tether lands.
     _breakTimes[ply] = {}
 
     for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
@@ -372,8 +368,6 @@ end
 --  GekkoElastic_OnRemove
 -- ============================================================
 function ENT:GekkoElastic_OnRemove()
-    -- FIX (death broadcast): capture the enemy reference BEFORE cleanup
-    -- wipes it, then send GekkoElasticBreak so the client drops the beam.
     local activeEnemy  = self._elasticEnemy
     local hadActive    = self._elasticActive
 

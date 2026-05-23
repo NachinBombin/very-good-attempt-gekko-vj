@@ -1,6 +1,6 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v4.5
+-- GEKKO ACTIVE PROTECTION SYSTEM  v4.6
 --
 -- WHITELIST IS ABSOLUTE AND EVALUATED BEFORE ALL PILLARS.
 -- Nothing on the whitelist is ever intercepted.
@@ -11,48 +11,31 @@
 --   2. Class-name pattern     (missile / rocket / grenade / etc.)
 --      + minimum speed gate   (>= APS_PATTERN_MIN_SPEED)
 --   3. Speed alone            (>= APS_MIN_SPEED)
---      EXCLUDING prop_physics / prop_physics_override / prop_dynamic
---      (those classes are never dangerous by speed alone; they are
---       bullet casings, loose debris, and similar physics props).
 --   4. Heading dot alone      (>= APS_HEADING_DOT, toward Gekko)
 --      + minimum speed gate   (>= APS_HEADING_MIN_SPEED)
---      Slow-moving gibs that happen to be drifting toward the Gekko
---      will NOT trigger this pillar unless they are also fast.
 --
 -- Pillars are independent. Each fires on its own.
--- No pillar was merged or removed; they were only refined.
+-- No pillar was merged or removed.
 --
--- ── v4.5 CHANGES (surgical fixes, no pillar removed) ────────
+-- ── v4.6 CHANGES ─────────────────────────────────────────────
 --
--- BUG FIX — Guard 11 / Guard 12 ("owner is any NPC/player = safe"):
---   The old code returned safe=true whenever GetOwner() or .Owner
---   was ANY player or NPC.  This silently whitelisted every grenade,
---   rocket, and projectile launched by an enemy NPC because their
---   GetOwner() pointed at that NPC.  The guards now only mark an
---   entity safe when owner == the Gekko itself.  Actual player,
---   NPC, vehicle, and weapon entities are still exempt via the
---   unchanged Guards 3-6, so nothing is lost on that side.
+-- NEW — Guard 13: Combine NPC owner exemption.
+--   If GetOwner() or .Owner returns an NPC whose class begins
+--   with one of the COMBINE_NPC_PREFIXES, the entity is safe.
+--   This prevents Combine soldier grenades, strider flechettes,
+--   hunter flechettes fired by allied Combine units etc. from
+--   being intercepted when playing on the Combine side.
 --
--- BUG FIX — Pillar 3 (speed alone):
---   prop_physics, prop_physics_override, and prop_dynamic entities
---   are now excluded from Pillar 3.  Shell casings from enemy
---   weapons (and any other loose physics prop) happen to eject at
---   350-700 u/s, which is squarely inside the old speed window.
---   Those classes are never dedicated weapon projectiles; they must
---   be explicitly blacklisted (Pillar 1) or match a name pattern
---   above the pattern speed floor (Pillar 2) to be intercepted.
---
--- BUG FIX — Pillar 4 (heading dot alone):
---   A minimum speed floor (APS_HEADING_MIN_SPEED) was added.
---   Gib pieces and debris that scatter in every direction will
---   sometimes randomly point toward the Gekko at low velocity.
---   Those false positives are now suppressed.
---
--- BUG FIX — Pillar 2 (class-name pattern):
---   A minimum speed floor (APS_PATTERN_MIN_SPEED) was added.
---   A static or barely-moving entity whose class name contains
---   "grenade" or "rocket" (e.g. a placed satchel, a dud) will not
---   trigger the APS just from the name match alone.
+-- CHANGE — Pillar 3: removed the broad prop_physics class
+--   exclusion block (APS_PHYSICS_PROP_CLASSES).  That block was
+--   too broad: it silently excluded ALL prop_physics entities
+--   from the speed pillar, including enemy-spawned ones.
+--   Replacement: APS_SAFE_MODELS table.  Only specific model
+--   paths that the Gekko itself spawns as prop_physics (shell
+--   casings, elastic anchors) are exempted by name.
+--   Note: shell casings and gibs already have _gekkoOwnedGib=true
+--   stamped by init.lua / gib_system.lua / elastic_system.lua,
+--   so APS_SAFE_MODELS is a belt-and-suspenders fallback only.
 -- ============================================================
 
 if CLIENT then return end
@@ -73,28 +56,51 @@ local APS_BURST_DURATION      = APS_BURST_SHOTS * APS_BURST_INTERVAL + 0.05
 local APS_HEADING_DOT         = 0.25
 
 -- ============================================================
--- PHYSICS PROP CLASSES EXCLUDED FROM PILLAR 3
--- These are NEVER intercepted by speed alone.
--- They can still be intercepted via Pillar 1 (explicit blacklist)
--- or Pillar 2 (name pattern + speed floor).
+-- COMBINE NPC CLASS PREFIXES  (Guard 13)
+-- If GetOwner() / .Owner is an NPC whose class starts with any
+-- of these, the entity is whitelisted unconditionally.
 -- ============================================================
-local APS_PHYSICS_PROP_CLASSES = {
-    ["prop_physics"]          = true,
-    ["prop_physics_override"] = true,
-    ["prop_dynamic"]          = true,
-    ["prop_ragdoll"]          = true,
+local COMBINE_NPC_PREFIXES = {
+    "npc_combine",
+    "npc_metropolice",
+    "npc_soldier",
+    "npc_strider",
+    "npc_hunter",
+    "npc_gunship",
+    "npc_helicopter",
+    "npc_rollermine",
+    "npc_turret",
+    "npc_cscanner",
+    "npc_clawscanner",
+}
+
+local function IsCombineNPC(ent)
+    if not IsValid(ent) then return false end
+    if not ent:IsNPC() then return false end
+    local cls = ent:GetClass()
+    for _, prefix in ipairs(COMBINE_NPC_PREFIXES) do
+        if string.sub(cls, 1, #prefix) == prefix then return true end
+    end
+    return false
+end
+
+-- ============================================================
+-- SAFE PROP_PHYSICS MODELS  (belt-and-suspenders for Pillar 3)
+-- prop_physics entities using these exact model paths are
+-- always whitelisted.  These are the only prop_physics spawned
+-- by the Gekko itself.  All of them already receive
+-- _gekkoOwnedGib = true at spawn, so this table is a fallback.
+-- ============================================================
+local APS_SAFE_MODELS = {
+    -- Shell casing (machine-gun + Bushmaster), spawned by SpawnCartridge in init.lua
+    ["models/props_debris/shellcasing_09.mdl"] = true,
+    -- Elastic tether anchor, spawned by MakeAnchor in elastic_system.lua
+    ["models/hunter/blocks/cube025x025x025.mdl"] = true,
 }
 
 -- ============================================================
 -- OWNED MUNITION + SAFE ENTITY WHITELIST
 -- Wins unconditionally over all pillars.
---
--- NOTE: prop_physics, prop_physics_override, prop_dynamic are
--- intentionally NOT listed here. Those classes were blanket-
--- whitelisting physics grenades and causing zero detections.
--- They are instead excluded only from Pillar 3 (see above).
--- Gibs: protected by _gekkoOwnedGib flag (gib_system.lua).
--- Shell casings: protected by _gekkoOwnedGib flag (init.lua).
 -- ============================================================
 local APS_OWNED_CLASSES = {
     -- Gekko's own munitions
@@ -109,10 +115,6 @@ local APS_OWNED_CLASSES = {
     ["ent_gas_stun"]          = true,
     ["ent_flashbang"]         = true,
     -- Player first-person arm/hand models.
-    -- ents.FindInSphere returns these; they are NOT IsPlayer(),
-    -- NOT IsNPC(), NOT IsWeapon(). They move at player speed so
-    -- without this entry Pillar 3 fires on them and permanently
-    -- deletes the player's hands via SafeRemoveEntity.
     ["viewmodel"]             = true,
     ["predicted_viewmodel"]   = true,
 }
@@ -207,8 +209,6 @@ local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
 -- PARENT-CHAIN WALK HELPER
--- Walks GetParent() and GetMoveParent() up to MAX_DEPTH levels.
--- Returns true if any ancestor is a player, NPC, or vehicle.
 -- ============================================================
 local PARENT_WALK_MAX_DEPTH = 8
 
@@ -242,26 +242,19 @@ end
 -- SAFE-ENTITY CHECK  (whitelist -- wins over EVERY pillar)
 --
 --  1.  Invalid entity
---  2.  The Gekko itself (by reference AND by EntIndex)
+--  2.  The Gekko itself
 --  3.  IsPlayer()
 --  4.  IsNPC()
 --  5.  IsVehicle()
 --  6.  IsWeapon()
---  7.  _gekkoOwnedGib flag (stamped by gib_system.lua and
---      SpawnCartridge in init.lua)
+--  7.  _gekkoOwnedGib flag
 --  8.  Class in APS_OWNED_CLASSES
 --  9.  Class prefix "weapon_"
--- 10.  Full parent/moveparent chain walk (APS_HasLivingAncestor)
+-- 10.  Full parent/moveparent chain walk
 -- 11.  GetOwner() == aps_owner  (Gekko's OWN projectiles only)
 -- 12.  .Owner field == aps_owner (Gekko's OWN projectiles only)
---
--- !! v4.5 change: Guards 11 and 12 no longer whitelist entities
---    that are owned by ANY player or NPC.  The old broad check
---    (ownerMethod:IsPlayer() or ownerMethod:IsNPC()) was silently
---    exempting every grenade and rocket that an enemy NPC fired
---    because those projectiles report their launcher as GetOwner().
---    Guards 3-6 already handle actual player/NPC/vehicle entities
---    themselves, so nothing legitimate is lost by this removal.
+-- 13.  GetOwner() or .Owner is a Combine NPC (IsCombineNPC)
+-- 14.  Model path in APS_SAFE_MODELS (Gekko-spawned prop_physics)
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
     if not IsValid(ent) then return true end
@@ -287,30 +280,30 @@ local function APS_IsSafeEntity(aps_owner, ent)
     -- Guard 10: full parent-chain walk
     if APS_HasLivingAncestor(ent) then return true end
 
-    -- Guard 11: engine owner method — only exempt Gekko's own munitions.
-    -- (v4.5: removed the IsPlayer()/IsNPC()/IsVehicle() broad exemption
-    -- that was whitelisting enemy-launched grenades and rockets.)
+    -- Guard 11: engine owner == Gekko
     local ownerMethod = ent:GetOwner()
     if IsValid(ownerMethod) then
         if ownerMethod == aps_owner then return true end
+        -- Guard 13a: owner is a Combine NPC
+        if IsCombineNPC(ownerMethod) then return true end
     end
 
-    -- Guard 12: raw .Owner field — same narrowing as Guard 11.
+    -- Guard 12: raw .Owner field == Gekko
     local ownerField = ent.Owner
     if IsValid(ownerField) then
         if ownerField == aps_owner then return true end
+        -- Guard 13b: .Owner is a Combine NPC
+        if IsCombineNPC(ownerField) then return true end
     end
+
+    -- Guard 14: Gekko-spawned prop_physics by exact model path
+    if APS_SAFE_MODELS[ent:GetModel()] then return true end
 
     return false
 end
 
 -- ============================================================
 -- THREAT CLASSIFICATION
---
--- APS_IsSafeEntity is absolute -- checked before every pillar.
--- 4 fully independent pillars. ANY single one alone is
--- sufficient to flag a threat, subject to the per-pillar
--- refinements documented at the top of this file.
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
@@ -318,13 +311,10 @@ local function APS_IsThreat(self, ent)
 
     local cls = string.lower(ent:GetClass())
 
-    -- Pillar 1: exact blacklist — no additional gate.
+    -- Pillar 1: exact blacklist
     if APS_INTERCEPT_TARGETS[cls] == true then return true end
 
-    -- Pillar 2: class-name pattern + minimum speed gate.
-    -- A static or barely-moving entity matching a weapon keyword
-    -- (placed satchel, dud grenade on the floor) must not fire the
-    -- APS from the name alone.  Require at least APS_PATTERN_MIN_SPEED.
+    -- Pillar 2: class-name pattern + minimum speed gate
     if  string.find(cls, "missile")    ~= nil or
         string.find(cls, "rocket")     ~= nil or
         string.find(cls, "grenade")    ~= nil or
@@ -335,28 +325,17 @@ local function APS_IsThreat(self, ent)
         if ent:GetVelocity():Length() >= APS_PATTERN_MIN_SPEED then
             return true
         end
-        -- Below the speed floor: still evaluated by Pillars 3 & 4.
     end
 
-    local vel    = ent:GetVelocity()
-    local speed  = vel:Length()
+    local vel   = ent:GetVelocity()
+    local speed = vel:Length()
 
-    -- Pillar 3: speed alone >= APS_MIN_SPEED.
-    -- EXCLUDED: prop_physics / prop_physics_override / prop_dynamic / prop_ragdoll.
-    -- Those are physical simulation objects (shell casings, loose debris,
-    -- collision props) that routinely reach 350-700 u/s after being struck.
-    -- They are NEVER dedicated weapon projectiles.  If one is a real threat
-    -- it must be named in the Pillar 1 blacklist.
+    -- Pillar 3: speed alone >= APS_MIN_SPEED
     if speed >= APS_MIN_SPEED then
-        if not APS_PHYSICS_PROP_CLASSES[cls] then
-            return true
-        end
+        return true
     end
 
-    -- Pillar 4: heading dot alone >= APS_HEADING_DOT toward the Gekko,
-    -- AND minimum speed >= APS_HEADING_MIN_SPEED.
-    -- Slow gib pieces that scatter in all directions will occasionally
-    -- point toward the Gekko by chance.  The speed floor eliminates them.
+    -- Pillar 4: heading dot + minimum speed floor
     if speed >= APS_HEADING_MIN_SPEED then
         local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
         if vel:GetNormalized():Dot(toGekko) >= APS_HEADING_DOT then
@@ -451,7 +430,6 @@ end
 local function APS_Intercept(self, threat)
     if not IsValid(threat) then return end
 
-    -- Final whitelist re-check before removal.
     if APS_IsSafeEntity(self, threat) then
         self._apsLockedEnt = nil
         return
