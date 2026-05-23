@@ -1,26 +1,22 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v4.3
+-- GEKKO ACTIVE PROTECTION SYSTEM  v4.4
 --
 -- WHITELIST IS ABSOLUTE AND EVALUATED BEFORE ALL PILLARS.
 -- Nothing on the whitelist is ever intercepted.
 --
--- THREAT DETECTION: 4 pillars.
---   1. Exact blacklist match  (APS_INTERCEPT_TARGETS)  -- instant
---   2. Class-name pattern     (missile/rocket/grenade)  -- instant
---   3. Speed + heading toward Gekko  (both required)
---   4. Heading dot toward Gekko + minimum speed  (both required)
---
--- Pillars 1 and 2 fire on class name alone.
--- Pillars 3 and 4 BOTH require the entity to be moving
--- toward the Gekko.  Speed alone or dot alone is NOT enough.
--- This prevents players running, jumping NPCs, and lateral
--- fast debris from triggering the system.
+-- THREAT DETECTION: 4 fully independent pillars.
+-- ANY single pillar alone is sufficient to flag a threat:
+--   1. Exact blacklist match  (APS_INTERCEPT_TARGETS)
+--   2. Class-name pattern     (missile / rocket / grenade / etc.)
+--   3. Speed alone            (>= APS_MIN_SPEED)
+--   4. Heading dot alone      (>= APS_HEADING_DOT, toward Gekko)
+-- Pillars 3 and 4 are INDEPENDENT. Each fires on its own.
 --
 -- prop_physics / prop_physics_override / prop_dynamic are
--- NOT in APS_OWNED_CLASSES.  Those blanket entries were
+-- NOT in APS_OWNED_CLASSES. Those blanket entries were
 -- whitelisting physics-based grenades (npc_grenade_frag etc)
--- and causing zero detections.  Gibs and shell casings are
+-- causing zero detections. Gibs and shell casings are
 -- protected via _gekkoOwnedGib flag and GetOwner() guard.
 -- ============================================================
 
@@ -31,22 +27,20 @@ if CLIENT then return end
 -- ============================================================
 local APS_LASER_RADIUS   = 2000
 local APS_SCAN_RADIUS    = 1200
-local APS_MIN_SPEED      = 350    -- Pillar 3: minimum speed
-local APS_MIN_SPEED_DOT  = 80     -- Pillar 4: minimum speed before dot counts
+local APS_MIN_SPEED      = 350
 local APS_SCAN_INTERVAL  = 0.05
 local APS_REARM_DELAY    = 0.30
 local APS_BURST_SHOTS    = 4
 local APS_BURST_INTERVAL = 0.040
 local APS_BURST_DURATION = APS_BURST_SHOTS * APS_BURST_INTERVAL + 0.05
-local APS_HEADING_DOT    = 0.65   -- raised: entity must point squarely at Gekko
-local APS_SPEED_DOT_MIN  = 0.15   -- Pillar 3: velocity must also face Gekko
+local APS_HEADING_DOT    = 0.25
 
 -- ============================================================
 -- OWNED MUNITION + SAFE ENTITY WHITELIST
 -- Wins unconditionally over all pillars.
 --
 -- NOTE: prop_physics, prop_physics_override, prop_dynamic are
--- intentionally NOT listed here.  Those classes were blanket-
+-- intentionally NOT listed here. Those classes were blanket-
 -- whitelisting physics grenades and causing zero detections.
 -- Gibs: protected by _gekkoOwnedGib flag (gib_system.lua).
 -- Shell casings: protected by _gekkoOwnedGib flag (init.lua).
@@ -65,7 +59,7 @@ local APS_OWNED_CLASSES = {
     ["ent_flashbang"]         = true,
     -- Player first-person arm/hand models.
     -- ents.FindInSphere returns these; they are NOT IsPlayer(),
-    -- NOT IsNPC(), NOT IsWeapon().  They move at player speed so
+    -- NOT IsNPC(), NOT IsWeapon(). They move at player speed so
     -- without this entry Pillar 3 fires on them and permanently
     -- deletes the player's hands via SafeRemoveEntity.
     ["viewmodel"]             = true,
@@ -196,7 +190,6 @@ end
 -- ============================================================
 -- SAFE-ENTITY CHECK  (whitelist -- wins over EVERY pillar)
 --
--- Any guard returning true = entity is safe, no pillar runs.
 --  1.  Invalid entity
 --  2.  The Gekko itself (by reference AND by EntIndex)
 --  3.  IsPlayer()
@@ -259,10 +252,13 @@ end
 -- ============================================================
 -- THREAT CLASSIFICATION
 --
--- Pillars 1 and 2: class name alone is sufficient.
--- Pillars 3 and 4: BOTH speed and heading toward Gekko required.
---   Pillar 3: speed >= APS_MIN_SPEED AND dot >= APS_SPEED_DOT_MIN
---   Pillar 4: dot >= APS_HEADING_DOT AND speed >= APS_MIN_SPEED_DOT
+-- APS_IsSafeEntity is absolute -- checked before every pillar.
+-- 4 fully independent pillars. ANY single one alone is
+-- sufficient to flag a threat:
+--   1. Exact blacklist match
+--   2. Class-name pattern
+--   3. Speed alone >= APS_MIN_SPEED
+--   4. Heading dot alone >= APS_HEADING_DOT (toward Gekko)
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
@@ -270,10 +266,10 @@ local function APS_IsThreat(self, ent)
 
     local cls = string.lower(ent:GetClass())
 
-    -- Pillar 1: exact blacklist (class alone is enough)
+    -- Pillar 1: exact blacklist
     if APS_INTERCEPT_TARGETS[cls] == true then return true end
 
-    -- Pillar 2: class-name pattern (class alone is enough)
+    -- Pillar 2: class-name pattern
     if  string.find(cls, "missile")    ~= nil or
         string.find(cls, "rocket")     ~= nil or
         string.find(cls, "grenade")    ~= nil or
@@ -284,19 +280,14 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
-    local vel    = ent:GetVelocity()
-    local speed  = vel:Length()
-    if speed < 1 then return false end  -- stationary, skip dot calc
+    local vel = ent:GetVelocity()
 
-    local toGekko    = (self:GetPos() - ent:GetPos()):GetNormalized()
-    local velNorm    = vel / speed
-    local dot        = velNorm:Dot(toGekko)
+    -- Pillar 3: speed alone
+    if vel:Length() >= APS_MIN_SPEED then return true end
 
-    -- Pillar 3: fast AND heading toward Gekko
-    if speed >= APS_MIN_SPEED and dot >= APS_SPEED_DOT_MIN then return true end
-
-    -- Pillar 4: squarely aimed at Gekko AND above minimum speed floor
-    if dot >= APS_HEADING_DOT and speed >= APS_MIN_SPEED_DOT then return true end
+    -- Pillar 4: heading dot alone
+    local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
+    if vel:GetNormalized():Dot(toGekko) >= APS_HEADING_DOT then return true end
 
     return false
 end
