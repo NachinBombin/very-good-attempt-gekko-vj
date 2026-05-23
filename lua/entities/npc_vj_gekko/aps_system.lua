@@ -1,15 +1,16 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v3.1
+-- GEKKO ACTIVE PROTECTION SYSTEM  v3.2
 --
--- Lock-on / intercept range split:
---   APS_LASER_RADIUS   = 2000u  -- laser acquires and tracks here
---   APS_SCAN_RADIUS    = 1200u  -- intercept fires when threat enters here
---
--- Flow:
---   1. Threat enters 2000u  -> lock acquired, laser beam starts tracking
---   2. Threat crosses 1200u -> APS fires, beam snaps off
---   3. If threat leaves 2000u before reaching 1200u -> lock resets
+-- BUG FIX v3.2:
+--   The catch-all high-speed block was triggering on weapons held
+--   by players (viewmodel / world-model entities) and on the
+--   player themselves when they ran or got launched toward the
+--   Gekko.  Fix: IsWeapon() guard + GetMoveParent() / GetParent()
+--   check ensures carried/attached entities are never treated as
+--   threats.  Additionally, prop_physics / prop_dynamic entities
+--   now require explicit INTERCEPT_TARGETS membership before the
+--   catch-all speed check is applied to them.
 -- ============================================================
 
 if CLIENT then return end
@@ -17,26 +18,23 @@ if CLIENT then return end
 -- ============================================================
 -- TUNING
 -- ============================================================
-local APS_LASER_RADIUS   = 2000    -- outer radius: laser acquisition
-local APS_SCAN_RADIUS    = 1200    -- inner radius: intercept trigger
-local APS_MIN_SPEED      = 350     -- u/s threshold
-local APS_SCAN_INTERVAL  = 0.05    -- seconds between scans / laser ticks
-local APS_REARM_DELAY    = 0.30    -- cooldown after each intercept
-local APS_BURST_SHOTS    = 4       -- muzzle flash pulses per intercept
-local APS_BURST_INTERVAL = 0.040   -- seconds between burst pulses
-local APS_HEADING_DOT    = 0.25    -- dot-product floor toward Gekko
+local APS_LASER_RADIUS   = 2000
+local APS_SCAN_RADIUS    = 1200
+local APS_MIN_SPEED      = 350
+local APS_SCAN_INTERVAL  = 0.05
+local APS_REARM_DELAY    = 0.30
+local APS_BURST_SHOTS    = 4
+local APS_BURST_INTERVAL = 0.040
+local APS_HEADING_DOT    = 0.25
 
 -- ============================================================
 -- OWNED MUNITION WHITELIST
--- Only Gekko's own projectiles are listed here.
--- obj_vj_rocket is a generic VJ base rocket — NOT owned by Gekko,
--- must be intercepted.
 -- ============================================================
 local APS_OWNED_CLASSES = {
     ["npc_vj_gekko_nikita"]   = true,
     ["sent_npc_topmissile"]   = true,
     ["sent_npc_trackmissile"] = true,
-    ["obj_gekko_rocket"]      = true,   -- Gekko's own rocket
+    ["obj_gekko_rocket"]      = true,
     ["sent_orbital_rpg"]      = true,
     ["sent_gekko_bushmaster"] = true,
     ["bombin_gas_grenade"]    = true,
@@ -62,7 +60,7 @@ local APS_INTERCEPT_TARGETS = {
     ["satchel_charge"]            = true,
     ["npc_manhack"]               = true,
     ["obj_vj_grenade"]            = true,
-    ["obj_vj_rocket"]             = true,   -- enemy VJ rocket — intercept
+    ["obj_vj_rocket"]             = true,
     ["obj_vj_flechette"]          = true,
     ["sent_javelin_missile"]      = true,
     ["sent_stinger_missile"]      = true,
@@ -135,23 +133,65 @@ local APS_BURST_SND = "sw/vehicles/weapons/m61_loop.wav"
 local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
--- SAFE-ENTITY CHECK
+-- SAFE-ENTITY CHECK  (v3.2 — weapon & parented-entity guards)
+--
+-- Root causes of the deletion bug:
+--   1. Weapons in a player's hands are entities with high
+--      velocity when the player moves; IsWeapon() returns true
+--      but they were reaching the catch-all block.
+--   2. Entities parented/move-parented to a player or NPC
+--      (e.g. held physgun objects, view-model proxies) were not
+--      caught by IsPlayer()/IsNPC() checks on the ent itself.
+--   3. prop_physics objects sitting in the world (not moving)
+--      are already safe via APS_OWNED_CLASSES, but physgunned
+--      props acquire the physgunner's velocity — the
+--      MoveParent guard now covers those.
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
-    if not IsValid(ent)                          then return true end
-    if ent == aps_owner                          then return true end
-    if ent:IsPlayer()                            then return true end
-    if ent:IsNPC()                               then return true end
-    if ent:IsVehicle()                           then return true end
+    if not IsValid(ent) then return true end
+
+    -- Gekko itself
+    if ent == aps_owner then return true end
+
+    -- Players and NPCs are ALWAYS safe (even at high speed)
+    if ent:IsPlayer() then return true end
+    if ent:IsNPC()    then return true end
+    if ent:IsVehicle() then return true end
+
+    -- Weapons of any kind (held or dropped) — NEVER delete
+    if ent:IsWeapon() then return true end
+
+    -- Entities parented or move-parented to a player / NPC:
+    -- covers viewmodel entities, physgunned props, carried objects
+    local parent = ent:GetParent()
+    if IsValid(parent) then
+        if parent:IsPlayer() or parent:IsNPC() or parent:IsVehicle() then
+            return true
+        end
+    end
+    local moveParent = ent:GetMoveParent()
+    if IsValid(moveParent) then
+        if moveParent:IsPlayer() or moveParent:IsNPC() or moveParent:IsVehicle() then
+            return true
+        end
+    end
+
+    -- Projectiles owned by Gekko itself
     local owner = ent:GetOwner()
-    if IsValid(owner) and owner == aps_owner     then return true end
+    if IsValid(owner) and owner == aps_owner then return true end
+
+    -- Whitelisted entity classes (Gekko munitions + generic physics)
     local cls = ent:GetClass()
-    if APS_OWNED_CLASSES[cls]                    then return true end
+    if APS_OWNED_CLASSES[cls] then return true end
+
     return false
 end
 
 -- ============================================================
--- THREAT CLASSIFICATION  (radius-agnostic)
+-- THREAT CLASSIFICATION
+-- IMPORTANT: The catch-all speed block is now restricted to
+-- entities whose class name contains a projectile keyword.
+-- Generic prop_physics / prop_dynamic / weapons never enter it.
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
@@ -159,6 +199,7 @@ local function APS_IsThreat(self, ent)
 
     local cls = string.lower(ent:GetClass())
 
+    -- Explicit table match
     if APS_INTERCEPT_TARGETS[cls] == true then
         local vel = ent:GetVelocity()
         if vel:Length() < APS_MIN_SPEED then return false end
@@ -167,11 +208,15 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
+    -- Keyword match — class name must contain a projectile keyword
+    -- (intentionally excludes generic prop_*, weapon_*, etc.)
     local isProjectileClass =
         string.find(cls, "missile")  ~= nil or
         string.find(cls, "rocket")   ~= nil or
         string.find(cls, "grenade")  ~= nil or
-        string.find(cls, "torpedo")  ~= nil
+        string.find(cls, "torpedo")  ~= nil or
+        string.find(cls, "flechette") ~= nil or
+        string.find(cls, "projectile") ~= nil
 
     if isProjectileClass then
         local vel = ent:GetVelocity()
@@ -181,16 +226,8 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
-    if not ent:IsPlayer() and not ent:IsNPC() and not ent:IsVehicle() then
-        local vel = ent:GetVelocity()
-        if vel:Length() >= APS_MIN_SPEED then
-            local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
-            if vel:GetNormalized():Dot(toGekko) >= APS_HEADING_DOT then
-                return true
-            end
-        end
-    end
-
+    -- No catch-all speed block anymore — too dangerous for misc entities.
+    -- Everything not matching a projectile class or explicit table is ignored.
     return false
 end
 
@@ -211,11 +248,11 @@ local function APS_ThreatInInterceptRadius(self, ent)
 end
 
 -- ============================================================
--- LASER TRACKING BROADCAST  (every scan tick during lock)
+-- LASER TRACKING BROADCAST
 -- ============================================================
 local function APS_BroadcastLaser(self, threat)
     if not IsValid(threat) then return end
-    local attData = self:GetAttachment(3)   -- ATT_MACHINEGUN
+    local attData = self:GetAttachment(3)
     local src = attData and attData.Pos or (self:GetPos() + Vector(0, 0, 180))
     net.Start("GekkoAPSLaser")
         net.WriteVector(src)
@@ -224,7 +261,7 @@ local function APS_BroadcastLaser(self, threat)
 end
 
 -- ============================================================
--- BURST MUZZLE FLASH  (GekkoAPSIntercept)
+-- BURST MUZZLE FLASH
 -- ============================================================
 local function APS_FireBurst(self, interceptPos)
     local timerName = "GekkoAPS_burst_" .. self:EntIndex()
@@ -280,8 +317,8 @@ local function APS_Intercept(self, threat)
 
     APS_FireBurst(self, targetPos)
 
-    self._apsNextScanT  = CurTime() + APS_REARM_DELAY
-    self._apsLockedEnt  = nil
+    self._apsNextScanT = CurTime() + APS_REARM_DELAY
+    self._apsLockedEnt = nil
 end
 
 -- ============================================================
@@ -301,23 +338,17 @@ function ENT:GekkoAPS_Think()
 
     self._apsNextScanT = CurTime() + APS_SCAN_INTERVAL
 
-    -- --------------------------------------------------------
-    -- LOCK PHASE: tracking a threat inside laser radius
-    -- --------------------------------------------------------
     if IsValid(self._apsLockedEnt) then
         local threat = self._apsLockedEnt
 
-        -- Drop lock if threat is no longer valid or left the laser radius
         if not APS_IsThreat(self, threat) or
            self:GetPos():Distance(threat:GetPos()) > APS_LASER_RADIUS then
             self._apsLockedEnt = nil
             return
         end
 
-        -- Keep broadcasting the tracking beam
         APS_BroadcastLaser(self, threat)
 
-        -- Fire the moment it crosses into the intercept radius
         if APS_ThreatInInterceptRadius(self, threat) then
             self._apsLockedEnt = nil
             APS_Intercept(self, threat)
@@ -325,9 +356,6 @@ function ENT:GekkoAPS_Think()
         return
     end
 
-    -- --------------------------------------------------------
-    -- SCAN PHASE: look for a new threat in the laser radius
-    -- --------------------------------------------------------
     local threat = APS_ScanLaserRadius(self)
     if threat then
         self._apsLockedEnt = threat
