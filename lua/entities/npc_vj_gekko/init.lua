@@ -28,6 +28,7 @@ include("gib_system.lua")
 include("leg_disable_system.lua")
 include("death_pose_system.lua")
 include("elastic_system.lua")
+include("aps_system.lua")
 
 -- NOTE: extensions.lua is loaded + AddCSLuaFile'd by
 -- lua/autorun/server/gekko_juicy_bleeding.lua which runs first.
@@ -39,6 +40,7 @@ util.AddNetworkString("GekkoFK360LandDust")
 util.AddNetworkString("GekkoMuzzleFlash")
 util.AddNetworkString("GekkoBulletImpact")
 util.AddNetworkString("GekkoBushRecoil")
+util.AddNetworkString("GekkoAPSIntercept")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L = 9
@@ -613,6 +615,7 @@ function ENT:Init()
     self:GekkoLegs_Init()
     self:GekkoDeath_Init()
     self:GekkoElastic_Init()
+	self:GekkoAPS_Init()
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -784,6 +787,7 @@ function ENT:OnThink()
     self:GekkoJump_Think()
     self:GekkoTargetJump_Think()
     self:GekkoElastic_Think()
+	self:GekkoAPS_Think()
     GekkoSprint_Think(self)
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
