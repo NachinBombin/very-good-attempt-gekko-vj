@@ -26,7 +26,7 @@ local PRESETS = {
         lifetime   = 0.060,
         color      = { r = 255, g = 200, b = 110 },
         scaleMin   = 1.00,
-        scaleMax   = 1.55,
+        scaleMax   = 1.75,
         texture    = "effects/muzzleflash_light",
     },
     [2] = { -- BUSHMASTER 25mm impact
@@ -36,8 +36,8 @@ local PRESETS = {
         brightness = 3.2,
         lifetime   = 0.075,
         color      = { r = 255, g = 175, b = 70 },
-        scaleMin   = 1.00,
-        scaleMax   = 1.25,
+        scaleMin   = 2.00,
+        scaleMax   = 3.25,
         texture    = "effects/muzzleflash_light",
     },
 }

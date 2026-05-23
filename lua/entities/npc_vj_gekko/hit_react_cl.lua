@@ -42,10 +42,10 @@ local HOLD      = 0.10
 local RAMP_OUT  = 0.22
 local TOTAL_DUR = RAMP_IN + HOLD + RAMP_OUT   -- 0.39 s
 
-local DEG_LARGE = 38
-local DEG_SMALL = 24
+local DEG_LARGE = 48
+local DEG_SMALL = 34
 
-local HR_FIRE_CHANCE  = 0.50   -- probability a hit triggers a reaction
+local HR_FIRE_CHANCE  = 0.43  -- probability a hit triggers a reaction
 
 -- Per-hit jitter (applied to every zone)
 local JITTER_AMP_MIN  = 0.75   -- overall amplitude multiplier range

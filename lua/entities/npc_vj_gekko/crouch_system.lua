@@ -20,10 +20,10 @@ local CEIL_CLEARANCE      = 60
 local CEIL_TRACE_EXTRA    = 80
 
 local RAND_CHECK_MIN  = 6
-local RAND_CHECK_MAX  = 16
+local RAND_CHECK_MAX  = 8
 local RAND_CHANCE     = 0.69
-local RAND_DUR_MIN    = 3
-local RAND_DUR_MAX    = 10
+local RAND_DUR_MIN    = 4
+local RAND_DUR_MAX    = 14
 
 local DEFAULT_MOVE_SPEED    = 150
 local CWALK_STATIONARY_RATE = 0.05

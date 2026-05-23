@@ -18,7 +18,7 @@ ENT.HasDeathCorpse = false
 
 ENT.VJ_NPC_Class = {"CLASS_COMBINE"}
 ENT.HullType     = HULL_LARGE
-ENT.StartHealth  = 3300
+ENT.StartHealth  = 3000
 
 ENT.StopMovingWhileAttacking = false
 
@@ -39,7 +39,7 @@ ENT.IdleAlwaysWander         = true
 -- via the _gekkoRunning flag and playback-rate math
 -- (arate = vel / ANIM_RUN_SPEED or ANIM_WALK_SPEED).
 ENT.WalkSpeed = 184
-ENT.RunSpeed  = 184
+ENT.RunSpeed  = 284
 
 -- Disable VJBase's built-in chase-run task.
 -- It fights GekkoUpdateAnimation for sequence ownership and
@@ -47,7 +47,7 @@ ENT.RunSpeed  = 184
 ENT.VJ_RunToEnemy         = false
 ENT.VJ_RunToEnemyDistance = 0
 
-ENT.TurningSpeed  = 15
+ENT.TurningSpeed  = 55
 ENT.SightDistance = 900000
 ENT.EnemyTimeout  = 560
 
@@ -82,7 +82,7 @@ ENT.RangeAttackProjectiles                = false
 ENT.RangeAttackMinDistance                = 0
 ENT.RangeAttackMaxDistance                = 900000
 ENT.TimeUntilRangeAttackProjectileRelease = 0.1
-ENT.NextRangeAttackTime                   = 14   -- was 6:  min seconds between attack-window selections
+ENT.NextRangeAttackTime                   = 11   -- was 6:  min seconds between attack-window selections
 ENT.NextAnyAttackTime_Range               = 5    -- was 2:  post-attack cooldown applied by VJBase after each execution
 
 -- ============================================================
