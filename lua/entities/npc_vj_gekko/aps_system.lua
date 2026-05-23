@@ -1,18 +1,17 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v2
+-- GEKKO ACTIVE PROTECTION SYSTEM  v3
 --
--- Ported from nphalanx_aps (Current-Phalanx repo).
--- NPC differences vs. player Phalanx:
---   • Always active — no ON/OFF toggle
---   • Laser is OFF at all times (not player-operated)
---     Only lights up momentarily before firing (handled client-side
---     via GekkoAPSIntercept net msg — laser state bit = 1 for 80ms)
---   • Burst muzzle flash fires toward the intercept point via
---     the existing GekkoMuzzleFlash net message (preset 3)
---   • Full whitelist of every Gekko-owned munition class
---   • Gekko itself, other NPCs, fast ally NPCs, and players are
---     NEVER deleted — only hostile projectiles are intercepted
+-- Changes from v2:
+--   • Intercept explosions are small (scale 0.3, no ground shake)
+--   • 1-second laser lock-on phase before firing:
+--       - On first threat detection, APS enters LOCK state.
+--       - Every scan tick during lock, GekkoAPSLaser is broadcast
+--         so all clients can draw a tracking beam on the target.
+--       - After 1 second (or if threat leaves range / is destroyed)
+--         the APS fires.  If threat escapes, lock resets.
+--   • GekkoAPSLaser net msg: Vector src, Vector targetPos
+--   • GekkoAPSIntercept net msg: unchanged (burst fire signal)
 -- ============================================================
 
 if CLIENT then return end
@@ -20,42 +19,35 @@ if CLIENT then return end
 -- ============================================================
 -- TUNING
 -- ============================================================
-local APS_SCAN_RADIUS    = 1200    -- sphere radius around Gekko, units
-local APS_MIN_SPEED      = 350     -- u/s — projectiles below this are ignored
-local APS_SCAN_INTERVAL  = 0.05    -- seconds between threat scans
-local APS_REARM_DELAY    = 0.30    -- cooldown between successive intercepts
+local APS_SCAN_RADIUS    = 1200    -- sphere radius, units
+local APS_MIN_SPEED      = 350     -- u/s threshold
+local APS_SCAN_INTERVAL  = 0.05    -- seconds between scans / laser ticks
+local APS_REARM_DELAY    = 0.30    -- cooldown after each intercept
 local APS_BURST_SHOTS    = 4       -- muzzle flash pulses per intercept
 local APS_BURST_INTERVAL = 0.040   -- seconds between burst pulses
-local APS_HEADING_DOT    = 0.25    -- dot-product floor: threat must face Gekko
+local APS_HEADING_DOT    = 0.25    -- dot-product floor toward Gekko
+local APS_LOCK_DURATION  = 1.0     -- seconds of laser tracking before firing
 
 -- ============================================================
 -- OWNED MUNITION WHITELIST
--- Every class Gekko itself fires is listed here.
--- These are NEVER intercepted regardless of speed or class name.
 -- ============================================================
 local APS_OWNED_CLASSES = {
-    -- Missiles & rockets
-    ["npc_vj_gekko_nikita"]   = true,   -- Nikita cruise missile
-    ["sent_npc_topmissile"]   = true,   -- top-attack missile
-    ["sent_npc_trackmissile"] = true,   -- active-track missile
-    ["obj_vj_rocket"]         = true,   -- standard gekko rocket
-    ["obj_gekko_rocket"]      = true,   -- alternate rocket entity name
-    ["sent_orbital_rpg"]      = true,   -- orbital missile
-    -- Bushmaster 25 mm cannon rounds
+    ["npc_vj_gekko_nikita"]   = true,
+    ["sent_npc_topmissile"]   = true,
+    ["sent_npc_trackmissile"] = true,
+    ["obj_vj_rocket"]         = true,
+    ["obj_gekko_rocket"]      = true,
+    ["sent_orbital_rpg"]      = true,
     ["sent_gekko_bushmaster"] = true,
-    -- Grenade launcher payloads
-    ["bombin_gas_grenade"]    = true,   -- toxic gas grenade
-    ["ent_gas_stun"]          = true,   -- stun/gas grenade
-    ["ent_flashbang"]         = true,   -- flash grenade
-    -- Shell casings (physics debris — never a threat)
+    ["bombin_gas_grenade"]    = true,
+    ["ent_gas_stun"]          = true,
+    ["ent_flashbang"]         = true,
     ["prop_physics"]          = true,
     ["prop_dynamic"]          = true,
 }
 
 -- ============================================================
--- GLOBAL THREAT TABLE
--- Mirrors the Phalanx INTERCEPT_TARGETS list plus extras that
--- are relevant to threatening a large armoured NPC.
+-- THREAT TABLE
 -- ============================================================
 local APS_INTERCEPT_TARGETS = {
     ["rpg_missile"]               = true,
@@ -70,7 +62,7 @@ local APS_INTERCEPT_TARGETS = {
     ["satchel_charge"]            = true,
     ["npc_manhack"]               = true,
     ["obj_vj_grenade"]            = true,
-    ["obj_vj_rocket"]             = false,  -- overridden by owned whitelist check first
+    ["obj_vj_rocket"]             = false,
     ["obj_vj_flechette"]          = true,
     ["sent_javelin_missile"]      = true,
     ["sent_stinger_missile"]      = true,
@@ -131,7 +123,7 @@ local APS_INTERCEPT_TARGETS = {
 }
 
 -- ============================================================
--- INTERCEPT SOUNDS  (same palette as Phalanx)
+-- SOUNDS
 -- ============================================================
 local APS_INTERCEPT_SNDS = {
     "ambient/explosions/explode_4.wav",
@@ -140,52 +132,41 @@ local APS_INTERCEPT_SNDS = {
     "weapons/shotgun/shotgun_fire7.wav",
 }
 local APS_BURST_SND = "sw/vehicles/weapons/m61_loop.wav"
+local APS_LOCK_SND  = "buttons/button17.wav"   -- brief radar-lock beep on acquire
 
 -- ============================================================
 -- SAFE-ENTITY CHECK
--- Returns true if the entity must NEVER be deleted by the APS.
--- Covers: Gekko itself, all players, all NPCs, fast-moving
--- friendly NPCs (e.g. VJ NPCs fleeing), and VJ base entities.
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
-    if not IsValid(ent)             then return true  end
-    if ent == aps_owner             then return true  end  -- Gekko itself
-    if ent:IsPlayer()               then return true  end  -- players
-    if ent:IsNPC()                  then return true  end  -- all NPCs
-    if ent:IsVehicle()              then return true  end
-    -- owner-set projectiles from Gekko
+    if not IsValid(ent)                          then return true end
+    if ent == aps_owner                          then return true end
+    if ent:IsPlayer()                            then return true end
+    if ent:IsNPC()                               then return true end
+    if ent:IsVehicle()                           then return true end
     local owner = ent:GetOwner()
-    if IsValid(owner) and owner == aps_owner then return true end
-    -- prop_physics / prop_dynamic are in whitelist; belt-and-suspenders
+    if IsValid(owner) and owner == aps_owner     then return true end
     local cls = ent:GetClass()
-    if APS_OWNED_CLASSES[cls]       then return true  end
+    if APS_OWNED_CLASSES[cls]                    then return true end
     return false
 end
 
 -- ============================================================
 -- THREAT CLASSIFICATION
--- Returns true if 'ent' is a valid intercept target for 'self'.
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
-
-    -- Never shoot safe entities
     if APS_IsSafeEntity(self, ent) then return false end
 
     local cls = string.lower(ent:GetClass())
 
-    -- Explicit intercept table hit
     if APS_INTERCEPT_TARGETS[cls] == true then
-        -- Heading check: velocity dot toward Gekko
         local vel = ent:GetVelocity()
-        local spd = vel:Length()
-        if spd < APS_MIN_SPEED then return false end
+        if vel:Length() < APS_MIN_SPEED then return false end
         local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
         if vel:GetNormalized():Dot(toGekko) < APS_HEADING_DOT then return false end
         return true
     end
 
-    -- Pattern matching (missile / rocket / grenade in class name)
     local isProjectileClass =
         string.find(cls, "missile")  ~= nil or
         string.find(cls, "rocket")   ~= nil or
@@ -194,18 +175,15 @@ local function APS_IsThreat(self, ent)
 
     if isProjectileClass then
         local vel = ent:GetVelocity()
-        local spd = vel:Length()
-        if spd < APS_MIN_SPEED then return false end
+        if vel:Length() < APS_MIN_SPEED then return false end
         local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
         if vel:GetNormalized():Dot(toGekko) < APS_HEADING_DOT then return false end
         return true
     end
 
-    -- High-speed unclassified entity (catch-all – must NOT be NPC/player/vehicle)
     if not ent:IsPlayer() and not ent:IsNPC() and not ent:IsVehicle() then
         local vel = ent:GetVelocity()
-        local spd = vel:Length()
-        if spd >= APS_MIN_SPEED then
+        if vel:Length() >= APS_MIN_SPEED then
             local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
             if vel:GetNormalized():Dot(toGekko) >= APS_HEADING_DOT then
                 return true
@@ -220,40 +198,43 @@ end
 -- SCAN FOR THREAT
 -- ============================================================
 local function APS_ScanForThreat(self)
-    local myPos    = self:GetPos()
-    local nearby   = ents.FindInSphere(myPos, APS_SCAN_RADIUS)
-
+    local nearby = ents.FindInSphere(self:GetPos(), APS_SCAN_RADIUS)
     for _, ent in ipairs(nearby) do
-        if APS_IsThreat(self, ent) then
-            return ent
-        end
+        if APS_IsThreat(self, ent) then return ent end
     end
     return nil
 end
 
 -- ============================================================
--- BURST MUZZLE FLASH  (server → client via GekkoAPSIntercept)
--- Fires APS_BURST_SHOTS pulses, each separated by APS_BURST_INTERVAL.
--- Direction is toward the intercept explosion position.
--- Uses GekkoMuzzleFlash preset 3 (Bushmaster — bright, punchy).
+-- LASER TRACKING BROADCAST
+-- Sends GekkoAPSLaser every scan tick during lock phase so all
+-- clients can draw the tracking beam following the moving target.
+-- src = best available muzzle attachment position.
+-- ============================================================
+local function APS_BroadcastLaser(self, threat)
+    if not IsValid(threat) then return end
+    local attData = self:GetAttachment(3)   -- ATT_MACHINEGUN
+    local src = attData and attData.Pos or (self:GetPos() + Vector(0, 0, 180))
+    net.Start("GekkoAPSLaser")
+        net.WriteVector(src)
+        net.WriteVector(threat:GetPos())
+    net.Broadcast()
+end
+
+-- ============================================================
+-- BURST MUZZLE FLASH  (GekkoAPSIntercept)
 -- ============================================================
 local function APS_FireBurst(self, interceptPos)
     local timerName = "GekkoAPS_burst_" .. self:EntIndex()
     timer.Remove(timerName)
-
-    -- Brief burst sound
     self:EmitSound(APS_BURST_SND, 90, math.random(97, 108), 1)
 
     local shotsFired = 0
     timer.Create(timerName, APS_BURST_INTERVAL, APS_BURST_SHOTS, function()
-        if not IsValid(self) then
-            timer.Remove(timerName)
-            return
-        end
+        if not IsValid(self) then timer.Remove(timerName); return end
         shotsFired = shotsFired + 1
 
-        -- Choose a firing attachment: cycle through machine-gun and missile ports
-        local attIdx = (shotsFired % 2 == 0) and 9 or 3   -- ATT_MISSILE_L or ATT_MACHINEGUN
+        local attIdx  = (shotsFired % 2 == 0) and 9 or 3
         local attData = self:GetAttachment(attIdx)
         local src, dir
         if attData then
@@ -264,67 +245,105 @@ local function APS_FireBurst(self, interceptPos)
             dir = (interceptPos - src):GetNormalized()
         end
 
-        -- Tell all clients: flash + tracer toward intercept point
         net.Start("GekkoAPSIntercept")
             net.WriteVector(src)
             net.WriteVector(dir)
             net.WriteVector(interceptPos)
-            net.WriteBool(shotsFired == 1)   -- firstShot flag: laser briefly visible
+            net.WriteBool(shotsFired == 1)
         net.Broadcast()
     end)
 end
 
 -- ============================================================
--- INTERCEPT
+-- INTERCEPT  (called when lock timer expires)
 -- ============================================================
 local function APS_Intercept(self, threat)
     if not IsValid(threat) then return end
 
     local targetPos = threat:GetPos()
 
-    -- Explosion at target
+    -- Small contained explosion — scale 0.3, no screen shake
     local ed = EffectData()
     ed:SetOrigin(targetPos)
+    ed:SetScale(0.3)
+    ed:SetMagnitude(0.3)
     util.Effect("Explosion", ed)
 
-    -- Intercept sounds
+    -- Intercept sounds (quieter than full explosion)
     for _, snd in ipairs(APS_INTERCEPT_SNDS) do
-        self:EmitSound(snd, 95, math.random(95, 105), 1)
+        self:EmitSound(snd, 88, math.random(98, 108), 1)
     end
 
-    -- Screen shake for nearby players
-    util.ScreenShake(targetPos, 18, 220, 0.6, 1200)
-
-    -- Nullify callbacks and remove the projectile
-    if threat.Destroyed       ~= nil then threat.Destroyed       = true  end
-    if threat.ExplodeCallback ~= nil then threat.ExplodeCallback = nil   end
+    -- Nullify any callbacks and remove
+    if threat.Destroyed       ~= nil then threat.Destroyed       = true end
+    if threat.ExplodeCallback ~= nil then threat.ExplodeCallback = nil  end
     SafeRemoveEntity(threat)
 
-    -- Fire the burst muzzle flash toward the intercept point
+    -- Burst muzzle flash toward intercept point
     APS_FireBurst(self, targetPos)
 
     -- Arm cooldown
-    self._apsNextScanT = CurTime() + APS_REARM_DELAY
+    self._apsNextScanT  = CurTime() + APS_REARM_DELAY
+    self._apsLockedEnt  = nil
+    self._apsLockStartT = nil
 end
 
 -- ============================================================
--- PUBLIC API — called from ENT:Init() and ENT:OnThink()
+-- PUBLIC API
 -- ============================================================
 function ENT:GekkoAPS_Init()
-    self._apsNextScanT = 0
-    self._apsActive    = true
+    self._apsNextScanT  = 0
+    self._apsActive     = true
+    self._apsLockedEnt  = nil   -- entity being tracked during lock phase
+    self._apsLockStartT = nil   -- CurTime() when lock began
     print("[GekkoAPS] Initialised on " .. self:EntIndex())
 end
 
 function ENT:GekkoAPS_Think()
-    if self._gekkoDead              then return end
-    if not self._apsActive          then return end
+    if self._gekkoDead         then return end
+    if not self._apsActive     then return end
     if CurTime() < (self._apsNextScanT or 0) then return end
 
     self._apsNextScanT = CurTime() + APS_SCAN_INTERVAL
 
+    -- --------------------------------------------------------
+    -- LOCK PHASE: already tracking a threat
+    -- --------------------------------------------------------
+    if IsValid(self._apsLockedEnt) then
+        local threat = self._apsLockedEnt
+
+        -- Verify the locked threat is still a valid threat
+        if not APS_IsThreat(self, threat) then
+            -- Lost it — reset lock and scan fresh next tick
+            self._apsLockedEnt  = nil
+            self._apsLockStartT = nil
+            return
+        end
+
+        -- Broadcast laser tracking beam this tick
+        APS_BroadcastLaser(self, threat)
+
+        -- Check if the 1-second lock window has elapsed
+        if CurTime() >= self._apsLockStartT + APS_LOCK_DURATION then
+            -- Fire!
+            self._apsLockedEnt  = nil
+            self._apsLockStartT = nil
+            APS_Intercept(self, threat)
+        end
+        return
+    end
+
+    -- --------------------------------------------------------
+    -- SCAN PHASE: look for a new threat
+    -- --------------------------------------------------------
     local threat = APS_ScanForThreat(self)
     if threat then
-        APS_Intercept(self, threat)
+        -- Acquire lock
+        self._apsLockedEnt  = threat
+        self._apsLockStartT = CurTime()
+        -- Radar-lock beep
+        self:EmitSound(APS_LOCK_SND, 80, math.random(110, 120), 1)
+        -- Immediately broadcast the first laser frame
+        APS_BroadcastLaser(self, threat)
     end
 end
