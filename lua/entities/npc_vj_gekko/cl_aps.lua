@@ -1,38 +1,36 @@
 -- ============================================================
 -- npc_vj_gekko / cl_aps.lua
--- CLIENT  —  APS visual receivers
+-- CLIENT  —  APS visual receivers  v4
 --
--- Handles two net messages sent by aps_system.lua:
---   GekkoAPSLaser     — tracking beam while threat is locked
---   GekkoAPSIntercept — burst muzzle flash + tracer at intercept
+-- Net messages handled:
+--   GekkoAPSLaser      — tracking beam while locked
+--   GekkoAPSLaserClear — immediate beam kill (death / lost lock)
+--   GekkoAPSIntercept  — burst muzzle flash + tracer
 --
--- Laser beam: 6px wide, alpha 230 (nearly opaque solid red)
--- Laser dies 120ms after the last GekkoAPSLaser message
---   (covers the scan interval gap of 50ms with headroom).
+-- All state is keyed by server entity index so multiple Gekkos
+-- are fully independent.
 -- ============================================================
 
 if SERVER then return end
 
 -- ============================================================
--- LASER STATE
+-- LASER STATE TABLE
 -- _GekkoAPS_Lasers[entIndex] = { src, dst, dieTime }
--- Keyed by server entity index so multiple Gekkos are independent.
 -- ============================================================
 _GekkoAPS_Lasers = _GekkoAPS_Lasers or {}
 
-local LASER_MAT      = Material("effects/laser1")
-local LASER_COLOR    = Color(255, 30, 30, 230)   -- bright red, nearly opaque
-local LASER_WIDTH    = 6                          -- 3× the original 2px
-local LASER_TTL      = 0.12                       -- 120ms persistence per tick
+local LASER_MAT   = Material("effects/laser1")
+local LASER_COLOR = Color(255, 30, 30, 230)
+local LASER_WIDTH = 6
+local LASER_TTL   = 0.12   -- 120ms per tick (covers 50ms scan interval)
 
 -- ============================================================
--- NET: GekkoAPSLaser
--- Server sends this every APS_SCAN_INTERVAL (0.05s) while locked.
+-- NET: GekkoAPSLaser — refresh beam entry
 -- ============================================================
 net.Receive("GekkoAPSLaser", function()
-    local src      = net.ReadVector()
-    local dst      = net.ReadVector()
-    local entIdx   = net.ReadUInt(16)   -- Gekko entity index
+    local src    = net.ReadVector()
+    local dst    = net.ReadVector()
+    local entIdx = net.ReadUInt(16)
 
     _GekkoAPS_Lasers[entIdx] = {
         src     = src,
@@ -42,33 +40,38 @@ net.Receive("GekkoAPSLaser", function()
 end)
 
 -- ============================================================
--- NET: GekkoAPSIntercept
--- Burst muzzle flash + tracer per pulse.
--- firstShot flag: snaps the laser to the intercept point
--- for one final 80ms flash, then clears it.
+-- NET: GekkoAPSLaserClear — hard-kill beam (death / lost lock)
+-- ============================================================
+net.Receive("GekkoAPSLaserClear", function()
+    local entIdx = net.ReadUInt(16)
+    _GekkoAPS_Lasers[entIdx] = nil
+end)
+
+-- ============================================================
+-- NET: GekkoAPSIntercept — burst pulse
 -- ============================================================
 net.Receive("GekkoAPSIntercept", function()
-    local src        = net.ReadVector()
-    local dir        = net.ReadVector()
-    local targetPos  = net.ReadVector()
-    local firstShot  = net.ReadBool()
-    local entIdx     = net.ReadUInt(16)
+    local src       = net.ReadVector()
+    local dir       = net.ReadVector()
+    local targetPos = net.ReadVector()
+    local firstShot = net.ReadBool()
+    local entIdx    = net.ReadUInt(16)
 
-    -- Muzzle flash effect at firing point
+    -- Muzzle flash at firing point
     local flash = EffectData()
     flash:SetOrigin(src)
     flash:SetNormal(dir)
     flash:SetAngles(dir:Angle())
     util.Effect("MuzzleEffect", flash)
 
-    -- Tracer line from muzzle to intercept
+    -- Tracer line muzzle → intercept
     local tracer = EffectData()
     tracer:SetStart(src)
     tracer:SetOrigin(targetPos)
     tracer:SetScale(5000)
     util.Effect("Tracer", tracer)
 
-    -- On first pulse: snap laser beam to intercept point for 80ms
+    -- First pulse only: snap laser to intercept point for 80ms
     if firstShot then
         _GekkoAPS_Lasers[entIdx] = {
             src     = src,
@@ -79,7 +82,7 @@ net.Receive("GekkoAPSIntercept", function()
 end)
 
 -- ============================================================
--- RENDER: draw all active laser beams
+-- RENDER: draw all live laser beams, expire stale entries
 -- ============================================================
 hook.Add("PostDrawTranslucentRenderables", "GekkoAPS_DrawLasers", function()
     local now = CurTime()
@@ -87,7 +90,6 @@ hook.Add("PostDrawTranslucentRenderables", "GekkoAPS_DrawLasers", function()
         if now > beam.dieTime then
             _GekkoAPS_Lasers[idx] = nil
         else
-            -- Fade out only in the last 30ms so it feels sharp
             local frac  = math.max(0, (beam.dieTime - now) / 0.03)
             local alpha = math.min(230, LASER_COLOR.a * frac)
             render.SetMaterial(LASER_MAT)
