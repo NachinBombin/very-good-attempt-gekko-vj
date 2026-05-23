@@ -17,6 +17,77 @@ ENT.Category		= "VJ Base"
 
 ENT.VJ_ID_Danger = true
 
+-- =========================================================================
+-- Shared gib configuration (mirrors Bushmaster logic, always fires x3)
+-- =========================================================================
+local GIB_LIFETIME = 3.5
+local GIB_MODELS = {
+    "models/props_junk/CinderBlock01a.mdl",
+    "models/props_mining/rock_caves01a.mdl",
+    "models/props_mining/rock_caves01b.mdl",
+    "models/props_mining/rock_caves01c.mdl",
+    "models/props_debris/concrete_spawnchunk001b.mdl",
+    "models/props_debris/concrete_spawnchunk001d.mdl",
+    "models/props_debris/concrete_spawnchunk001g.mdl",
+    "models/props_debris/concrete_spawnchunk001i.mdl",
+    "models/props_debris/concrete_spawnchunk001k.mdl",
+    "models/props_debris/concrete_spawnchunk001j.mdl",
+    "models/props_debris/prison_wallchunk001f.mdl",
+    "models/props_debris/concrete_chunk09a.mdl",
+    "models/props_debris/concrete_chunk03a.mdl",
+    "models/props_debris/concrete_chunk04a.mdl",
+    "models/props_debris/concrete_chunk05g.mdl",
+    "models/props_debris/concrete_chunk02a.mdl",
+    "models/props_debris/tile_wall001a_chunk02.mdl",
+    "models/props_debris/tile_wall001a_chunk09.mdl",
+    "models/props_debris/tile_wall001a_chunk06.mdl",
+    "models/props_debris/tile_wall001a_chunk05.mdl",
+    "models/props_debris/rebar001a_32.mdl",
+    "models/props_debris/rebar003a_32.mdl",
+}
+
+local function SpawnIgnitedGib( hitPos, hitNormal )
+    local mdl = GIB_MODELS[ math.random( #GIB_MODELS ) ]
+    local gib = ents.Create( "prop_physics" )
+    if not IsValid( gib ) then return end
+    gib:SetModel( mdl )
+    gib:SetPos( hitPos + hitNormal * 4 )
+    gib:SetCollisionGroup( COLLISION_GROUP_DEBRIS )
+    gib:Spawn()
+    gib:Activate()
+    gib:DrawShadow( false )
+    timer.Simple( GIB_LIFETIME, function()
+        if IsValid( gib ) then gib:Remove() end
+    end )
+    local phys = gib:GetPhysicsObject()
+    if not IsValid( phys ) then gib:Remove() return end
+    -- hemisphere impulse aligned to surface normal
+    local helper
+    if math.abs( hitNormal.z ) < 0.9 then
+        helper = Vector( 0, 0, 1 )
+    else
+        helper = Vector( 1, 0, 0 )
+    end
+    local tangent   = hitNormal:Cross( helper )  tangent:Normalize()
+    local bitangent = hitNormal:Cross( tangent ) bitangent:Normalize()
+    local cos_theta = math.random()
+    local sin_theta = math.sqrt( 1 - cos_theta * cos_theta )
+    local phi       = math.random() * ( 2 * math.pi )
+    local cp        = math.cos( phi )
+    local sp        = math.sin( phi )
+    local nx, ny, nz = hitNormal.x, hitNormal.y, hitNormal.z
+    local dx = nx * cos_theta + tangent.x * ( sin_theta * cp ) + bitangent.x * ( sin_theta * sp )
+    local dy = ny * cos_theta + tangent.y * ( sin_theta * cp ) + bitangent.y * ( sin_theta * sp )
+    local dz = nz * cos_theta + tangent.z * ( sin_theta * cp ) + bitangent.z * ( sin_theta * sp )
+    local dlen = math.sqrt( dx*dx + dy*dy + dz*dz )
+    if dlen < 0.001 then gib:Remove() return end
+    dx = dx / dlen  dy = dy / dlen  dz = dz / dlen
+    local speed = math.Rand( 120, 340 )
+    phys:SetVelocity( Vector( dx * speed, dy * speed, dz * speed ) )
+    phys:SetAngleVelocity( Vector( math.Rand(-400,400), math.Rand(-400,400), math.Rand(-400,400) ) )
+    gib:Ignite( 0, 0 )
+end
+
 ---------------------------------------------------------------------------------------------------------------------------------------------
 if CLIENT then
 	VJ.AddKillIcon("obj_gekko_rocket", ENT.PrintName, VJ.KILLICON_PROJECTILE)
@@ -97,4 +168,12 @@ function ENT:OnDestroy(data, phys)
 	expLight:Activate()
 	expLight:Fire("TurnOn")
 	self:DeleteOnRemove(expLight)
+
+	-- Spawn 3 ignited concrete gibs on every explosion
+	local hitNormal = IsValid( data.HitEntity ) and
+		( data.HitPos - data.HitEntity:GetPos() ):GetNormalized() or
+		Vector( 0, 0, 1 )
+	for i = 1, 3 do
+		SpawnIgnitedGib( data.HitPos, hitNormal )
+	end
 end

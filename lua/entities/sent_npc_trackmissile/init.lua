@@ -32,6 +32,76 @@ local COLLISION_IMMUNE_TIME = 0.5
 local SPAWN_FORWARD_OFFSET  = 600
 local KICK_UP_SPEED         = 900
 
+-- =========================================================================
+-- Gib configuration (always spawns 3 ignited concrete debris on explosion)
+-- =========================================================================
+local GIB_LIFETIME = 3.5
+local GIB_MODELS = {
+    "models/props_junk/CinderBlock01a.mdl",
+    "models/props_mining/rock_caves01a.mdl",
+    "models/props_mining/rock_caves01b.mdl",
+    "models/props_mining/rock_caves01c.mdl",
+    "models/props_debris/concrete_spawnchunk001b.mdl",
+    "models/props_debris/concrete_spawnchunk001d.mdl",
+    "models/props_debris/concrete_spawnchunk001g.mdl",
+    "models/props_debris/concrete_spawnchunk001i.mdl",
+    "models/props_debris/concrete_spawnchunk001k.mdl",
+    "models/props_debris/concrete_spawnchunk001j.mdl",
+    "models/props_debris/prison_wallchunk001f.mdl",
+    "models/props_debris/concrete_chunk09a.mdl",
+    "models/props_debris/concrete_chunk03a.mdl",
+    "models/props_debris/concrete_chunk04a.mdl",
+    "models/props_debris/concrete_chunk05g.mdl",
+    "models/props_debris/concrete_chunk02a.mdl",
+    "models/props_debris/tile_wall001a_chunk02.mdl",
+    "models/props_debris/tile_wall001a_chunk09.mdl",
+    "models/props_debris/tile_wall001a_chunk06.mdl",
+    "models/props_debris/tile_wall001a_chunk05.mdl",
+    "models/props_debris/rebar001a_32.mdl",
+    "models/props_debris/rebar003a_32.mdl",
+}
+
+local function SpawnIgnitedGib( hitPos, hitNormal )
+    local mdl = GIB_MODELS[ math.random( #GIB_MODELS ) ]
+    local gib = ents.Create( "prop_physics" )
+    if not IsValid( gib ) then return end
+    gib:SetModel( mdl )
+    gib:SetPos( hitPos + hitNormal * 4 )
+    gib:SetCollisionGroup( COLLISION_GROUP_DEBRIS )
+    gib:Spawn()
+    gib:Activate()
+    gib:DrawShadow( false )
+    timer.Simple( GIB_LIFETIME, function()
+        if IsValid( gib ) then gib:Remove() end
+    end )
+    local phys = gib:GetPhysicsObject()
+    if not IsValid( phys ) then gib:Remove() return end
+    local helper
+    if math.abs( hitNormal.z ) < 0.9 then
+        helper = Vector( 0, 0, 1 )
+    else
+        helper = Vector( 1, 0, 0 )
+    end
+    local tangent   = hitNormal:Cross( helper )  tangent:Normalize()
+    local bitangent = hitNormal:Cross( tangent ) bitangent:Normalize()
+    local cos_theta = math.random()
+    local sin_theta = math.sqrt( 1 - cos_theta * cos_theta )
+    local phi       = math.random() * ( 2 * math.pi )
+    local cp        = math.cos( phi )
+    local sp        = math.sin( phi )
+    local nx, ny, nz = hitNormal.x, hitNormal.y, hitNormal.z
+    local dx = nx * cos_theta + tangent.x * ( sin_theta * cp ) + bitangent.x * ( sin_theta * sp )
+    local dy = ny * cos_theta + tangent.y * ( sin_theta * cp ) + bitangent.y * ( sin_theta * sp )
+    local dz = nz * cos_theta + tangent.z * ( sin_theta * cp ) + bitangent.z * ( sin_theta * sp )
+    local dlen = math.sqrt( dx*dx + dy*dy + dz*dz )
+    if dlen < 0.001 then gib:Remove() return end
+    dx = dx / dlen  dy = dy / dlen  dz = dz / dlen
+    local speed = math.Rand( 120, 340 )
+    phys:SetVelocity( Vector( dx * speed, dy * speed, dz * speed ) )
+    phys:SetAngleVelocity( Vector( math.Rand(-400,400), math.Rand(-400,400), math.Rand(-400,400) ) )
+    gib:Ignite( 0, 0 )
+end
+
 -- ============================================================
 --  Initialize
 -- ============================================================
@@ -181,7 +251,7 @@ function ENT:PhysicsUpdate()
         else
             -- Apex reached: transition to chase phase
             self.Tracking = true
-            self:SetNWBool( "Ballistic", false )  -- keep NW compat
+            self:SetNWBool( "Ballistic", false )
             print( "[TrackMissile] Apex reached -> CHASE phase" )
         end
 
@@ -248,10 +318,8 @@ function ENT:OnTakeDamage( dmginfo )
     if self.HealthVal <= 0 then self:MissileDoExplosion() end
 end
 
-local FALLOFF_MIN_FRAC = 0.08   -- 8 % damage at the very edge
+local FALLOFF_MIN_FRAC = 0.08
 
--- Returns the best aim point on an entity for LOS checks:
--- tries the centre-of-mass first, then falls back to GetPos().
 local function EntAimPos( ent )
     local phys = ent:GetPhysicsObject()
     if IsValid( phys ) then return phys:GetMassCenter() end
@@ -263,8 +331,6 @@ local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg
         if not IsValid( ent ) then continue end
         if ent == inflictor   then continue end
 
-        -- Line-of-sight check: if solid world geometry blocks the path
-        -- from the blast origin to the entity, skip it entirely.
         local entPos = EntAimPos( ent )
         local los = util.TraceLine({
             start  = origin,
@@ -275,9 +341,8 @@ local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg
         if los.Hit then continue end
 
         local dist  = ( entPos - origin ):Length()
-        local frac  = 1 - ( dist / radius )               -- 1 at centre, 0 at edge
+        local frac  = 1 - ( dist / radius )
         frac        = math.Clamp( frac, 0, 1 )
-        -- Lerp from FALLOFF_MIN_FRAC (edge) to 1.0 (centre)
         local scale = FALLOFF_MIN_FRAC + ( 1 - FALLOFF_MIN_FRAC ) * frac
         local dmg   = maxDmg * scale
 
@@ -311,7 +376,6 @@ function ENT:MissileDoExplosion()
     local owner = IsValid( self.Owner ) and self.Owner or self
 
     sound.Play( SND_EXPLODE, pos, 100, 100 )
-    -- Distance-scaled per-player camera shake
     for _, ply in ipairs( player.GetAll() ) do
         if not IsValid( ply ) then continue end
         local _shakeDist = ( ply:GetPos() - pos ):Length()
@@ -338,6 +402,13 @@ function ENT:MissileDoExplosion()
     end
 
     DoFalloffBlastDamage( self, owner, pos + Vector( 0, 0, 50 ), rad, dmg )
+
+    -- Always spawn 3 ignited concrete gibs
+    local upNormal = Vector( 0, 0, 1 )
+    for i = 1, 3 do
+        SpawnIgnitedGib( pos, upNormal )
+    end
+
     self:Remove()
 end
 
