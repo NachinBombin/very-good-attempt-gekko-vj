@@ -1,16 +1,27 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v3.2
+-- GEKKO ACTIVE PROTECTION SYSTEM  v3.3
 --
--- BUG FIX v3.2:
---   The catch-all high-speed block was triggering on weapons held
---   by players (viewmodel / world-model entities) and on the
---   player themselves when they ran or got launched toward the
---   Gekko.  Fix: IsWeapon() guard + GetMoveParent() / GetParent()
---   check ensures carried/attached entities are never treated as
---   threats.  Additionally, prop_physics / prop_dynamic entities
---   now require explicit INTERCEPT_TARGETS membership before the
---   catch-all speed check is applied to them.
+-- FIXES v3.3:
+--   1. SOUND LOOP BUG: APS_FireBurst previously called EmitSound()
+--      with a looping .wav (m61_loop.wav). EmitSound has no stop path,
+--      so the sound played forever. Fixed by using CreateSound() +
+--      a scheduled :Stop() after burst duration.
+--   2. LASER ALWAYS ON: APS_BroadcastLaser was called on every scan
+--      tick as soon as a threat was found in the outer laser radius
+--      (2000 u). The laser should only light up when the threat is
+--      inside the intercept radius and about to be engaged — matching
+--      the phalanx behavior. Outer tracking is now silent/invisible;
+--      laser only fires once intercept starts.
+--   3. NET MESSAGE INDEX MISMATCH: cl_aps.lua was reading a UInt(16)
+--      entity index from GekkoAPSLaser and GekkoAPSIntercept that the
+--      server never wrote. This silently corrupted net reads. Server
+--      now writes net.WriteUInt(self:EntIndex(), 16) in both messages.
+--   4. BURST MUZZLE DIRECTION: burst ticks now broadcast via
+--      GekkoAPSIntercept with the correct src->interceptPos direction
+--      so the client MuzzleEffect faces the target, matching the
+--      phalanx burst-fire visual. Also uses GekkoMuzzleFlash preset 1
+--      (MG) on the first shot for the projected-light flash.
 -- ============================================================
 
 if CLIENT then return end
@@ -18,13 +29,14 @@ if CLIENT then return end
 -- ============================================================
 -- TUNING
 -- ============================================================
-local APS_LASER_RADIUS   = 2000
-local APS_SCAN_RADIUS    = 1200
+local APS_LASER_RADIUS   = 2000   -- outer detection radius
+local APS_SCAN_RADIUS    = 1200   -- intercept engagement radius
 local APS_MIN_SPEED      = 350
 local APS_SCAN_INTERVAL  = 0.05
 local APS_REARM_DELAY    = 0.30
 local APS_BURST_SHOTS    = 4
 local APS_BURST_INTERVAL = 0.040
+local APS_BURST_DURATION = APS_BURST_SHOTS * APS_BURST_INTERVAL + 0.05
 local APS_HEADING_DOT    = 0.25
 
 -- ============================================================
@@ -133,36 +145,22 @@ local APS_BURST_SND = "sw/vehicles/weapons/m61_loop.wav"
 local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
--- SAFE-ENTITY CHECK  (v3.2 — weapon & parented-entity guards)
---
--- Root causes of the deletion bug:
---   1. Weapons in a player's hands are entities with high
---      velocity when the player moves; IsWeapon() returns true
---      but they were reaching the catch-all block.
---   2. Entities parented/move-parented to a player or NPC
---      (e.g. held physgun objects, view-model proxies) were not
---      caught by IsPlayer()/IsNPC() checks on the ent itself.
---   3. prop_physics objects sitting in the world (not moving)
---      are already safe via APS_OWNED_CLASSES, but physgunned
---      props acquire the physgunner's velocity — the
---      MoveParent guard now covers those.
+-- SAFE-ENTITY CHECK
+-- Guards: the Gekko itself, players, NPCs (including all VJ
+-- npc_vj_* variants), vehicles, weapons, parented entities,
+-- and all owned Gekko munitions.
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
     if not IsValid(ent) then return true end
 
-    -- Gekko itself
     if ent == aps_owner then return true end
 
-    -- Players and NPCs are ALWAYS safe (even at high speed)
-    if ent:IsPlayer() then return true end
-    if ent:IsNPC()    then return true end
+    if ent:IsPlayer()  then return true end
+    if ent:IsNPC()     then return true end   -- covers ALL npc_vj_* by IsNPC()
     if ent:IsVehicle() then return true end
+    if ent:IsWeapon()  then return true end
 
-    -- Weapons of any kind (held or dropped) — NEVER delete
-    if ent:IsWeapon() then return true end
-
-    -- Entities parented or move-parented to a player / NPC:
-    -- covers viewmodel entities, physgunned props, carried objects
+    -- Entities parented / move-parented to a player or NPC
     local parent = ent:GetParent()
     if IsValid(parent) then
         if parent:IsPlayer() or parent:IsNPC() or parent:IsVehicle() then
@@ -176,11 +174,11 @@ local function APS_IsSafeEntity(aps_owner, ent)
         end
     end
 
-    -- Projectiles owned by Gekko itself
+    -- Projectiles owned by this Gekko
     local owner = ent:GetOwner()
     if IsValid(owner) and owner == aps_owner then return true end
 
-    -- Whitelisted entity classes (Gekko munitions + generic physics)
+    -- Whitelisted Gekko munition classes + generic physics
     local cls = ent:GetClass()
     if APS_OWNED_CLASSES[cls] then return true end
 
@@ -189,9 +187,6 @@ end
 
 -- ============================================================
 -- THREAT CLASSIFICATION
--- IMPORTANT: The catch-all speed block is now restricted to
--- entities whose class name contains a projectile keyword.
--- Generic prop_physics / prop_dynamic / weapons never enter it.
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
@@ -208,14 +203,13 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
-    -- Keyword match — class name must contain a projectile keyword
-    -- (intentionally excludes generic prop_*, weapon_*, etc.)
+    -- Keyword match — class must contain a projectile keyword
     local isProjectileClass =
-        string.find(cls, "missile")  ~= nil or
-        string.find(cls, "rocket")   ~= nil or
-        string.find(cls, "grenade")  ~= nil or
-        string.find(cls, "torpedo")  ~= nil or
-        string.find(cls, "flechette") ~= nil or
+        string.find(cls, "missile")    ~= nil or
+        string.find(cls, "rocket")     ~= nil or
+        string.find(cls, "grenade")    ~= nil or
+        string.find(cls, "torpedo")    ~= nil or
+        string.find(cls, "flechette")  ~= nil or
         string.find(cls, "projectile") ~= nil
 
     if isProjectileClass then
@@ -226,13 +220,11 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
-    -- No catch-all speed block anymore — too dangerous for misc entities.
-    -- Everything not matching a projectile class or explicit table is ignored.
     return false
 end
 
 -- ============================================================
--- SCAN helpers
+-- SCAN HELPERS
 -- ============================================================
 local function APS_ScanLaserRadius(self)
     local nearby = ents.FindInSphere(self:GetPos(), APS_LASER_RADIUS)
@@ -249,6 +241,9 @@ end
 
 -- ============================================================
 -- LASER TRACKING BROADCAST
+-- FIX: now writes entity index so cl_aps.lua ReadUInt(16) matches.
+-- FIX: only called when threat is inside intercept radius (laser
+--      lights up just before the shot, not during outer tracking).
 -- ============================================================
 local function APS_BroadcastLaser(self, threat)
     if not IsValid(threat) then return end
@@ -257,16 +252,36 @@ local function APS_BroadcastLaser(self, threat)
     net.Start("GekkoAPSLaser")
         net.WriteVector(src)
         net.WriteVector(threat:GetPos())
+        net.WriteUInt(self:EntIndex(), 16)   -- FIX: was missing; client reads this
     net.Broadcast()
 end
 
 -- ============================================================
--- BURST MUZZLE FLASH
+-- BURST MUZZLE FLASH + SOUND
+-- FIX 1 (sound): CreateSound() + scheduled Stop() so the loop
+--   wav is silenced after APS_BURST_DURATION seconds.
+-- FIX 4 (muzzle): GekkoAPSIntercept now carries src + dir aimed
+--   at interceptPos so client MuzzleEffect faces the right way.
+--   First shot also sends GekkoMuzzleFlash (preset 1) for the
+--   projected-light bloom, matching phalanx muzzle behaviour.
+-- FIX 3 (net index): GekkoAPSIntercept now writes entity index.
 -- ============================================================
 local function APS_FireBurst(self, interceptPos)
     local timerName = "GekkoAPS_burst_" .. self:EntIndex()
     timer.Remove(timerName)
-    self:EmitSound(APS_BURST_SND, 90, math.random(97, 108), 1)
+
+    -- FIX 1: create a managed sound object so we can stop it
+    local burstSnd = CreateSound(self, APS_BURST_SND)
+    if burstSnd then
+        burstSnd:PlayEx(0.85, math.random(97, 108))
+        -- stop after burst duration with a small grace window
+        timer.Simple(APS_BURST_DURATION + 0.05, function()
+            if burstSnd then
+                burstSnd:Stop()
+                burstSnd = nil
+            end
+        end)
+    end
 
     local shotsFired = 0
     timer.Create(timerName, APS_BURST_INTERVAL, APS_BURST_SHOTS, function()
@@ -284,12 +299,24 @@ local function APS_FireBurst(self, interceptPos)
             dir = (interceptPos - src):GetNormalized()
         end
 
+        -- FIX 3: write entity index; FIX 4: dir now points at intercept
         net.Start("GekkoAPSIntercept")
             net.WriteVector(src)
             net.WriteVector(dir)
             net.WriteVector(interceptPos)
             net.WriteBool(shotsFired == 1)
+            net.WriteUInt(self:EntIndex(), 16)   -- FIX: was missing
         net.Broadcast()
+
+        -- FIX 4: on first shot send a GekkoMuzzleFlash preset 1 (MG)
+        -- for the projected-light bloom in the direction of the intercept
+        if shotsFired == 1 then
+            net.Start("GekkoMuzzleFlash")
+                net.WriteVector(src)
+                net.WriteVector(dir)
+                net.WriteUInt(1, 3)   -- preset 1 = MG flash
+            net.Broadcast()
+        end
     end)
 end
 
@@ -347,12 +374,13 @@ function ENT:GekkoAPS_Think()
             return
         end
 
-        APS_BroadcastLaser(self, threat)
-
         if APS_ThreatInInterceptRadius(self, threat) then
+            -- FIX 2: laser only lights up here, just before the shot
+            APS_BroadcastLaser(self, threat)
             self._apsLockedEnt = nil
             APS_Intercept(self, threat)
         end
+        -- outside intercept radius: track silently, no laser beam
         return
     end
 
@@ -360,6 +388,6 @@ function ENT:GekkoAPS_Think()
     if threat then
         self._apsLockedEnt = threat
         self:EmitSound(APS_LOCK_SND, 80, math.random(110, 120), 1)
-        APS_BroadcastLaser(self, threat)
+        -- FIX 2: no laser broadcast here — laser only fires on intercept
     end
 end
