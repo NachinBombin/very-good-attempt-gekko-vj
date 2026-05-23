@@ -5,8 +5,8 @@
 -- ============================================================
 -- Weapon list:
 -- 1. Machine-gun burst (FireBullets)
--- 2. Single accurate missile (obj_vj_rocket)
--- 3. Double inaccurate salvo (obj_vj_rocket x2)
+-- 2. Single accurate missile (obj_gekko_rocket)
+-- 3. Double inaccurate salvo (obj_gekko_rocket x2)
 -- 4. Grenade launcher barrage (bombin_gas_grenade / stun / flash)
 -- 5. Top-attack terror missile (sent_npc_topmissile)
 -- 6. Active-track missile (sent_npc_trackmissile)
@@ -294,7 +294,7 @@ local function SpawnRocket(ent, attIdx, aimPos, spread)
     local src = misAtt and misAtt.Pos or (ent:GetPos() + Vector(0, 0, 160))
     local target = aimPos + (spread or Vector(0, 0, 0))
     local dir = (target - src):GetNormalized()
-    local rocket = ents.Create("obj_vj_rocket")
+    local rocket = ents.Create("obj_gekko_rocket")
     if IsValid(rocket) then
         rocket:SetPos(src); rocket:SetAngles(dir:Angle())
         rocket:SetOwner(ent); rocket:Spawn(); rocket:Activate()
