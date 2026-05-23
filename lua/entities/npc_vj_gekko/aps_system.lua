@@ -1,8 +1,19 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v3.6
+-- GEKKO ACTIVE PROTECTION SYSTEM  v3.7
 --
--- CHANGES in v3.6:
+-- CHANGES in v3.7:
+--   WHITELIST HARDENED — now unconditionally guards ALL pillars:
+--     * Players are checked FIRST, before anything else.
+--     * Any entity stamped with _gekkoOwnedGib = true is immune
+--       (set by gib_system.lua on every spawned gib/casing).
+--     * prop_physics / prop_dynamic / prop_physics_override kept in
+--       APS_OWNED_CLASSES as belt-and-suspenders for shells and any
+--       other debris the Gekko throws that isn't explicitly tagged.
+--     * All five checks in APS_IsSafeEntity return true BEFORE any
+--       pillar (speed, dot, class pattern, blacklist) is evaluated.
+--
+-- CHANGES in v3.6 (retained):
 --   THREAT DETECTION: 4 fully independent pillars.
 --     Whitelist wins unconditionally over all of them.
 --     ANY single pillar alone is sufficient to flag a threat:
@@ -14,8 +25,7 @@
 --   LASER BEHAVIOUR RESTORED (was incorrectly changed in v3.5):
 --     Laser broadcasts on every scan tick from the moment a
 --     threat enters APS_LASER_RADIUS (2000 u), continuously
---     tracking it until interception. This is intentional —
---     the wide laser window visually telegraphs the system.
+--     tracking it until interception. This is intentional.
 --
 -- Fixes carried from v3.4 (unchanged):
 --   1. Sound loop fixed with CreateSound() + scheduled Stop().
@@ -41,19 +51,30 @@ local APS_HEADING_DOT    = 0.25
 -- ============================================================
 -- OWNED MUNITION WHITELIST
 -- Wins over every pillar. Nothing here is ever intercepted.
+--
+-- prop_physics / prop_dynamic / prop_physics_override are included
+-- here as belt-and-suspenders: shells, casings, and any debris
+-- the Gekko ejects are all generic physics props. We never want
+-- those intercepted regardless of their speed or heading.
+-- Gibs additionally receive the _gekkoOwnedGib flag (see gib_system.lua)
+-- for the same protection.
 -- ============================================================
 local APS_OWNED_CLASSES = {
+    -- Gekko's own munitions
     ["npc_vj_gekko_nikita"]   = true,
     ["sent_npc_topmissile"]   = true,
     ["sent_npc_trackmissile"] = true,
     ["obj_gekko_rocket"]      = true,
     ["sent_orbital_rpg"]      = true,
     ["sent_gekko_bushmaster"] = true,
+    -- Grenades / utility
     ["bombin_gas_grenade"]    = true,
     ["ent_gas_stun"]          = true,
     ["ent_flashbang"]         = true,
+    -- Generic physics props (gibs, shells, casings, debris)
     ["prop_physics"]          = true,
     ["prop_dynamic"]          = true,
+    ["prop_physics_override"] = true,
 }
 
 -- ============================================================
@@ -145,28 +166,55 @@ local APS_BURST_SND = "sw/vehicles/weapons/m61_loop.wav"
 local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
--- SAFE-ENTITY CHECK  (whitelist -- wins over every pillar)
+-- SAFE-ENTITY CHECK  (whitelist -- wins over EVERY pillar)
+--
+-- Evaluation order is intentional:
+--   1. Invalid entity       -> safe (nothing to intercept)
+--   2. The Gekko itself     -> always safe
+--   3. Any player           -> always safe (FIRST class check)
+--   4. Any NPC              -> always safe
+--   5. Any vehicle          -> always safe
+--   6. Any weapon           -> always safe
+--   7. Gib/casing tag       -> safe (set by gib_system.lua)
+--   8. Parent is player/NPC/vehicle -> safe
+--   9. MoveParent is player/NPC/vehicle -> safe
+--  10. Owner is the Gekko   -> safe (own munitions)
+--  11. Class in APS_OWNED_CLASSES -> safe (own munitions + generic props)
+--
+-- NOTHING proceeds to any threat pillar until ALL of the above
+-- return false.  The whitelist is absolute.
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
     if not IsValid(ent) then return true end
-    if ent == aps_owner then return true end
-    if ent:IsPlayer()   then return true end
-    if ent:IsNPC()      then return true end
-    if ent:IsVehicle()  then return true end
-    if ent:IsWeapon()   then return true end
 
+    -- Hard guards: the Gekko itself and all living entities.
+    if ent == aps_owner   then return true end
+    if ent:IsPlayer()     then return true end
+    if ent:IsNPC()        then return true end
+    if ent:IsVehicle()    then return true end
+    if ent:IsWeapon()     then return true end
+
+    -- Gib / casing tag: stamped by gib_system.lua on every
+    -- prop_physics_override the Gekko spawns as a gib or shell casing.
+    if ent._gekkoOwnedGib then return true end
+
+    -- Parent hierarchy guards.
     local parent = ent:GetParent()
-    if IsValid(parent) and (parent:IsPlayer() or parent:IsNPC() or parent:IsVehicle()) then
+    if IsValid(parent) and
+       (parent:IsPlayer() or parent:IsNPC() or parent:IsVehicle()) then
         return true
     end
     local moveParent = ent:GetMoveParent()
-    if IsValid(moveParent) and (moveParent:IsPlayer() or moveParent:IsNPC() or moveParent:IsVehicle()) then
+    if IsValid(moveParent) and
+       (moveParent:IsPlayer() or moveParent:IsNPC() or moveParent:IsVehicle()) then
         return true
     end
 
+    -- Owner field guard (covers Gekko's own fired munitions).
     local owner = ent:GetOwner()
     if IsValid(owner) and owner == aps_owner then return true end
 
+    -- Class whitelist (own munitions + all generic physics props).
     local cls = ent:GetClass()
     if APS_OWNED_CLASSES[cls] then return true end
 
@@ -174,9 +222,10 @@ local function APS_IsSafeEntity(aps_owner, ent)
 end
 
 -- ============================================================
--- THREAT CLASSIFICATION  v3.6
+-- THREAT CLASSIFICATION  v3.7
 --
--- Whitelist check first -- safe entities are never a threat.
+-- APS_IsSafeEntity is evaluated FIRST and is absolute.
+-- Only entities that pass ALL whitelist checks reach the pillars.
 -- Then 4 fully independent pillars, each sufficient alone:
 --   1. Exact blacklist match.
 --   2. Class-name contains a known projectile keyword.
@@ -185,6 +234,8 @@ end
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
+
+    -- Whitelist is absolute -- checked before every single pillar.
     if APS_IsSafeEntity(self, ent) then return false end
 
     local cls = string.lower(ent:GetClass())
@@ -234,8 +285,8 @@ end
 -- ============================================================
 -- LASER TRACKING BROADCAST
 -- Broadcasts on every scan tick from first detection (2000 u)
--- until interception. This is the intended behaviour -- the
--- wide laser window visually telegraphs the whole system.
+-- until interception. Wide laser window visually telegraphs the
+-- system.
 -- ============================================================
 local function APS_BroadcastLaser(self, threat)
     if not IsValid(threat) then return end

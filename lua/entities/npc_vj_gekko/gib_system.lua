@@ -13,6 +13,14 @@
 --    * HelicopterMegaBomb explosion flash
 --    * Ignite() so it burns visually for GIB_BURN_TIME seconds
 --    * ParticleEffect(fire_medium_base) local fire column
+--
+--  APS SAFETY:
+--    Every spawned gib is stamped with  gib._gekkoOwnedGib = true
+--    immediately after Spawn()/Activate(). aps_system.lua checks
+--    this flag in APS_IsSafeEntity BEFORE evaluating any threat
+--    pillar (speed, dot-product, class pattern, blacklist).
+--    This makes the flag the authoritative, unconditional guard
+--    that prevents fast-moving gibs from being self-intercepted.
 -- ============================================================
 
 -- ────────────────────────────────────────────────────────────
@@ -142,6 +150,14 @@ local function SpawnSingleGib(origin, hitNormal)
     ))
     gib:Spawn()
     gib:Activate()
+
+    -- ── APS SAFETY TAG ──────────────────────────────────────
+    -- Mark this entity as a Gekko-owned gib so aps_system.lua
+    -- skips it unconditionally before evaluating any threat
+    -- pillar (speed / dot-product / class pattern / blacklist).
+    -- Must be set AFTER Spawn()/Activate() so the entity is valid.
+    gib._gekkoOwnedGib = true
+    -- ────────────────────────────────────────────────────────
 
     gib:SetColor(Color(0, 0, 0, 255))
     gib:SetMaterial("models/debug/debugwhite")
