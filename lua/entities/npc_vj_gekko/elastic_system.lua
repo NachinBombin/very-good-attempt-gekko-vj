@@ -111,9 +111,6 @@ end)
 
 -- FIX: delay the respawn break by one frame so the net message
 -- arrives AFTER the client has finished re-initialising the player.
--- Without the delay, PlayerSpawn fires before the client entity is
--- ready, FindBeamForEnemy succeeds but the beam immediately sees
--- b.enemy as valid again and refuses to retract cleanly.
 hook.Add("PlayerSpawn", "GekkoElasticPlayerSpawn", function(ply)
     timer.Simple(0.1, function()
         if not IsValid(ply) then return end
@@ -146,8 +143,7 @@ hook.Add("PlayerButtonDown", "GekkoElasticCableBreak", function(ply)
     if #times < BREAK_THRESHOLD then return end
 
     -- FIX (key-smash reset): always wipe the table, even when no cable
-    -- is active for this player. This prevents stale presses from
-    -- triggering an instant-break the moment a new tether lands.
+    -- is active for this player.
     _breakTimes[ply] = {}
 
     for _, ent in ipairs(ents.FindByClass("npc_vj_gekko")) do
@@ -339,12 +335,19 @@ function ENT:_GekkoElastic_Detonate(enemy)
         net.WriteUInt(ELASTIC_ROPE_B, 8)
     net.Broadcast()
 
+    -- FIX: capture self reference before timer fires.
+    -- The Gekko (self) can be removed by the APS cleanup or death
+    -- between _Detonate and when this timer fires, which caused
+    -- SetAttacker to be called on a NULL entity (elastic_system.lua:346).
+    local gekkoRef = self
     timer.Simple(travelTime, function()
+        -- Guard both the Gekko AND the enemy — either may be gone.
+        if not IsValid(gekkoRef) then return end
         if not IsAliveAndValid(enemy) then return end
         local dmg = DamageInfo()
         dmg:SetDamage(ELASTIC_DAMAGE)
-        dmg:SetAttacker(self)
-        dmg:SetInflictor(self)
+        dmg:SetAttacker(gekkoRef)
+        dmg:SetInflictor(gekkoRef)
         dmg:SetDamageType(DMG_CLUB)
         dmg:SetDamageForce((enemyPos - gekkoPos):GetNormalized() * 55000)
         dmg:SetDamagePosition(enemyPos)
