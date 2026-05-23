@@ -3,6 +3,7 @@ include("elastic_cl.lua")
 include("muzzleflash_system.lua")
 include("bullet_impact_system.lua")
 include("hit_react_cl.lua")
+include("cl_aps.lua") 
 -- ============================================================
 --  HELPERS
 -- ============================================================

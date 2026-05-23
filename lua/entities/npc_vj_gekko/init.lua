@@ -29,6 +29,7 @@ include("leg_disable_system.lua")
 include("death_pose_system.lua")
 include("elastic_system.lua")
 include("aps_system.lua")
+AddCSLuaFile("cl_aps.lua")
 
 -- NOTE: extensions.lua is loaded + AddCSLuaFile'd by
 -- lua/autorun/server/gekko_juicy_bleeding.lua which runs first.
