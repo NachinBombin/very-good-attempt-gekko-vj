@@ -30,13 +30,15 @@ local APS_LOCK_DURATION  = 1.0     -- seconds of laser tracking before firing
 
 -- ============================================================
 -- OWNED MUNITION WHITELIST
+-- Only Gekko's own projectiles are listed here.
+-- obj_vj_rocket is a generic VJ base rocket — NOT owned by Gekko,
+-- must be intercepted.
 -- ============================================================
 local APS_OWNED_CLASSES = {
     ["npc_vj_gekko_nikita"]   = true,
     ["sent_npc_topmissile"]   = true,
     ["sent_npc_trackmissile"] = true,
-    ["obj_vj_rocket"]         = true,
-    ["obj_gekko_rocket"]      = true,
+    ["obj_gekko_rocket"]      = true,   -- Gekko's own rocket
     ["sent_orbital_rpg"]      = true,
     ["sent_gekko_bushmaster"] = true,
     ["bombin_gas_grenade"]    = true,
@@ -48,6 +50,8 @@ local APS_OWNED_CLASSES = {
 
 -- ============================================================
 -- THREAT TABLE
+-- obj_vj_rocket = true: generic VJ rocket fired by enemy NPCs,
+-- now fully interceptable.
 -- ============================================================
 local APS_INTERCEPT_TARGETS = {
     ["rpg_missile"]               = true,
@@ -62,7 +66,7 @@ local APS_INTERCEPT_TARGETS = {
     ["satchel_charge"]            = true,
     ["npc_manhack"]               = true,
     ["obj_vj_grenade"]            = true,
-    ["obj_vj_rocket"]             = false,
+    ["obj_vj_rocket"]             = true,   -- enemy VJ rocket — intercept
     ["obj_vj_flechette"]          = true,
     ["sent_javelin_missile"]      = true,
     ["sent_stinger_missile"]      = true,
