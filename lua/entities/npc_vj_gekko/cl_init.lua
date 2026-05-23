@@ -1074,47 +1074,31 @@ net.Receive("GekkoSonarLock", function()
 end)
 
 -- ============================================================
--- APS INTERCEPT CLIENT — GekkoAPSIntercept
--- Server fires this for each burst pulse.
--- src       = world-space muzzle origin
--- dir       = normalized direction toward intercept
--- targetPos = world-space explosion position
--- firstShot = true only on the very first pulse (laser flash)
+-- APS INTERCEPT CLIENT -- v3
+-- GekkoAPSLaser     : every ~0.05s during 1s lock phase.
+--                     Client draws a red tracking beam on the target.
+-- GekkoAPSIntercept : one packet per burst pulse at fire time.
+--                     Triggers muzzle flash, tracer, small smoke puff.
 -- ============================================================
 
-local APS_FLASH_PRESETS = {
-    [1] = {
-        fov = 165, nearz = 2, farz = 520,
-        brightness = 3.8, lifetime = 0.055,
-        color = { r = 255, g = 175, b = 70 },
-        scaleMin = 1.10, scaleMax = 1.35,
-        texture = "effects/muzzleflash_light",
-    },
-}
-
+-- Projected-texture flash helper
 local APS_ActiveFlashes = {}
 
 local function APS_SpawnFlash(pos, normal)
-    local p     = APS_FLASH_PRESETS[1]
-    local scale = p.scaleMin + math.random() * (p.scaleMax - p.scaleMin)
-    local proj  = ProjectedTexture()
+    local proj = ProjectedTexture()
     if not proj then return end
-    local ang = normal:Angle()
-    ang.p = -ang.p
-    proj:SetTexture(p.texture)
-    proj:SetFOV(p.fov * scale)
-    proj:SetNearZ(p.nearz)
-    proj:SetFarZ(p.farz * scale)
-    proj:SetBrightness(p.brightness * scale)
-    proj:SetColor(Color(p.color.r, p.color.g, p.color.b))
+    local ang = normal:Angle(); ang.p = -ang.p
+    proj:SetTexture("effects/muzzleflash_light")
+    proj:SetFOV(165)
+    proj:SetNearZ(2)
+    proj:SetFarZ(520)
+    proj:SetBrightness(3.8)
+    proj:SetColor(Color(255, 175, 70))
     if proj.SetEnableShadows then proj:SetEnableShadows(false) end
     proj:SetPos(pos)
     proj:SetAngles(ang)
     proj:Update()
-    table.insert(APS_ActiveFlashes, {
-        proj    = proj,
-        dieTime = CurTime() + p.lifetime,
-    })
+    table.insert(APS_ActiveFlashes, { proj = proj, dieTime = CurTime() + 0.055 })
 end
 
 hook.Add("Think", "GekkoAPS_FlashCleanup", function()
@@ -1128,13 +1112,46 @@ hook.Add("Think", "GekkoAPS_FlashCleanup", function()
     end
 end)
 
-_GekkoAPS_LaserFlash = nil
+-- ============================================================
+-- TRACKING BEAM  (GekkoAPSLaser -- every ~0.05s during 1s lock)
+-- Packet extends lifetime by 0.12s each time (>0.05s interval)
+-- so the beam never flickers.  Fades gracefully if lock is lost.
+-- ============================================================
+local _APS_LaserTrack = nil
 
+net.Receive("GekkoAPSLaser", function()
+    local src    = net.ReadVector()
+    local target = net.ReadVector()
+    _APS_LaserTrack = {
+        src     = src,
+        target  = target,
+        dieTime = CurTime() + 0.12,
+    }
+end)
+
+hook.Add("PostDrawTranslucentRenderables", "GekkoAPS_TrackingBeam", function()
+    if not _APS_LaserTrack then return end
+    if CurTime() > _APS_LaserTrack.dieTime then
+        _APS_LaserTrack = nil
+        return
+    end
+    local frac  = math.max(0, (_APS_LaserTrack.dieTime - CurTime()) / 0.12)
+    local alpha = frac * 180
+    render.SetMaterial(Material("effects/laser1"))
+    render.DrawBeam(_APS_LaserTrack.src, _APS_LaserTrack.target, 2, 0, 1, Color(255, 40, 40, alpha))
+end)
+
+-- ============================================================
+-- INTERCEPT BURST  (GekkoAPSIntercept -- once per burst pulse)
+-- ============================================================
 net.Receive("GekkoAPSIntercept", function()
     local src       = net.ReadVector()
     local dir       = net.ReadVector()
     local targetPos = net.ReadVector()
-    local firstShot = net.ReadBool()
+    net.ReadBool()  -- firstShot: consumed; laser now handled by GekkoAPSLaser
+
+    -- Kill tracking beam the moment we fire
+    _APS_LaserTrack = nil
 
     -- Projected light burst at muzzle origin
     APS_SpawnFlash(src, dir)
@@ -1146,42 +1163,18 @@ net.Receive("GekkoAPSIntercept", function()
     muzzleEd:SetAngles(dir:Angle())
     util.Effect("MuzzleEffect", muzzleEd)
 
-    -- Tracer line from muzzle to intercept point
+    -- Tracer from muzzle to intercept point
     local tracerEd = EffectData()
     tracerEd:SetStart(src)
     tracerEd:SetOrigin(targetPos)
     tracerEd:SetScale(5000)
     util.Effect("Tracer", tracerEd)
 
-    -- Smoke puff at the intercept position
+    -- Small smoke puff at intercept position (matches scaled-down server explosion)
     local smokeEd = EffectData()
     smokeEd:SetOrigin(targetPos)
     smokeEd:SetNormal(Vector(0, 0, 1))
-    smokeEd:SetScale(0.6)
-    smokeEd:SetMagnitude(1)
+    smokeEd:SetScale(0.25)
+    smokeEd:SetMagnitude(0.5)
     util.Effect("SmokeEffect", smokeEd)
-
-    -- First pulse only: brief red laser dot toward intercept point (80 ms)
-    if firstShot then
-        _GekkoAPS_LaserFlash = {
-            src     = src,
-            endpos  = targetPos,
-            dieTime = CurTime() + 0.08,
-            color   = Color(255, 50, 50, 200),
-        }
-    end
-end)
-
--- Laser flash renderer — draws beam for exactly 80ms then self-clears
-hook.Add("PostDrawTranslucentRenderables", "GekkoAPS_LaserFlash", function()
-    if not _GekkoAPS_LaserFlash then return end
-    if CurTime() > _GekkoAPS_LaserFlash.dieTime then
-        _GekkoAPS_LaserFlash = nil
-        return
-    end
-    local d     = _GekkoAPS_LaserFlash
-    local frac  = math.max(0, (d.dieTime - CurTime()) / 0.08)
-    local alpha = frac * 200
-    render.SetMaterial(Material("effects/laser1"))
-    render.DrawBeam(d.src, d.endpos, 2, 0, 1, ColorAlpha(d.color, alpha))
 end)
