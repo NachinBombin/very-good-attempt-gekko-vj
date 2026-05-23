@@ -1,17 +1,15 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v3
+-- GEKKO ACTIVE PROTECTION SYSTEM  v3.1
 --
--- Changes from v2:
---   • Intercept explosions are small (scale 0.3, no ground shake)
---   • 1-second laser lock-on phase before firing:
---       - On first threat detection, APS enters LOCK state.
---       - Every scan tick during lock, GekkoAPSLaser is broadcast
---         so all clients can draw a tracking beam on the target.
---       - After 1 second (or if threat leaves range / is destroyed)
---         the APS fires.  If threat escapes, lock resets.
---   • GekkoAPSLaser net msg: Vector src, Vector targetPos
---   • GekkoAPSIntercept net msg: unchanged (burst fire signal)
+-- Lock-on / intercept range split:
+--   APS_LASER_RADIUS   = 2000u  -- laser acquires and tracks here
+--   APS_SCAN_RADIUS    = 1200u  -- intercept fires when threat enters here
+--
+-- Flow:
+--   1. Threat enters 2000u  -> lock acquired, laser beam starts tracking
+--   2. Threat crosses 1200u -> APS fires, beam snaps off
+--   3. If threat leaves 2000u before reaching 1200u -> lock resets
 -- ============================================================
 
 if CLIENT then return end
@@ -19,14 +17,14 @@ if CLIENT then return end
 -- ============================================================
 -- TUNING
 -- ============================================================
-local APS_SCAN_RADIUS    = 1200    -- sphere radius, units
+local APS_LASER_RADIUS   = 2000    -- outer radius: laser acquisition
+local APS_SCAN_RADIUS    = 1200    -- inner radius: intercept trigger
 local APS_MIN_SPEED      = 350     -- u/s threshold
 local APS_SCAN_INTERVAL  = 0.05    -- seconds between scans / laser ticks
 local APS_REARM_DELAY    = 0.30    -- cooldown after each intercept
 local APS_BURST_SHOTS    = 4       -- muzzle flash pulses per intercept
 local APS_BURST_INTERVAL = 0.040   -- seconds between burst pulses
 local APS_HEADING_DOT    = 0.25    -- dot-product floor toward Gekko
-local APS_LOCK_DURATION  = 1.0     -- seconds of laser tracking before firing
 
 -- ============================================================
 -- OWNED MUNITION WHITELIST
@@ -50,8 +48,6 @@ local APS_OWNED_CLASSES = {
 
 -- ============================================================
 -- THREAT TABLE
--- obj_vj_rocket = true: generic VJ rocket fired by enemy NPCs,
--- now fully interceptable.
 -- ============================================================
 local APS_INTERCEPT_TARGETS = {
     ["rpg_missile"]               = true,
@@ -136,7 +132,7 @@ local APS_INTERCEPT_SNDS = {
     "weapons/shotgun/shotgun_fire7.wav",
 }
 local APS_BURST_SND = "sw/vehicles/weapons/m61_loop.wav"
-local APS_LOCK_SND  = "buttons/button17.wav"   -- brief radar-lock beep on acquire
+local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
 -- SAFE-ENTITY CHECK
@@ -155,7 +151,7 @@ local function APS_IsSafeEntity(aps_owner, ent)
 end
 
 -- ============================================================
--- THREAT CLASSIFICATION
+-- THREAT CLASSIFICATION  (radius-agnostic)
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
@@ -199,21 +195,23 @@ local function APS_IsThreat(self, ent)
 end
 
 -- ============================================================
--- SCAN FOR THREAT
+-- SCAN helpers
 -- ============================================================
-local function APS_ScanForThreat(self)
-    local nearby = ents.FindInSphere(self:GetPos(), APS_SCAN_RADIUS)
+local function APS_ScanLaserRadius(self)
+    local nearby = ents.FindInSphere(self:GetPos(), APS_LASER_RADIUS)
     for _, ent in ipairs(nearby) do
         if APS_IsThreat(self, ent) then return ent end
     end
     return nil
 end
 
+local function APS_ThreatInInterceptRadius(self, ent)
+    if not IsValid(ent) then return false end
+    return self:GetPos():Distance(ent:GetPos()) <= APS_SCAN_RADIUS
+end
+
 -- ============================================================
--- LASER TRACKING BROADCAST
--- Sends GekkoAPSLaser every scan tick during lock phase so all
--- clients can draw the tracking beam following the moving target.
--- src = best available muzzle attachment position.
+-- LASER TRACKING BROADCAST  (every scan tick during lock)
 -- ============================================================
 local function APS_BroadcastLaser(self, threat)
     if not IsValid(threat) then return end
@@ -259,47 +257,40 @@ local function APS_FireBurst(self, interceptPos)
 end
 
 -- ============================================================
--- INTERCEPT  (called when lock timer expires)
+-- INTERCEPT
 -- ============================================================
 local function APS_Intercept(self, threat)
     if not IsValid(threat) then return end
 
     local targetPos = threat:GetPos()
 
-    -- Small contained explosion — scale 0.3, no screen shake
     local ed = EffectData()
     ed:SetOrigin(targetPos)
     ed:SetScale(0.3)
     ed:SetMagnitude(0.3)
     util.Effect("Explosion", ed)
 
-    -- Intercept sounds (quieter than full explosion)
     for _, snd in ipairs(APS_INTERCEPT_SNDS) do
         self:EmitSound(snd, 88, math.random(98, 108), 1)
     end
 
-    -- Nullify any callbacks and remove
     if threat.Destroyed       ~= nil then threat.Destroyed       = true end
     if threat.ExplodeCallback ~= nil then threat.ExplodeCallback = nil  end
     SafeRemoveEntity(threat)
 
-    -- Burst muzzle flash toward intercept point
     APS_FireBurst(self, targetPos)
 
-    -- Arm cooldown
     self._apsNextScanT  = CurTime() + APS_REARM_DELAY
     self._apsLockedEnt  = nil
-    self._apsLockStartT = nil
 end
 
 -- ============================================================
 -- PUBLIC API
 -- ============================================================
 function ENT:GekkoAPS_Init()
-    self._apsNextScanT  = 0
-    self._apsActive     = true
-    self._apsLockedEnt  = nil   -- entity being tracked during lock phase
-    self._apsLockStartT = nil   -- CurTime() when lock began
+    self._apsNextScanT = 0
+    self._apsActive    = true
+    self._apsLockedEnt = nil
     print("[GekkoAPS] Initialised on " .. self:EntIndex())
 end
 
@@ -311,43 +302,36 @@ function ENT:GekkoAPS_Think()
     self._apsNextScanT = CurTime() + APS_SCAN_INTERVAL
 
     -- --------------------------------------------------------
-    -- LOCK PHASE: already tracking a threat
+    -- LOCK PHASE: tracking a threat inside laser radius
     -- --------------------------------------------------------
     if IsValid(self._apsLockedEnt) then
         local threat = self._apsLockedEnt
 
-        -- Verify the locked threat is still a valid threat
-        if not APS_IsThreat(self, threat) then
-            -- Lost it — reset lock and scan fresh next tick
-            self._apsLockedEnt  = nil
-            self._apsLockStartT = nil
+        -- Drop lock if threat is no longer valid or left the laser radius
+        if not APS_IsThreat(self, threat) or
+           self:GetPos():Distance(threat:GetPos()) > APS_LASER_RADIUS then
+            self._apsLockedEnt = nil
             return
         end
 
-        -- Broadcast laser tracking beam this tick
+        -- Keep broadcasting the tracking beam
         APS_BroadcastLaser(self, threat)
 
-        -- Check if the 1-second lock window has elapsed
-        if CurTime() >= self._apsLockStartT + APS_LOCK_DURATION then
-            -- Fire!
-            self._apsLockedEnt  = nil
-            self._apsLockStartT = nil
+        -- Fire the moment it crosses into the intercept radius
+        if APS_ThreatInInterceptRadius(self, threat) then
+            self._apsLockedEnt = nil
             APS_Intercept(self, threat)
         end
         return
     end
 
     -- --------------------------------------------------------
-    -- SCAN PHASE: look for a new threat
+    -- SCAN PHASE: look for a new threat in the laser radius
     -- --------------------------------------------------------
-    local threat = APS_ScanForThreat(self)
+    local threat = APS_ScanLaserRadius(self)
     if threat then
-        -- Acquire lock
-        self._apsLockedEnt  = threat
-        self._apsLockStartT = CurTime()
-        -- Radar-lock beep
+        self._apsLockedEnt = threat
         self:EmitSound(APS_LOCK_SND, 80, math.random(110, 120), 1)
-        -- Immediately broadcast the first laser frame
         APS_BroadcastLaser(self, threat)
     end
 end
