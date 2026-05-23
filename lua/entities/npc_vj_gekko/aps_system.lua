@@ -1,53 +1,23 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v4.0
+-- GEKKO ACTIVE PROTECTION SYSTEM  v4.1
 --
 -- WHITELIST IS ABSOLUTE AND EVALUATED BEFORE ALL PILLARS.
 -- Nothing on the whitelist is ever intercepted regardless of
 -- speed, heading, class pattern, or blacklist membership.
 --
--- v4.0 critical fixes:
+-- v4.1 fix:
+--   CRASH FIX: rawget(ent, "Owner") crashes with
+--   "bad argument #1 to 'rawget' (table expected, got userdata)"
+--   because GMod entities are userdata, not plain Lua tables.
+--   rawget() only works on plain tables. Replaced with ent.Owner
+--   which correctly goes through the __index metamethod.
 --
---   FIX 1 — Player hands/viewmodel deletion
---     ents.FindInSphere returns 'viewmodel' and
---     'predicted_viewmodel' entities (the player's arm/hand
---     model). These are NOT IsPlayer(), NOT IsNPC(), NOT
---     IsWeapon(). Previous whitelist did not catch them.
---     Pillar 3 (speed) fired on them when the player ran,
---     SafeRemoveEntity deleted them, player lost hands.
---     Fix: 'viewmodel' and 'predicted_viewmodel' added to
---     APS_OWNED_CLASSES. Additionally, APS_IsSafeEntity now
---     walks the FULL parent chain — not just one level — so
---     any entity parented to a player/NPC/vehicle at ANY
---     depth is unconditionally safe.
---
---   FIX 2 — Gekko self-intercept while jumping
---     jump_system sets MOVETYPE_FLYGRAVITY on the Gekko.
---     While airborne, ents.FindInSphere can return physics
---     sub-objects and move-parent shadow entities that share
---     the Gekko's position but are distinct Lua objects, so
---     ent == aps_owner fails. Added EntIndex cross-check and
---     a full MoveParent walk to catch all of these.
---
---   FIX 3 — Owner set via field vs method
---     Several spawners set  ent.Owner = gekko  (field) instead
---     of  ent:SetOwner(gekko)  (method). The old guard only
---     called ent:GetOwner(). Both paths are now checked.
---
---   FIX 4 — Pillar 3 (speed alone) tightened
---     Speed alone is no longer sufficient to intercept an
---     entity that has no explicit blacklist or pattern match.
---     A high-speed entity now requires BOTH speed >= threshold
---     AND heading dot >= threshold to be intercepted via the
---     speed/dot path. Explicit blacklist (Pillar 1) and class
---     pattern (Pillar 2) still fire immediately on their own.
---
--- v3.7 retained behaviour:
---   * Whitelist wins unconditionally over all pillars.
---   * Laser broadcasts on every scan tick from first detection.
---   * _gekkoOwnedGib tag checked (set by gib_system.lua).
---   * prop_physics / prop_dynamic / prop_physics_override in
---     APS_OWNED_CLASSES as belt-and-suspenders.
+-- v4.0 fixes (retained):
+--   FIX 1 - viewmodel/predicted_viewmodel added to whitelist.
+--   FIX 2 - EntIndex cross-check for Gekko sub-objects on jump.
+--   FIX 3 - Owner field check (ent.Owner) alongside GetOwner().
+--   FIX 4 - Speed+dot required together (not speed alone).
 -- ============================================================
 
 if CLIENT then return end
@@ -67,18 +37,7 @@ local APS_HEADING_DOT    = 0.25
 
 -- ============================================================
 -- OWNED MUNITION + SAFE ENTITY WHITELIST
---
--- Anything in this table is NEVER intercepted, regardless of
--- speed, heading, class pattern, or blacklist membership.
---
--- KEY ADDITIONS in v4.0:
---   viewmodel / predicted_viewmodel  — player hand/arm models.
---     ents.FindInSphere returns these. They move with the player
---     at full running speed. Not IsPlayer, not IsNPC, not
---     IsWeapon — they were silently deleted by Pillar 3 before
---     this fix.
---   weapon_* prefix is handled by IsWeapon() in APS_IsSafeEntity
---     but we keep weapon_base here as an extra guard.
+-- Wins over every pillar unconditionally.
 -- ============================================================
 local APS_OWNED_CLASSES = {
     -- Gekko's own munitions
@@ -96,12 +55,9 @@ local APS_OWNED_CLASSES = {
     ["prop_physics"]          = true,
     ["prop_dynamic"]          = true,
     ["prop_physics_override"] = true,
-    -- ── FIX 1: player viewmodel / hands ─────────────────────
-    -- These are the player's first-person arm/hand models.
-    -- ents.FindInSphere returns them. They are NOT IsPlayer().
-    -- They move at player velocity => speed pillar fires.
-    -- SafeRemoveEntity on them destroys the player's viewmodel
-    -- permanently for the remainder of the round.
+    -- Player viewmodel / hands.
+    -- ents.FindInSphere returns these. NOT IsPlayer().
+    -- Move at player velocity so speed+dot pillar fires on them.
     ["viewmodel"]             = true,
     ["predicted_viewmodel"]   = true,
     -- Extra weapon-related entity classes
@@ -111,7 +67,7 @@ local APS_OWNED_CLASSES = {
 }
 
 -- ============================================================
--- THREAT TABLE  (Pillar 1 — exact blacklist)
+-- THREAT TABLE  (Pillar 1 - exact blacklist)
 -- ============================================================
 local APS_INTERCEPT_TARGETS = {
     ["rpg_missile"]               = true,
@@ -200,93 +156,76 @@ local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
 -- PARENT-CHAIN WALK HELPER
---
--- Walks the full GetParent() chain up to MAX_DEPTH levels.
+-- Walks GetParent() and GetMoveParent() up to MAX_DEPTH.
 -- Returns true if any ancestor is a player, NPC, or vehicle.
--- This catches viewmodels, weapon world-models, prop_physics
--- children attached to players, and any other entity that is
--- parented at any depth to a living entity.
 -- ============================================================
 local PARENT_WALK_MAX_DEPTH = 8
 
 local function APS_HasLivingAncestor(ent)
-    local node  = ent
-    local depth = 0
+    local node, depth
+
+    node  = ent
+    depth = 0
     while depth < PARENT_WALK_MAX_DEPTH do
         local p = node:GetParent()
         if not IsValid(p) then break end
-        if p:IsPlayer() or p:IsNPC() or p:IsVehicle() then
-            return true
-        end
+        if p:IsPlayer() or p:IsNPC() or p:IsVehicle() then return true end
         node  = p
         depth = depth + 1
     end
-    -- Also walk MoveParent chain
+
     node  = ent
     depth = 0
     while depth < PARENT_WALK_MAX_DEPTH do
         local mp = node:GetMoveParent()
         if not IsValid(mp) then break end
-        if mp:IsPlayer() or mp:IsNPC() or mp:IsVehicle() then
-            return true
-        end
+        if mp:IsPlayer() or mp:IsNPC() or mp:IsVehicle() then return true end
         node  = mp
         depth = depth + 1
     end
+
     return false
 end
 
 -- ============================================================
--- SAFE-ENTITY CHECK  (whitelist — wins over EVERY pillar)
+-- SAFE-ENTITY CHECK  (whitelist - wins over EVERY pillar)
 --
--- Evaluation order (all must return false before pillars run):
---   1.  Invalid entity                          -> safe
---   2.  The Gekko itself (== and EntIndex)      -> safe  [FIX 2]
---   3.  IsPlayer()                              -> safe
---   4.  IsNPC()                                 -> safe
---   5.  IsVehicle()                             -> safe
---   6.  IsWeapon()                              -> safe
---   7.  _gekkoOwnedGib flag                     -> safe
---   8.  Class in APS_OWNED_CLASSES              -> safe  [FIX 1 key]
---   9.  Class starts with "weapon_"             -> safe
---  10.  Full parent-chain walk (any depth)      -> safe  [FIX 1 key]
---  11.  Owner == aps_owner (method)             -> safe
---  12.  .Owner field == aps_owner (field)       -> safe  [FIX 3]
---  13.  Owner is any player/NPC/vehicle         -> safe
+-- Guards evaluated in order; any true = entity is safe:
+--   1.  Invalid entity
+--   2.  The Gekko itself (by reference AND EntIndex)
+--   3.  IsPlayer()
+--   4.  IsNPC()
+--   5.  IsVehicle()
+--   6.  IsWeapon()
+--   7.  _gekkoOwnedGib flag (set by gib_system.lua)
+--   8.  Class in APS_OWNED_CLASSES
+--   9.  Class prefix "weapon_"
+--  10.  Full parent/moveparent chain walk
+--  11.  GetOwner() == aps_owner or is player/NPC/vehicle
+--  12.  .Owner field == aps_owner or is player/NPC/vehicle
+--       (CRASH FIX v4.1: was rawget(ent,"Owner") which crashes
+--        because entities are userdata not plain Lua tables.
+--        ent.Owner goes through __index correctly.)
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
     if not IsValid(ent) then return true end
 
-    -- Guard 1-2: Gekko itself, by reference AND by entity index
-    -- (physics sub-objects during jump share the index check)
     if ent == aps_owner then return true end
     if ent:EntIndex() == aps_owner:EntIndex() then return true end
 
-    -- Guard 3-6: living / holdable entity types
     if ent:IsPlayer()  then return true end
     if ent:IsNPC()     then return true end
     if ent:IsVehicle() then return true end
     if ent:IsWeapon()  then return true end
 
-    -- Guard 7: gib/casing tag set by gib_system.lua
     if ent._gekkoOwnedGib then return true end
 
-    -- Guard 8: class whitelist
-    -- Includes 'viewmodel' and 'predicted_viewmodel' (FIX 1).
     local cls = ent:GetClass()
     if APS_OWNED_CLASSES[cls] then return true end
-
-    -- Guard 9: any weapon_ class not individually listed
     if string.sub(cls, 1, 7) == "weapon_" then return true end
 
-    -- Guard 10: full parent-chain walk (FIX 1 — viewmodels are
-    -- parented to players; this is the depth-walk fallback that
-    -- catches anything parented to a living entity at any depth).
     if APS_HasLivingAncestor(ent) then return true end
 
-    -- Guard 11-12: owner checks — method AND field (FIX 3)
-    -- Several Gekko spawners use  ent.Owner = gekko  (field)
-    -- rather than  ent:SetOwner(gekko)  (method).
     local ownerMethod = ent:GetOwner()
     if IsValid(ownerMethod) then
         if ownerMethod == aps_owner then return true end
@@ -294,7 +233,11 @@ local function APS_IsSafeEntity(aps_owner, ent)
             return true
         end
     end
-    local ownerField = rawget(ent, "Owner")
+
+    -- CRASH FIX v4.1: rawget(ent, "Owner") crashes with
+    -- "table expected, got userdata". Entities expose fields
+    -- via __index metamethod; use ent.Owner directly.
+    local ownerField = ent.Owner
     if IsValid(ownerField) then
         if ownerField == aps_owner then return true end
         if ownerField:IsPlayer() or ownerField:IsNPC() or ownerField:IsVehicle() then
@@ -306,23 +249,21 @@ local function APS_IsSafeEntity(aps_owner, ent)
 end
 
 -- ============================================================
--- THREAT CLASSIFICATION  v4.0
+-- THREAT CLASSIFICATION
 --
--- APS_IsSafeEntity is absolute — evaluated first, before every
--- pillar. Only entities that fail ALL whitelist checks reach
--- the pillars below.
+-- Whitelist (APS_IsSafeEntity) is absolute - checked first.
+-- Only entities that fail every whitelist guard reach pillars.
 --
 -- Pillars:
---   1. Exact blacklist match          (immediate intercept)
---   2. Class-name pattern             (immediate intercept)
---   3+4. Speed AND heading combined   (FIX 4 — speed alone is
---         no longer sufficient; both thresholds must be met to
---         prevent interception of stray fast physics props).
+--   1. Exact blacklist match          -> threat
+--   2. Class-name pattern             -> threat
+--   3+4. Speed >= threshold AND
+--        heading dot >= threshold     -> threat
+--        (both required together to prevent false positives
+--        on fast physics props and the jumping Gekko's env)
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
-
-    -- Whitelist is absolute.
     if APS_IsSafeEntity(self, ent) then return false end
 
     local cls = string.lower(ent:GetClass())
@@ -330,7 +271,7 @@ local function APS_IsThreat(self, ent)
     -- Pillar 1: exact blacklist.
     if APS_INTERCEPT_TARGETS[cls] == true then return true end
 
-    -- Pillar 2: class-name pattern (missile / rocket / grenade / etc.)
+    -- Pillar 2: class-name pattern.
     if  string.find(cls, "missile")    ~= nil or
         string.find(cls, "rocket")     ~= nil or
         string.find(cls, "grenade")    ~= nil or
@@ -341,13 +282,8 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
-    -- Pillars 3+4: speed AND heading (FIX 4)
-    -- Previously speed alone (Pillar 3) was sufficient, which caused
-    -- any fast-moving entity — including the player's running viewmodel,
-    -- stray physics props, and the Gekko's own launched gibs that
-    -- somehow missed the tag — to be intercepted and deleted.
-    -- Now BOTH thresholds must be satisfied simultaneously.
-    local vel = ent:GetVelocity()
+    -- Pillars 3+4: speed AND heading together.
+    local vel   = ent:GetVelocity()
     local speed = vel:Length()
     if speed >= APS_MIN_SPEED then
         local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
@@ -378,7 +314,7 @@ end
 -- ============================================================
 -- LASER TRACKING BROADCAST
 -- Broadcasts on every scan tick from first detection (2000 u)
--- until interception.
+-- until interception. Wide laser window is intentional.
 -- ============================================================
 local function APS_BroadcastLaser(self, threat)
     if not IsValid(threat) then return end
@@ -445,9 +381,8 @@ end
 local function APS_Intercept(self, threat)
     if not IsValid(threat) then return end
 
-    -- Final whitelist re-check immediately before removal.
-    -- Covers the rare race where an entity became safe between
-    -- lock acquisition and intercept execution.
+    -- Final whitelist re-check before removal.
+    -- Catches race where entity became safe between lock and fire.
     if APS_IsSafeEntity(self, threat) then
         self._apsLockedEnt = nil
         return
@@ -495,17 +430,14 @@ function ENT:GekkoAPS_Think()
     if IsValid(self._apsLockedEnt) then
         local threat = self._apsLockedEnt
 
-        -- Drop lock if threat became safe or left outer radius.
         if not APS_IsThreat(self, threat) or
            self:GetPos():Distance(threat:GetPos()) > APS_LASER_RADIUS then
             self._apsLockedEnt = nil
             return
         end
 
-        -- Continuously broadcast laser on every tick (intended).
         APS_BroadcastLaser(self, threat)
 
-        -- Fire when inside intercept radius.
         if APS_ThreatInInterceptRadius(self, threat) then
             self._apsLockedEnt = nil
             APS_Intercept(self, threat)
@@ -513,7 +445,6 @@ function ENT:GekkoAPS_Think()
         return
     end
 
-    -- Scan for new threat.
     local threat = APS_ScanLaserRadius(self)
     if threat then
         self._apsLockedEnt = threat
