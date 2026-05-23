@@ -41,6 +41,7 @@ util.AddNetworkString("GekkoMuzzleFlash")
 util.AddNetworkString("GekkoBulletImpact")
 util.AddNetworkString("GekkoBushRecoil")
 util.AddNetworkString("GekkoAPSIntercept")
+util.AddNetworkString("GekkoAPSLaser")
 
 local ATT_MACHINEGUN = 3
 local ATT_MISSILE_L = 9
