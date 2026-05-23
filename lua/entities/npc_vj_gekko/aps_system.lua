@@ -1,25 +1,23 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v3.5
+-- GEKKO ACTIVE PROTECTION SYSTEM  v3.6
 --
--- CHANGES in v3.5:
---   THREAT DETECTION REWRITE:
---     Old logic (AND chain):
---       (isKnown OR classPattern) AND speed>=350 AND dot>=0.25
---     Problem: top-attack / laser-guided projectiles approach
---     from above or at steep angles -> dot < 0.25 -> bypass.
+-- CHANGES in v3.6:
+--   THREAT DETECTION: 4 fully independent pillars.
+--     Whitelist wins unconditionally over all of them.
+--     ANY single pillar alone is sufficient to flag a threat:
+--       1. Exact blacklist match  (APS_INTERCEPT_TARGETS)
+--       2. Class-name pattern     (missile / rocket / grenade / etc.)
+--       3. Speed alone            (>= APS_MIN_SPEED)
+--       4. Heading dot alone      (>= APS_HEADING_DOT, toward Gekko)
 --
---     New logic (OR between all three pillars):
---       WHITELIST wins unconditionally (unchanged).
---       Then ANY of the following ALONE triggers interception:
---         1. Blacklist match (exact class in APS_INTERCEPT_TARGETS)
---         2. Class-name pattern match ("missile", "rocket", etc.)
---         3. Speed >= APS_MIN_SPEED AND heading dot >= APS_HEADING_DOT
---       Pillar 3 is the only one that still requires BOTH speed
---       AND dot together, because alone they would fire on
---       any fast-moving physics object heading toward the Gekko.
+--   LASER BEHAVIOUR RESTORED (was incorrectly changed in v3.5):
+--     Laser broadcasts on every scan tick from the moment a
+--     threat enters APS_LASER_RADIUS (2000 u), continuously
+--     tracking it until interception. This is intentional —
+--     the wide laser window visually telegraphs the system.
 --
--- FIXES carried from v3.4 (unchanged):
+-- Fixes carried from v3.4 (unchanged):
 --   1. Sound loop fixed with CreateSound() + scheduled Stop().
 --   2. Net entity index written for cl_aps.lua.
 --   3. Burst muzzle direction aimed at intercept position.
@@ -42,8 +40,7 @@ local APS_HEADING_DOT    = 0.25
 
 -- ============================================================
 -- OWNED MUNITION WHITELIST
--- Anything in this table is NEVER intercepted regardless of
--- speed, direction, or class name.
+-- Wins over every pillar. Nothing here is ever intercepted.
 -- ============================================================
 local APS_OWNED_CLASSES = {
     ["npc_vj_gekko_nikita"]   = true,
@@ -60,8 +57,7 @@ local APS_OWNED_CLASSES = {
 }
 
 -- ============================================================
--- THREAT TABLE  (pillar 1 — exact blacklist)
--- A match here alone is sufficient to trigger interception.
+-- THREAT TABLE  (pillar 1 -- exact blacklist)
 -- ============================================================
 local APS_INTERCEPT_TARGETS = {
     ["rpg_missile"]               = true,
@@ -149,13 +145,13 @@ local APS_BURST_SND = "sw/vehicles/weapons/m61_loop.wav"
 local APS_LOCK_SND  = "buttons/button17.wav"
 
 -- ============================================================
--- SAFE-ENTITY CHECK  (whitelist — wins over everything)
+-- SAFE-ENTITY CHECK  (whitelist -- wins over every pillar)
 -- ============================================================
 local function APS_IsSafeEntity(aps_owner, ent)
     if not IsValid(ent) then return true end
     if ent == aps_owner then return true end
     if ent:IsPlayer()   then return true end
-    if ent:IsNPC()      then return true end   -- covers all npc_vj_*
+    if ent:IsNPC()      then return true end
     if ent:IsVehicle()  then return true end
     if ent:IsWeapon()   then return true end
 
@@ -178,32 +174,25 @@ local function APS_IsSafeEntity(aps_owner, ent)
 end
 
 -- ============================================================
--- THREAT CLASSIFICATION  v3.5
+-- THREAT CLASSIFICATION  v3.6
 --
--- Step 1: whitelist check — safe = never a threat.
--- Step 2: three independent pillars, ANY one is sufficient:
---   Pillar 1 (blacklist)  : exact class match in APS_INTERCEPT_TARGETS
---   Pillar 2 (class name) : substring pattern (missile/rocket/etc.)
---   Pillar 3 (kinematics) : speed >= APS_MIN_SPEED AND heading dot >= APS_HEADING_DOT
---
--- Pillar 3 intentionally keeps BOTH speed AND dot together so
--- random physics objects flying around don't trigger the system.
--- Pillars 1 and 2 fire unconditionally on name match, which is
--- correct — a Javelin is a threat whether it dives from above
--- or comes in horizontally.
+-- Whitelist check first -- safe entities are never a threat.
+-- Then 4 fully independent pillars, each sufficient alone:
+--   1. Exact blacklist match.
+--   2. Class-name contains a known projectile keyword.
+--   3. Speed alone >= APS_MIN_SPEED.
+--   4. Heading dot alone >= APS_HEADING_DOT (moving toward Gekko).
 -- ============================================================
 local function APS_IsThreat(self, ent)
     if not IsValid(ent) then return false end
-
-    -- Whitelist wins unconditionally.
     if APS_IsSafeEntity(self, ent) then return false end
 
     local cls = string.lower(ent:GetClass())
 
-    -- Pillar 1: exact blacklist match.
+    -- Pillar 1: exact blacklist.
     if APS_INTERCEPT_TARGETS[cls] == true then return true end
 
-    -- Pillar 2: class-name pattern (catches modded/unknown variants).
+    -- Pillar 2: class-name pattern.
     if  string.find(cls, "missile")    ~= nil or
         string.find(cls, "rocket")     ~= nil or
         string.find(cls, "grenade")    ~= nil or
@@ -214,15 +203,14 @@ local function APS_IsThreat(self, ent)
         return true
     end
 
-    -- Pillar 3: kinematic threat — fast AND heading toward Gekko.
-    -- Both conditions required together to avoid false positives.
     local vel = ent:GetVelocity()
-    if vel:Length() >= APS_MIN_SPEED then
-        local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
-        if vel:GetNormalized():Dot(toGekko) >= APS_HEADING_DOT then
-            return true
-        end
-    end
+
+    -- Pillar 3: speed alone.
+    if vel:Length() >= APS_MIN_SPEED then return true end
+
+    -- Pillar 4: heading dot alone.
+    local toGekko = (self:GetPos() - ent:GetPos()):GetNormalized()
+    if vel:GetNormalized():Dot(toGekko) >= APS_HEADING_DOT then return true end
 
     return false
 end
@@ -245,9 +233,9 @@ end
 
 -- ============================================================
 -- LASER TRACKING BROADCAST
--- Sent only when a threat is inside APS_SCAN_RADIUS (intercept
--- window), so the laser beam is only visible just before the
--- burst fires.
+-- Broadcasts on every scan tick from first detection (2000 u)
+-- until interception. This is the intended behaviour -- the
+-- wide laser window visually telegraphs the whole system.
 -- ============================================================
 local function APS_BroadcastLaser(self, threat)
     if not IsValid(threat) then return end
@@ -356,16 +344,18 @@ function ENT:GekkoAPS_Think()
     if IsValid(self._apsLockedEnt) then
         local threat = self._apsLockedEnt
 
-        -- Drop lock if threat is gone or has left the outer radius.
+        -- Drop lock if threat is gone or left the outer radius.
         if not APS_IsThreat(self, threat) or
            self:GetPos():Distance(threat:GetPos()) > APS_LASER_RADIUS then
             self._apsLockedEnt = nil
             return
         end
 
-        -- Broadcast laser only when inside the intercept window.
+        -- Continuously broadcast laser on every tick (intended).
+        APS_BroadcastLaser(self, threat)
+
+        -- Fire when inside intercept radius.
         if APS_ThreatInInterceptRadius(self, threat) then
-            APS_BroadcastLaser(self, threat)
             self._apsLockedEnt = nil
             APS_Intercept(self, threat)
         end
@@ -377,5 +367,6 @@ function ENT:GekkoAPS_Think()
     if threat then
         self._apsLockedEnt = threat
         self:EmitSound(APS_LOCK_SND, 80, math.random(110, 120), 1)
+        APS_BroadcastLaser(self, threat)
     end
 end
