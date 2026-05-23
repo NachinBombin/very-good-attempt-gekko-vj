@@ -93,7 +93,19 @@ local TOPMISSILE_SND_LEVEL = 100
 
 local BM_ROUNDS_MIN = 3
 local BM_ROUNDS_MAX = 11
-local BM_INTERVAL = 0.36
+local BM_INTERVAL  = 0.36   -- normal interval between shots
+local BM_INTERVAL2 = 0.72   -- stutter interval (task 3): used for 10% of shots
+local BM_STUTTER_CHANCE = 10 -- % of shots that get the doubled delay
+
+-- Task 1: bullet drop compensation
+local BM_DROP_COMP_Z   = 70     -- constant upward aim offset (units)
+local BM_DROP_JITTER_Z = 17     -- +/- vertical jitter on top of the compensation
+
+-- Task 2: imperfect velocity lead
+-- Projectile speed from sent_gekko_bushmaster (SPEED = 3950 u/s)
+local BM_PROJ_SPEED  = 3950
+local BM_LEAD_FACTOR = 0.55     -- 55% of perfect lead -> plausible but not perfect
+
 local BM_SND_SHOOT = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BM_SND_RELOAD = "gekko/brushmaster_25mm/20mm_reload.wav"
 local BM_SND_LEVEL = 100
@@ -1081,13 +1093,39 @@ local function FireNikita(ent, enemy)
     return true
 end
 
+-- ============================================================
+-- FIRE BUSHMASTER
+-- Task 1: +70 u drop compensation + +-17 u vertical jitter
+-- Task 2: 55% velocity lead (imperfect aim correction)
+-- Task 3: 10% of shots use BM_INTERVAL2 (double delay stutter)
+-- ============================================================
 local function FireBushmaster(ent, enemy)
-    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    -- Snapshot the fallback aim position at burst start
+    local aimPosBase = enemy:GetPos() + Vector(0, 0, 40)
+
+    -- Task 2: snapshot enemy velocity at burst start for lead calculation.
+    -- We re-sample per shot so the lead tracks the target if it changes direction.
+    -- Using GetAbsVelocity() - works on players and NPCs alike.
     local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
+
+    -- Task 3: pre-build the per-shot fire times with stutter accumulation.
+    -- Each shot decides independently whether to add BM_INTERVAL2 or BM_INTERVAL
+    -- to the running clock. This means a stutter on shot N shifts ALL subsequent shots.
+    local shotTimes = {}
+    local accumTime = 0
+    for i = 0, rounds - 1 do
+        shotTimes[i] = accumTime
+        -- Roll stutter for the NEXT gap (no gap after the last shot, doesn't matter)
+        local gap = (math.random(100) <= BM_STUTTER_CHANCE) and BM_INTERVAL2 or BM_INTERVAL
+        accumTime = accumTime + gap
+    end
+
     for i = 0, rounds - 1 do
         local shot = i
-        timer.Simple(shot * BM_INTERVAL, function()
+        timer.Simple(shotTimes[shot], function()
             if not IsValid(ent) then return end
+
+            -- Resolve muzzle source
             local src, ejectAng
             ejectAng = ent:GetAngles()
             local pelBone = ent.GekkoPelvisBone
@@ -1099,9 +1137,33 @@ local function FireBushmaster(ent, enemy)
                 end
             end
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
+
+            -- Resolve current enemy
             local curEnemy = GetActiveEnemy(ent)
-            local curAim   = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0, 0, 40)) or aimPos
-            local dir      = (curAim - src):GetNormalized()
+            local basePos  = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0, 0, 40)) or aimPosBase
+
+            -- Task 2: imperfect velocity lead.
+            -- tof = straight-line distance / projectile speed (rough estimate, ignores orbit path)
+            -- lead = velocity * tof * BM_LEAD_FACTOR  (55% -> plausible but not perfect)
+            local leadOffset = Vector(0, 0, 0)
+            if IsValid(curEnemy) then
+                local enemyVel = curEnemy:GetAbsVelocity()
+                -- Only lead if the target is actually moving (avoids jitter on standing targets)
+                if enemyVel:LengthSqr() > 100 then
+                    local dist = src:Distance(basePos)
+                    local tof  = dist / BM_PROJ_SPEED
+                    leadOffset = enemyVel * (tof * BM_LEAD_FACTOR)
+                end
+            end
+
+            -- Task 1: drop compensation + vertical jitter
+            local dropCompZ = BM_DROP_COMP_Z + math.Rand(-BM_DROP_JITTER_Z, BM_DROP_JITTER_Z)
+
+            -- Final aim point: base + velocity lead + drop compensation (Z only)
+            local curAim = basePos + leadOffset + Vector(0, 0, dropCompZ)
+
+            local dir = (curAim - src):GetNormalized()
+
             local shell = ents.Create("sent_gekko_bushmaster")
             if IsValid(shell) then
                 shell:SetPos(src); shell:SetAngles(dir:Angle())
@@ -1131,7 +1193,8 @@ local function FireBushmaster(ent, enemy)
             end
         end)
     end
-    print(string.format("[GekkoBM] Salvo | rounds=%d interval=%.2fs", rounds, BM_INTERVAL))
+    print(string.format("[GekkoBM] Salvo | rounds=%d interval=%.2fs/%.2fs stutter=%d%%",
+        rounds, BM_INTERVAL, BM_INTERVAL2, BM_STUTTER_CHANCE))
     return true
 end
 
