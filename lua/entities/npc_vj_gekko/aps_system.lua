@@ -95,6 +95,8 @@ local APS_SAFE_MODELS = {
     ["models/props_debris/shellcasing_09.mdl"] = true,
     -- Elastic tether anchor, spawned by MakeAnchor in elastic_system.lua
     ["models/hunter/blocks/cube025x025x025.mdl"] = true,
+    -- Nikita missile tip-cap, spawned by SpawnTipCap in npc_vj_gekko_nikita/init.lua
+    ["models/xqm/cylinderx1.mdl"] = true,
 }
 
 -- ============================================================
