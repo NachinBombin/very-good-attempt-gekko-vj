@@ -84,7 +84,7 @@ local function IsCombineNPC(ent)
 end
 
 -- ============================================================
--- SAFE PROP_PHYSICS MODELS  (belt-and-suspenders for Pillar 3)
+-- SAFE PROP_PHYSICS MODELS  (Guard 14 — belt-and-suspenders)
 -- prop_physics entities using these exact model paths are
 -- always whitelisted.  These are the only prop_physics spawned
 -- by the Gekko itself.  All of them already receive
@@ -95,7 +95,8 @@ local APS_SAFE_MODELS = {
     ["models/props_debris/shellcasing_09.mdl"] = true,
     -- Elastic tether anchor, spawned by MakeAnchor in elastic_system.lua
     ["models/hunter/blocks/cube025x025x025.mdl"] = true,
-    -- Nikita missile tip-cap, spawned by SpawnTipCap in npc_vj_gekko_nikita/init.lua
+    -- Nikita tip-cap prop, spawned by SpawnTipCap in npc_vj_gekko_nikita/init.lua
+    -- Already guarded by _gekkoOwnedGib + SetOwner, this is the explicit class-level fallback.
     ["models/xqm/cylinderx1.mdl"] = true,
 }
 
@@ -351,8 +352,6 @@ end
 -- SCAN HELPERS
 -- ============================================================
 
--- Returns up to APS_MAX_LOCK_SLOTS distinct threats, skipping
--- any entity already present in the existingSlots table.
 local function APS_ScanLaserRadius(self, existingSlots)
     local found  = {}
     local locked = {}
@@ -378,9 +377,6 @@ end
 
 -- ============================================================
 -- LASER TRACKING BROADCAST
--- slotIndex: 0-based integer identifying which of the two
--- tracking beams this message belongs to.  The client uses it
--- to keep the two beams as independent render entries.
 -- ============================================================
 local function APS_BroadcastLaser(self, threat, slotIndex)
     if not IsValid(threat) then return end
@@ -395,16 +391,9 @@ local function APS_BroadcastLaser(self, threat, slotIndex)
 end
 
 -- ============================================================
--- BURST SOUND  (guaranteed 1-second playback)
---
--- self._apsBurstSnd holds the active CreateSound handle.
--- A 1-second timer stops it.  GekkoAPS_Kill() is the only
--- other code path allowed to stop it early (Gekko death).
--- Each new burst call stops any previously running burst
--- first to avoid overlap stacking.
+-- BURST SOUND
 -- ============================================================
 local function APS_PlayBurstSound(self)
-    -- Stop any previously running burst for this Gekko
     if self._apsBurstSnd then
         self._apsBurstSnd:Stop()
         self._apsBurstSnd = nil
@@ -510,13 +499,12 @@ end
 function ENT:GekkoAPS_Init()
     self._apsNextScanT  = 0
     self._apsActive     = true
-    self._apsLockedEnts = {}   -- up to APS_MAX_LOCK_SLOTS entries
+    self._apsLockedEnts = {}
     self._apsBurstSnd   = nil
     self._apsBurstSndTimer = nil
     print("[GekkoAPS] Initialised on " .. self:EntIndex())
 end
 
--- Called on Gekko death.  Stops burst sound immediately.
 function ENT:GekkoAPS_Kill()
     if self._apsBurstSnd then
         self._apsBurstSnd:Stop()
@@ -536,28 +524,23 @@ function ENT:GekkoAPS_Think()
 
     self._apsNextScanT = CurTime() + APS_SCAN_INTERVAL
 
-    -- ── Process each existing locked slot independently ──────
     local stillLocked = {}
     for slotIndex, threat in ipairs(self._apsLockedEnts) do
         if IsValid(threat) and
            APS_IsThreat(self, threat) and
            self:GetPos():Distance(threat:GetPos()) <= APS_LASER_RADIUS
         then
-            -- Broadcast this slot's laser (0-based slot id)
             APS_BroadcastLaser(self, threat, slotIndex - 1)
 
             if APS_ThreatInInterceptRadius(self, threat) then
-                -- Intercept and free the slot
                 APS_Intercept(self, threat)
             else
                 stillLocked[#stillLocked + 1] = threat
             end
         end
-        -- If threat is invalid / left radius / safe: slot is freed
     end
     self._apsLockedEnts = stillLocked
 
-    -- ── Fill empty slots with newly detected threats ──────────
     local freeSlotsNeeded = APS_MAX_LOCK_SLOTS - #self._apsLockedEnts
     if freeSlotsNeeded > 0 then
         local newThreats = APS_ScanLaserRadius(self, self._apsLockedEnts)
