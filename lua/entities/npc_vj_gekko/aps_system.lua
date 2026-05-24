@@ -1,6 +1,6 @@
 -- ============================================================
 -- npc_vj_gekko / aps_system.lua
--- GEKKO ACTIVE PROTECTION SYSTEM  v4.6
+-- GEKKO ACTIVE PROTECTION SYSTEM  v4.7
 --
 -- WHITELIST IS ABSOLUTE AND EVALUATED BEFORE ALL PILLARS.
 -- Nothing on the whitelist is ever intercepted.
@@ -17,25 +17,22 @@
 -- Pillars are independent. Each fires on its own.
 -- No pillar was merged or removed.
 --
--- ── v4.6 CHANGES ─────────────────────────────────────────────
+-- ── v4.7 CHANGES ─────────────────────────────────────────────
 --
--- NEW — Guard 13: Combine NPC owner exemption.
---   If GetOwner() or .Owner returns an NPC whose class begins
---   with one of the COMBINE_NPC_PREFIXES, the entity is safe.
---   This prevents Combine soldier grenades, strider flechettes,
---   hunter flechettes fired by allied Combine units etc. from
---   being intercepted when playing on the Combine side.
+-- FIX  — Burst sound guaranteed to play for a full second.
+--   CreateSound handle stored on self._apsBurstSnd.  A 1-second
+--   timer started at burst begin stops it.  The only early stop
+--   is GekkoAPS_Kill(), called when the Gekko dies.  Previously
+--   the local variable was discarded before the stop timer fired,
+--   so Stop() was never called on the correct handle, leaving the
+--   sound silent or cut immediately.
 --
--- CHANGE — Pillar 3: removed the broad prop_physics class
---   exclusion block (APS_PHYSICS_PROP_CLASSES).  That block was
---   too broad: it silently excluded ALL prop_physics entities
---   from the speed pillar, including enemy-spawned ones.
---   Replacement: APS_SAFE_MODELS table.  Only specific model
---   paths that the Gekko itself spawns as prop_physics (shell
---   casings, elastic anchors) are exempted by name.
---   Note: shell casings and gibs already have _gekkoOwnedGib=true
---   stamped by init.lua / gib_system.lua / elastic_system.lua,
---   so APS_SAFE_MODELS is a belt-and-suspenders fallback only.
+-- NEW  — Dual independent laser tracking (2 slots).
+--   _apsLockedEnts[1] and _apsLockedEnts[2] are scanned and
+--   processed fully independently each think tick.  Each slot
+--   broadcasts its own GekkoAPSLaser net message with a slot
+--   index (0 or 1) so the client can render two beams
+--   simultaneously without one overwriting the other.
 -- ============================================================
 
 if CLIENT then return end
@@ -53,7 +50,9 @@ local APS_REARM_DELAY         = 0.30
 local APS_BURST_SHOTS         = 4
 local APS_BURST_INTERVAL      = 0.040
 local APS_BURST_DURATION      = APS_BURST_SHOTS * APS_BURST_INTERVAL + 0.05
+local APS_BURST_SND_DURATION  = 1.0   -- guaranteed minimum sound play time
 local APS_HEADING_DOT         = 0.25
+local APS_MAX_LOCK_SLOTS      = 2     -- number of simultaneous tracking slots
 
 -- ============================================================
 -- COMBINE NPC CLASS PREFIXES  (Guard 13)
@@ -349,12 +348,25 @@ end
 -- ============================================================
 -- SCAN HELPERS
 -- ============================================================
-local function APS_ScanLaserRadius(self)
+
+-- Returns up to APS_MAX_LOCK_SLOTS distinct threats, skipping
+-- any entity already present in the existingSlots table.
+local function APS_ScanLaserRadius(self, existingSlots)
+    local found  = {}
+    local locked = {}
+    for _, e in ipairs(existingSlots) do
+        if IsValid(e) then locked[e] = true end
+    end
+
     local nearby = ents.FindInSphere(self:GetPos(), APS_LASER_RADIUS)
     for _, ent in ipairs(nearby) do
-        if APS_IsThreat(self, ent) then return ent end
+        if not locked[ent] and APS_IsThreat(self, ent) then
+            found[#found + 1] = ent
+            locked[ent]       = true
+            if #found >= APS_MAX_LOCK_SLOTS then break end
+        end
     end
-    return nil
+    return found
 end
 
 local function APS_ThreatInInterceptRadius(self, ent)
@@ -364,8 +376,11 @@ end
 
 -- ============================================================
 -- LASER TRACKING BROADCAST
+-- slotIndex: 0-based integer identifying which of the two
+-- tracking beams this message belongs to.  The client uses it
+-- to keep the two beams as independent render entries.
 -- ============================================================
-local function APS_BroadcastLaser(self, threat)
+local function APS_BroadcastLaser(self, threat, slotIndex)
     if not IsValid(threat) then return end
     local attData = self:GetAttachment(3)
     local src = attData and attData.Pos or (self:GetPos() + Vector(0, 0, 180))
@@ -373,7 +388,45 @@ local function APS_BroadcastLaser(self, threat)
         net.WriteVector(src)
         net.WriteVector(threat:GetPos())
         net.WriteUInt(self:EntIndex(), 16)
+        net.WriteUInt(slotIndex, 4)
     net.Broadcast()
+end
+
+-- ============================================================
+-- BURST SOUND  (guaranteed 1-second playback)
+--
+-- self._apsBurstSnd holds the active CreateSound handle.
+-- A 1-second timer stops it.  GekkoAPS_Kill() is the only
+-- other code path allowed to stop it early (Gekko death).
+-- Each new burst call stops any previously running burst
+-- first to avoid overlap stacking.
+-- ============================================================
+local function APS_PlayBurstSound(self)
+    -- Stop any previously running burst for this Gekko
+    if self._apsBurstSnd then
+        self._apsBurstSnd:Stop()
+        self._apsBurstSnd = nil
+    end
+    if self._apsBurstSndTimer then
+        timer.Remove(self._apsBurstSndTimer)
+        self._apsBurstSndTimer = nil
+    end
+
+    local snd = CreateSound(self, APS_BURST_SND)
+    if not snd then return end
+    snd:PlayEx(0.85, math.random(97, 108))
+
+    self._apsBurstSnd = snd
+
+    local timerName = "GekkoAPS_burstSnd_" .. self:EntIndex()
+    self._apsBurstSndTimer = timerName
+    timer.Create(timerName, APS_BURST_SND_DURATION, 1, function()
+        if IsValid(self) and self._apsBurstSnd then
+            self._apsBurstSnd:Stop()
+            self._apsBurstSnd      = nil
+            self._apsBurstSndTimer = nil
+        end
+    end)
 end
 
 -- ============================================================
@@ -383,13 +436,7 @@ local function APS_FireBurst(self, interceptPos)
     local timerName = "GekkoAPS_burst_" .. self:EntIndex()
     timer.Remove(timerName)
 
-    local burstSnd = CreateSound(self, APS_BURST_SND)
-    if burstSnd then
-        burstSnd:PlayEx(0.85, math.random(97, 108))
-        timer.Simple(APS_BURST_DURATION + 0.05, function()
-            if burstSnd then burstSnd:Stop(); burstSnd = nil end
-        end)
-    end
+    APS_PlayBurstSound(self)
 
     local shotsFired = 0
     timer.Create(timerName, APS_BURST_INTERVAL, APS_BURST_SHOTS, function()
@@ -431,7 +478,6 @@ local function APS_Intercept(self, threat)
     if not IsValid(threat) then return end
 
     if APS_IsSafeEntity(self, threat) then
-        self._apsLockedEnt = nil
         return
     end
 
@@ -454,17 +500,31 @@ local function APS_Intercept(self, threat)
     APS_FireBurst(self, targetPos)
 
     self._apsNextScanT = CurTime() + APS_REARM_DELAY
-    self._apsLockedEnt = nil
 end
 
 -- ============================================================
 -- PUBLIC API
 -- ============================================================
 function ENT:GekkoAPS_Init()
-    self._apsNextScanT = 0
-    self._apsActive    = true
-    self._apsLockedEnt = nil
+    self._apsNextScanT  = 0
+    self._apsActive     = true
+    self._apsLockedEnts = {}   -- up to APS_MAX_LOCK_SLOTS entries
+    self._apsBurstSnd   = nil
+    self._apsBurstSndTimer = nil
     print("[GekkoAPS] Initialised on " .. self:EntIndex())
+end
+
+-- Called on Gekko death.  Stops burst sound immediately.
+function ENT:GekkoAPS_Kill()
+    if self._apsBurstSnd then
+        self._apsBurstSnd:Stop()
+        self._apsBurstSnd = nil
+    end
+    if self._apsBurstSndTimer then
+        timer.Remove(self._apsBurstSndTimer)
+        self._apsBurstSndTimer = nil
+    end
+    self._apsActive = false
 end
 
 function ENT:GekkoAPS_Think()
@@ -474,28 +534,36 @@ function ENT:GekkoAPS_Think()
 
     self._apsNextScanT = CurTime() + APS_SCAN_INTERVAL
 
-    if IsValid(self._apsLockedEnt) then
-        local threat = self._apsLockedEnt
+    -- ── Process each existing locked slot independently ──────
+    local stillLocked = {}
+    for slotIndex, threat in ipairs(self._apsLockedEnts) do
+        if IsValid(threat) and
+           APS_IsThreat(self, threat) and
+           self:GetPos():Distance(threat:GetPos()) <= APS_LASER_RADIUS
+        then
+            -- Broadcast this slot's laser (0-based slot id)
+            APS_BroadcastLaser(self, threat, slotIndex - 1)
 
-        if not APS_IsThreat(self, threat) or
-           self:GetPos():Distance(threat:GetPos()) > APS_LASER_RADIUS then
-            self._apsLockedEnt = nil
-            return
+            if APS_ThreatInInterceptRadius(self, threat) then
+                -- Intercept and free the slot
+                APS_Intercept(self, threat)
+            else
+                stillLocked[#stillLocked + 1] = threat
+            end
         end
-
-        APS_BroadcastLaser(self, threat)
-
-        if APS_ThreatInInterceptRadius(self, threat) then
-            self._apsLockedEnt = nil
-            APS_Intercept(self, threat)
-        end
-        return
+        -- If threat is invalid / left radius / safe: slot is freed
     end
+    self._apsLockedEnts = stillLocked
 
-    local threat = APS_ScanLaserRadius(self)
-    if threat then
-        self._apsLockedEnt = threat
-        self:EmitSound(APS_LOCK_SND, 80, math.random(110, 120), 1)
-        APS_BroadcastLaser(self, threat)
+    -- ── Fill empty slots with newly detected threats ──────────
+    local freeSlotsNeeded = APS_MAX_LOCK_SLOTS - #self._apsLockedEnts
+    if freeSlotsNeeded > 0 then
+        local newThreats = APS_ScanLaserRadius(self, self._apsLockedEnts)
+        for _, newThreat in ipairs(newThreats) do
+            if #self._apsLockedEnts >= APS_MAX_LOCK_SLOTS then break end
+            self._apsLockedEnts[#self._apsLockedEnts + 1] = newThreat
+            self:EmitSound(APS_LOCK_SND, 80, math.random(110, 120), 1)
+            APS_BroadcastLaser(self, newThreat, #self._apsLockedEnts - 1)
+        end
     end
 end
