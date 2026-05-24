@@ -62,6 +62,24 @@ local PREDET_SPREAD_DEG = 29.0
 local PREDET_NOSE_OFFS  = 20
 
 -- ---------------------------------------------------------
+--  TIP CAP PROP
+-- ---------------------------------------------------------
+local TIPCAP_MODEL  = "models/xqm/cylinderx1.mdl"
+local TIPCAP_SCALE  = 0.7
+-- How far ahead of the missile origin the cap sits (along forward)
+local TIPCAP_OFFSET = 14
+-- Kick impulse range when the cap detaches (u/s)
+local TIPCAP_VEL_MIN   = 220
+local TIPCAP_VEL_MAX   = 520
+-- Angular velocity range on detach (deg/s per axis)
+local TIPCAP_ANGVEL_MIN = -380
+local TIPCAP_ANGVEL_MAX =  380
+-- Gravity scale applied to the flying cap
+local TIPCAP_GRAVITY    = 1.0
+-- Remove the cap after this many seconds so it does not litter the map forever
+local TIPCAP_LIFETIME   = 6.0
+
+-- ---------------------------------------------------------
 --  SOUNDS
 -- ---------------------------------------------------------
 local SND_FIRE    = "nikita/distant_fire.wav"
@@ -69,6 +87,8 @@ local SND_WHISTLE = "nikita/bomb_whistle_loop.wav"
 local SND_FLAME   = "nikita/flame_loop.wav"
 local SND_LOCKON  = "nikita/lock on stinger.wav"
 local SND_PREDET  = "weapons/shotgun/shotgun_fire7.wav"
+-- Stage-1 fragmentation detonation blast (separate from the stage-2 pure explosion)
+local SND_PREDET_BLAST = "ambient/explosions/explode_4.wav"
 
 local LOCKON_DIST = 600
 
@@ -427,30 +447,107 @@ local function GetAimPos(self)
 end
 
 -- ---------------------------------------------------------
---  PRE-DETONATION SHOTGUN BURST
+--  TIP CAP HELPERS
 -- ---------------------------------------------------------
-local function RandomConeDir( baseDir, halfAngleDeg )
-    local up = Vector(0, 0, 1)
-    local right = baseDir:Cross(up)
-    if right:LengthSqr() < 0.001 then
-        right = baseDir:Cross(Vector(1, 0, 0))
+local function SpawnTipCap(missile)
+    if not IsValid(missile) then return nil end
+    local cap = ents.Create("prop_physics")
+    if not IsValid(cap) then return nil end
+    cap:SetModel(TIPCAP_MODEL)
+    -- Place at the missile tip
+    cap:SetPos(missile:GetPos() + missile:GetForward() * TIPCAP_OFFSET)
+    cap:SetAngles(missile:GetAngles())
+    cap:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+    cap:Spawn()
+    cap:Activate()
+    cap:SetModelScale(TIPCAP_SCALE, 0)
+    cap:DrawShadow(false)
+    -- Physically disable while riding the missile: no motion, parented via manual position
+    local phys = cap:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:EnableMotion(false)
+        phys:SetMass(1)
+        phys:Wake()
     end
-    right:Normalize()
-    local tang = right:Cross(baseDir)
-    tang:Normalize()
+    -- Schedule removal in case it never gets ejected (missile removed without predet)
+    local capRef = cap
+    timer.Simple(TIPCAP_LIFETIME, function()
+        if IsValid(capRef) then capRef:Remove() end
+    end)
+    return cap
+end
 
-    local halfRad = math.rad(halfAngleDeg)
-    local theta   = math.random() * halfRad
+local function EjectTipCap(missile)
+    local cap = missile._tipCap
+    if not IsValid(cap) then return end
+    missile._tipCap = nil
+
+    -- Release physics
+    local phys = cap:GetPhysicsObject()
+    if not IsValid(phys) then return end
+    phys:EnableMotion(true)
+    phys:SetMass(1)
+    phys:Wake()
+
+    -- Random kick: mostly forward-ish hemisphere + pure random lateral component
+    -- so it clearly flies away from the missile
+    local fwd    = missile:GetForward()
+    local right  = missile:GetRight()
+    local up     = missile:GetUp()
+    local speed  = math.Rand(TIPCAP_VEL_MIN, TIPCAP_VEL_MAX)
+    -- Random point on hemisphere in front of the missile
+    -- theta in [0, pi/2] biased toward lateral to make it look dramatic
+    local theta  = math.Rand(math.rad(35), math.rad(120))
+    local phi    = math.Rand(0, math.pi * 2)
+    local kickDir = fwd   * math.cos(theta)
+                  + right * (math.sin(theta) * math.cos(phi))
+                  + up    * (math.sin(theta) * math.sin(phi))
+    kickDir:Normalize()
+
+    phys:SetVelocity(kickDir * speed)
+    phys:SetAngleVelocity(Vector(
+        math.Rand(TIPCAP_ANGVEL_MIN, TIPCAP_ANGVEL_MAX),
+        math.Rand(TIPCAP_ANGVEL_MIN, TIPCAP_ANGVEL_MAX),
+        math.Rand(TIPCAP_ANGVEL_MIN, TIPCAP_ANGVEL_MAX)
+    ))
+
+    -- Schedule timed removal after it's been flying
+    local capRef = cap
+    timer.Simple(TIPCAP_LIFETIME, function()
+        if IsValid(capRef) then capRef:Remove() end
+    end)
+end
+
+-- ---------------------------------------------------------
+--  UNIFORM-SPHERE CONE DIRECTION
+--  Produces pellet directions uniformly distributed over the
+--  solid angle of the cone (no axis-clustering bias).
+--  aimDir MUST be normalised before calling.
+-- ---------------------------------------------------------
+local function UniformConeDir(aimDir, halfAngleDeg)
+    -- Build an orthonormal basis aligned to aimDir
+    local up    = math.abs(aimDir.z) < 0.999 and Vector(0, 0, 1) or Vector(1, 0, 0)
+    local right = aimDir:Cross(up);  right:Normalize()
+    local tang  = right:Cross(aimDir); tang:Normalize()
+
+    -- Uniform sampling over the spherical cap:
+    -- cos(theta) drawn uniformly in [cos(halfAngle), 1]
+    -- This is the correct inverse-CDF for solid-angle-uniform cone sampling.
+    local cosHalf = math.cos(math.rad(halfAngleDeg))
+    local cosT    = cosHalf + math.random() * (1.0 - cosHalf)   -- in [cosHalf, 1]
+    local sinT    = math.sqrt(math.max(0, 1.0 - cosT * cosT))
     local phi     = math.random() * 2 * math.pi
-    local sinT    = math.sin(theta)
 
-    local d = baseDir   * math.cos(theta)
-            + right     * (sinT * math.cos(phi))
-            + tang      * (sinT * math.sin(phi))
+    local d = aimDir * cosT
+            + right  * (sinT * math.cos(phi))
+            + tang   * (sinT * math.sin(phi))
     d:Normalize()
     return d
 end
 
+-- ---------------------------------------------------------
+--  PRE-DETONATION SHOTGUN BURST
+-- ---------------------------------------------------------
 function ENT:Nikita_PreDetBurst()
     if self.Nikita_Exploded    then return end
     if self._predetFired       then return end
@@ -459,21 +556,41 @@ function ENT:Nikita_PreDetBurst()
     local muzzlePos = self:GetPos() + self:GetForward() * PREDET_NOSE_OFFS
     local owner     = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
-    local aimPos  = GetAimPos(self)
-    local aimDir  = aimPos
-                    and (aimPos - muzzlePos):GetNormalized()
-                    or  self:GetForward()
+    -- --------------------------------------------------------
+    --  Cone aim: point toward the missile's current target,
+    --  using the same lead-position the guidance system uses.
+    --  Falls back to missile forward if no target is known.
+    -- --------------------------------------------------------
+    local aimPos = GetAimPos(self)
+    local aimDir
+    if aimPos then
+        aimDir = (aimPos - muzzlePos):GetNormalized()
+        -- Edge case: aimPos is right at the muzzle (shouldn't happen,
+        -- but guard against a zero vector)
+        if aimDir:LengthSqr() < 0.01 then
+            aimDir = self:GetForward()
+        end
+    else
+        aimDir = self:GetForward()
+    end
 
+    -- Eject the tip cap before firing the pellets
+    EjectTipCap(self)
+
+    -- Stage-1 fragmentation sound (distinct from stage-2 explosion)
+    sound.Play(SND_PREDET_BLAST, muzzlePos, 95, math.random(95, 105))
     sound.Play(SND_PREDET, muzzlePos, 85, 100)
 
-    -- Broadcast muzzle flash to all clients.
+    -- Broadcast muzzle flash to all clients
     net.Start("NikitaMuzzleFlash")
         net.WriteVector(muzzlePos)
         net.WriteVector(aimDir)
     net.Broadcast()
 
     for i = 1, PREDET_PELLETS do
-        local pelletDir = RandomConeDir(aimDir, PREDET_SPREAD_DEG)
+        -- Use uniform solid-angle sampling so pellets are evenly distributed
+        -- across the cone face, not clustered at the axis
+        local pelletDir = UniformConeDir(aimDir, PREDET_SPREAD_DEG)
 
         local tr = util.TraceLine({
             start  = muzzlePos,
@@ -482,10 +599,8 @@ function ENT:Nikita_PreDetBurst()
             mask    = MASK_SHOT,
         })
 
-        -- The endpoint clients will draw the tracer beam to.
         local endPos = tr.Hit and tr.HitPos or (muzzlePos + pelletDir * PREDET_RANGE)
 
-        -- Broadcast tracer to all clients.
         net.Start("NikitaPelletTracer")
             net.WriteVector(muzzlePos)
             net.WriteVector(endPos)
@@ -557,6 +672,15 @@ function ENT:CustomOnInitialize()
 
     self._lockOnArmed  = true
     self._lockOnActive = false
+
+    -- Spawn the tip cap and store reference
+    self._tipCap = nil
+    local selfRef = self
+    -- Use timer.Simple(0) so the missile has fully initialised its position/angles
+    timer.Simple(0, function()
+        if not IsValid(selfRef) then return end
+        selfRef._tipCap = SpawnTipCap(selfRef)
+    end)
 
     sound.Play(SND_FIRE, self:GetPos(), 90, 100)
     self:EmitSound(SND_WHISTLE, 80, 100)
@@ -665,6 +789,9 @@ function ENT:Nikita_DoExplosion(dmginfo)
     if self.Nikita_Exploded then return end
     self.Nikita_Exploded = true
 
+    -- Safety: eject cap in case we explode without going through PreDetBurst
+    EjectTipCap(self)
+
     local pos   = self:GetPos()
     local dmg   = self.Nikita_Damage or 120
     local rad   = self.Nikita_Radius or 700
@@ -731,6 +858,13 @@ function ENT:CustomOnThink()
     local myPos      = self:GetPos()
     local currentDir = self:GetForward()
     local filter     = { self }
+
+    -- Keep the tip cap glued to the missile nose every tick
+    if IsValid(self._tipCap) then
+        local capPos = myPos + currentDir * TIPCAP_OFFSET
+        self._tipCap:SetPos(capPos)
+        self._tipCap:SetAngles(self:GetAngles())
+    end
 
     local aimPos = GetAimPos(self)
     if not aimPos then return end
