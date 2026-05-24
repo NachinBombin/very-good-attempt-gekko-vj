@@ -7,7 +7,7 @@ include("shared.lua")
 -- ---------------------------------------------------------
 --  TUNING
 -- ---------------------------------------------------------
-local CRUISE_SPEED         = 350
+local CRUISE_SPEED         = 360
 local TURN_RATE            = 8.0   -- rad/s
 local LEAD_TIME            = 0.55
 local TARGET_Z_OFFS        = 40
@@ -24,7 +24,7 @@ local EMERG_STRENGTH = 1.0
 local TACT_STRENGTH  = 0.82
 local STRAT_STRENGTH = 0.30
 
-local SCOUT_RAY_DIST     = 2000
+local SCOUT_RAY_DIST     = 2900
 local PATH_BLEND_NORMAL  = 0.70
 local PATH_BLEND_LOCKED  = 0.97
 local SCORE_ANGLE_WEIGHT = 1.5
@@ -54,11 +54,11 @@ local PHYS_DMG_SCALE      = 0.06
 -- ---------------------------------------------------------
 --  PRE-DETONATION SHOTGUN BURST
 -- ---------------------------------------------------------
-local PREDET_DELAY      = 0.2
-local PREDET_PELLETS    = 9
-local PREDET_PELLET_DMG = 18
+local PREDET_DELAY      = 0.4
+local PREDET_PELLETS    = 39
+local PREDET_PELLET_DMG = 8
 local PREDET_RANGE      = 3000
-local PREDET_SPREAD_DEG = 4.0
+local PREDET_SPREAD_DEG = 29.0
 local PREDET_NOSE_OFFS  = 20
 
 -- ---------------------------------------------------------
@@ -525,7 +525,7 @@ end
 -- ---------------------------------------------------------
 function ENT:CustomOnInitialize()
     self:SetModel("models/nikita/mam.mdl")
-    self:SetModelScale(2, 0)
+    self:SetModelScale(1.3, 0)
     self:SetSolid(SOLID_BBOX)
     self:SetCollisionBounds(Vector(-12,-12,-12), Vector(12,12,12))
 

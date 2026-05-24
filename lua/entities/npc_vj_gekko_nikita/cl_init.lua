@@ -20,7 +20,7 @@ include("shared.lua")
 --  TIMING
 -- ----------------------------------------------------------------
 local FLAME_DELAY   = 1.6
-local SMOKE_FADE    = 1.0
+local SMOKE_FADE    = 0.4
 
 -- ----------------------------------------------------------------
 --  SMOKE TRAIL TUNING
@@ -59,7 +59,7 @@ local STAB_DRIFT_BOOST   = 0.70
 --  PELLET TRACER TUNING
 -- ----------------------------------------------------------------
 -- How long each tracer beam is visible (seconds).
-local TRACER_LIFE        = 0.09
+local TRACER_LIFE        = 0.29
 -- Width of the bright core beam.
 local TRACER_WIDTH_CORE  = 3
 -- Width of the soft outer glow beam.
@@ -85,7 +85,7 @@ local MF_DIE_MIN         = 0.04
 local MF_DIE_MAX         = 0.12
 -- Dynamic light at muzzle.
 local MF_DLIGHT_SIZE     = 220
-local MF_DLIGHT_DUR      = 0.07
+local MF_DLIGHT_DUR      = 0.37
 
 -- ----------------------------------------------------------------
 --  SHARED MATERIALS (reuse bushmaster pipeline)
