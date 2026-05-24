@@ -47,6 +47,25 @@ local function IsAliveAndValid(ent)
     return true
 end
 
+-- FIX (nikita grab prevention): returns true for any entity that must
+-- never be grabbed by the tentacle. Catches npc_vj_gekko_nikita and any
+-- other projectile / missile entity the gekko owns.
+local function IsNikitaOrProjectile(ent)
+    if not IsValid(ent) then return false end
+    local cls = ent:GetClass()
+    -- Block the nikita missile by class name.
+    if cls == "npc_vj_gekko_nikita" then return true end
+    -- Also block any gekko-owned sentient missile / rocket entities.
+    if cls == "sent_npc_topmissile"   then return true end
+    if cls == "sent_npc_trackmissile" then return true end
+    if cls == "sent_orbital_rpg"      then return true end
+    if cls == "obj_gekko_rocket"      then return true end
+    -- Generic safety: block anything whose owner is a gekko.
+    local owner = ent:GetOwner()
+    if IsValid(owner) and owner:GetClass() == "npc_vj_gekko" then return true end
+    return false
+end
+
 local function MakeAnchor(pos)
     local a = ents.Create("prop_physics")
     if not IsValid(a) then return nil end
@@ -197,6 +216,12 @@ function ENT:GekkoElastic_Think()
             self._elasticPending = false
             local pendEnemy = self._elasticPendingEnemy
             self._elasticPendingEnemy = nil
+            -- FIX (nikita grab prevention): re-validate the pending target
+            -- right before detonation in case it became a projectile mid-flight.
+            if IsNikitaOrProjectile(pendEnemy) then
+                self._elasticNextShotT = now + 2.0
+                return
+            end
             if IsAliveAndValid(pendEnemy) then
                 if not GekkoElastic_HasLOS(self, pendEnemy) then
                     self._elasticNextShotT = now + 2.0
@@ -244,6 +269,9 @@ function ENT:GekkoElastic_Think()
             self._elasticAnchorE:SetPos(epos)
         end
 
+        -- FIX (NPC pull): unified pull logic - applies velocity to players
+        -- AND to NPCs / any other entity that has a physics object OR a
+        -- SetVelocity method. Previously only players were moved.
         if now >= self._elasticPullStartT and now >= self._elasticNextKickT then
             self._elasticNextKickT = now + ELASTIC_PULL_INTERVAL
             local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
@@ -252,8 +280,23 @@ function ENT:GekkoElastic_Think()
             local vel      = dir * ELASTIC_PULL_SPEED
 
             if enemy:IsPlayer() then
+                -- Players: direct velocity override works perfectly.
                 enemy:SetVelocity(vel)
+            elseif enemy:IsNPC() then
+                -- NPCs: physics-based push first; fall back to NPC
+                -- velocity helper so they are guaranteed to move.
+                local phys = enemy:GetPhysicsObject()
+                if IsValid(phys) then
+                    phys:SetVelocity(vel)
+                    phys:Wake()
+                end
+                -- VJ Base exposes SetVelocity on NPC entities; call it
+                -- regardless so the NPC navigation also gets displaced.
+                if enemy.SetVelocity then
+                    enemy:SetVelocity(vel)
+                end
             else
+                -- Generic entity (prop, etc.) - physics only.
                 local phys = enemy:GetPhysicsObject()
                 if IsValid(phys) then
                     phys:SetVelocity(vel)
@@ -271,6 +314,10 @@ function ENT:GekkoElastic_Think()
 
     local enemy = self:GetEnemy()
     if not IsAliveAndValid(enemy) then return end
+    -- FIX (nikita grab prevention): hard-block at the earliest possible
+    -- point so the tentacle is never even queued against a nikita missile
+    -- or any other gekko-owned projectile.
+    if IsNikitaOrProjectile(enemy) then return end
     if self:GetPos():Distance(enemy:GetPos()) > ELASTIC_MAX_RANGE then return end
     if not GekkoElastic_HasLOS(self, enemy) then return end
     if math.random() > 0.18 then return end
@@ -282,6 +329,8 @@ end
 -- ============================================================
 function ENT:GekkoElastic_Fire(enemy)
     if not IsAliveAndValid(enemy) then return false end
+    -- FIX (nikita grab prevention): final guard before the shot is committed.
+    if IsNikitaOrProjectile(enemy) then return false end
 
     self._elasticNextShotT = CurTime() + math.Rand(
         ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
@@ -302,6 +351,8 @@ end
 -- ============================================================
 function ENT:_GekkoElastic_Detonate(enemy)
     if not IsAliveAndValid(enemy) then return end
+    -- FIX (nikita grab prevention): last-resort check at detonation.
+    if IsNikitaOrProjectile(enemy) then return end
 
     local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
     local enemyPos = enemy:GetPos() + Vector(0, 0, 40)
