@@ -47,7 +47,6 @@ local ARMOR_REGEN_INT    = 2.5
 local STREAK_MAX         = 6
 local STREAK_WINDOW      = 1.5
 
--- Physics-impact damage thresholds (debris / bullet props)
 local PHYS_DMG_MIN_SPEED  = 200
 local PHYS_DMG_SCALE      = 0.06
 
@@ -66,17 +65,11 @@ local PREDET_NOSE_OFFS  = 20
 -- ---------------------------------------------------------
 local TIPCAP_MODEL  = "models/xqm/cylinderx1.mdl"
 local TIPCAP_SCALE  = 0.7
--- How far ahead of the missile origin the cap sits (along forward)
 local TIPCAP_OFFSET = 14
--- Kick impulse range when the cap detaches (u/s)
 local TIPCAP_VEL_MIN   = 220
 local TIPCAP_VEL_MAX   = 520
--- Angular velocity range on detach (deg/s per axis)
 local TIPCAP_ANGVEL_MIN = -380
 local TIPCAP_ANGVEL_MAX =  380
--- Gravity scale applied to the flying cap
-local TIPCAP_GRAVITY    = 1.0
--- Remove the cap after this many seconds so it does not litter the map forever
 local TIPCAP_LIFETIME   = 6.0
 
 -- ---------------------------------------------------------
@@ -87,7 +80,6 @@ local SND_WHISTLE = "nikita/bomb_whistle_loop.wav"
 local SND_FLAME   = "nikita/flame_loop.wav"
 local SND_LOCKON  = "nikita/lock on stinger.wav"
 local SND_PREDET  = "weapons/shotgun/shotgun_fire7.wav"
--- Stage-1 fragmentation detonation blast (separate from the stage-2 pure explosion)
 local SND_PREDET_BLAST = "ambient/explosions/explode_4.wav"
 
 local LOCKON_DIST = 600
@@ -99,7 +91,7 @@ util.AddNetworkString("NikitaPelletTracer")
 util.AddNetworkString("NikitaMuzzleFlash")
 
 -- ---------------------------------------------------------
---  RAY TABLES  (pitch, yaw, weight)
+--  RAY TABLES
 -- ---------------------------------------------------------
 local RAYS_EMERG = {
     { 0,    0,   1.2 }, { 0,  45, 1.0 }, { 0,  -45, 1.0 },
@@ -454,7 +446,6 @@ local function SpawnTipCap(missile)
     local cap = ents.Create("prop_physics")
     if not IsValid(cap) then return nil end
     cap:SetModel(TIPCAP_MODEL)
-    -- Place at the missile tip
     cap:SetPos(missile:GetPos() + missile:GetForward() * TIPCAP_OFFSET)
     cap:SetAngles(missile:GetAngles())
     cap:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
@@ -462,14 +453,24 @@ local function SpawnTipCap(missile)
     cap:Activate()
     cap:SetModelScale(TIPCAP_SCALE, 0)
     cap:DrawShadow(false)
-    -- Physically disable while riding the missile: no motion, parented via manual position
+
+    -- ── APS WHITELIST (3 independent guards) ──────────────────
+    -- Guard #7: gib-ownership flag — checked before every pillar
+    cap._gekkoOwnedGib = true
+    -- Guard #11: engine owner == missile (missile is owned by Gekko,
+    -- so the parent-chain walk also resolves correctly)
+    cap:SetOwner(missile)
+    -- Guard #12: raw .Owner field as a belt-and-suspenders fallback
+    cap.Owner = missile
+    -- ----------------------------------------------------------
+
     local phys = cap:GetPhysicsObject()
     if IsValid(phys) then
         phys:EnableMotion(false)
         phys:SetMass(1)
         phys:Wake()
     end
-    -- Schedule removal in case it never gets ejected (missile removed without predet)
+
     local capRef = cap
     timer.Simple(TIPCAP_LIFETIME, function()
         if IsValid(capRef) then capRef:Remove() end
@@ -482,23 +483,18 @@ local function EjectTipCap(missile)
     if not IsValid(cap) then return end
     missile._tipCap = nil
 
-    -- Release physics
     local phys = cap:GetPhysicsObject()
     if not IsValid(phys) then return end
     phys:EnableMotion(true)
     phys:SetMass(1)
     phys:Wake()
 
-    -- Random kick: mostly forward-ish hemisphere + pure random lateral component
-    -- so it clearly flies away from the missile
-    local fwd    = missile:GetForward()
-    local right  = missile:GetRight()
-    local up     = missile:GetUp()
-    local speed  = math.Rand(TIPCAP_VEL_MIN, TIPCAP_VEL_MAX)
-    -- Random point on hemisphere in front of the missile
-    -- theta in [0, pi/2] biased toward lateral to make it look dramatic
-    local theta  = math.Rand(math.rad(35), math.rad(120))
-    local phi    = math.Rand(0, math.pi * 2)
+    local fwd   = missile:GetForward()
+    local right = missile:GetRight()
+    local up    = missile:GetUp()
+    local speed = math.Rand(TIPCAP_VEL_MIN, TIPCAP_VEL_MAX)
+    local theta = math.Rand(math.rad(35), math.rad(120))
+    local phi   = math.Rand(0, math.pi * 2)
     local kickDir = fwd   * math.cos(theta)
                   + right * (math.sin(theta) * math.cos(phi))
                   + up    * (math.sin(theta) * math.sin(phi))
@@ -511,7 +507,6 @@ local function EjectTipCap(missile)
         math.Rand(TIPCAP_ANGVEL_MIN, TIPCAP_ANGVEL_MAX)
     ))
 
-    -- Schedule timed removal after it's been flying
     local capRef = cap
     timer.Simple(TIPCAP_LIFETIME, function()
         if IsValid(capRef) then capRef:Remove() end
@@ -520,21 +515,14 @@ end
 
 -- ---------------------------------------------------------
 --  UNIFORM-SPHERE CONE DIRECTION
---  Produces pellet directions uniformly distributed over the
---  solid angle of the cone (no axis-clustering bias).
---  aimDir MUST be normalised before calling.
 -- ---------------------------------------------------------
 local function UniformConeDir(aimDir, halfAngleDeg)
-    -- Build an orthonormal basis aligned to aimDir
     local up    = math.abs(aimDir.z) < 0.999 and Vector(0, 0, 1) or Vector(1, 0, 0)
     local right = aimDir:Cross(up);  right:Normalize()
     local tang  = right:Cross(aimDir); tang:Normalize()
 
-    -- Uniform sampling over the spherical cap:
-    -- cos(theta) drawn uniformly in [cos(halfAngle), 1]
-    -- This is the correct inverse-CDF for solid-angle-uniform cone sampling.
     local cosHalf = math.cos(math.rad(halfAngleDeg))
-    local cosT    = cosHalf + math.random() * (1.0 - cosHalf)   -- in [cosHalf, 1]
+    local cosT    = cosHalf + math.random() * (1.0 - cosHalf)
     local sinT    = math.sqrt(math.max(0, 1.0 - cosT * cosT))
     local phi     = math.random() * 2 * math.pi
 
@@ -549,47 +537,33 @@ end
 --  PRE-DETONATION SHOTGUN BURST
 -- ---------------------------------------------------------
 function ENT:Nikita_PreDetBurst()
-    if self.Nikita_Exploded    then return end
-    if self._predetFired       then return end
+    if self.Nikita_Exploded then return end
+    if self._predetFired    then return end
     self._predetFired = true
 
     local muzzlePos = self:GetPos() + self:GetForward() * PREDET_NOSE_OFFS
     local owner     = IsValid(self.NikitaOwner) and self.NikitaOwner or self
 
-    -- --------------------------------------------------------
-    --  Cone aim: point toward the missile's current target,
-    --  using the same lead-position the guidance system uses.
-    --  Falls back to missile forward if no target is known.
-    -- --------------------------------------------------------
     local aimPos = GetAimPos(self)
     local aimDir
     if aimPos then
         aimDir = (aimPos - muzzlePos):GetNormalized()
-        -- Edge case: aimPos is right at the muzzle (shouldn't happen,
-        -- but guard against a zero vector)
-        if aimDir:LengthSqr() < 0.01 then
-            aimDir = self:GetForward()
-        end
+        if aimDir:LengthSqr() < 0.01 then aimDir = self:GetForward() end
     else
         aimDir = self:GetForward()
     end
 
-    -- Eject the tip cap before firing the pellets
     EjectTipCap(self)
 
-    -- Stage-1 fragmentation sound (distinct from stage-2 explosion)
     sound.Play(SND_PREDET_BLAST, muzzlePos, 95, math.random(95, 105))
-    sound.Play(SND_PREDET, muzzlePos, 85, 100)
+    sound.Play(SND_PREDET,       muzzlePos, 85, 100)
 
-    -- Broadcast muzzle flash to all clients
     net.Start("NikitaMuzzleFlash")
         net.WriteVector(muzzlePos)
         net.WriteVector(aimDir)
     net.Broadcast()
 
     for i = 1, PREDET_PELLETS do
-        -- Use uniform solid-angle sampling so pellets are evenly distributed
-        -- across the cone face, not clustered at the axis
         local pelletDir = UniformConeDir(aimDir, PREDET_SPREAD_DEG)
 
         local tr = util.TraceLine({
@@ -673,10 +647,8 @@ function ENT:CustomOnInitialize()
     self._lockOnArmed  = true
     self._lockOnActive = false
 
-    -- Spawn the tip cap and store reference
     self._tipCap = nil
     local selfRef = self
-    -- Use timer.Simple(0) so the missile has fully initialised its position/angles
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
         selfRef._tipCap = SpawnTipCap(selfRef)
@@ -741,44 +713,42 @@ function ENT:CustomOnTakeDamage_BeforeDamage(dmginfo, hitgroup)
 end
 
 -- ---------------------------------------------------------
---  FALLOFF BLAST HELPERS
+--  FALLOFF BLAST
 -- ---------------------------------------------------------
 local FALLOFF_MIN_FRAC = 0.08
 
-local function EntAimPos( ent )
+local function EntAimPos(ent)
     local phys = ent:GetPhysicsObject()
-    if IsValid( phys ) then return phys:GetMassCenter() end
+    if IsValid(phys) then return phys:GetMassCenter() end
     return ent:GetPos()
 end
 
-local function DoFalloffBlastDamage( inflictor, attacker, origin, radius, maxDmg )
-    for _, ent in ipairs( ents.FindInSphere( origin, radius ) ) do
-        if not IsValid( ent ) then continue end
+local function DoFalloffBlastDamage(inflictor, attacker, origin, radius, maxDmg)
+    for _, ent in ipairs(ents.FindInSphere(origin, radius)) do
+        if not IsValid(ent) then continue end
         if ent == inflictor   then continue end
 
-        local entPos = EntAimPos( ent )
+        local entPos = EntAimPos(ent)
         local los = util.TraceLine({
-            start  = origin,
-            endpos = entPos,
-            mask   = MASK_SOLID_BRUSHONLY,
-            filter = inflictor,
+            start  = origin, endpos = entPos,
+            mask   = MASK_SOLID_BRUSHONLY, filter = inflictor,
         })
         if los.Hit then continue end
 
-        local dist  = ( entPos - origin ):Length()
-        local frac  = math.Clamp( 1 - ( dist / radius ), 0, 1 )
-        local scale = FALLOFF_MIN_FRAC + ( 1 - FALLOFF_MIN_FRAC ) * frac
+        local dist  = (entPos - origin):Length()
+        local frac  = math.Clamp(1 - (dist / radius), 0, 1)
+        local scale = FALLOFF_MIN_FRAC + (1 - FALLOFF_MIN_FRAC) * frac
         local dmg   = maxDmg * scale
         if dmg < 1 then continue end
 
         local dmginfo = DamageInfo()
-        dmginfo:SetDamage( dmg )
-        dmginfo:SetAttacker( attacker )
-        dmginfo:SetInflictor( inflictor )
-        dmginfo:SetDamageType( DMG_BLAST )
-        dmginfo:SetDamagePosition( origin )
-        dmginfo:SetDamageForce( ( entPos - origin ):GetNormalized() * dmg * 80 )
-        ent:TakeDamageInfo( dmginfo )
+        dmginfo:SetDamage(dmg)
+        dmginfo:SetAttacker(attacker)
+        dmginfo:SetInflictor(inflictor)
+        dmginfo:SetDamageType(DMG_BLAST)
+        dmginfo:SetDamagePosition(origin)
+        dmginfo:SetDamageForce((entPos - origin):GetNormalized() * dmg * 80)
+        ent:TakeDamageInfo(dmginfo)
     end
 end
 
@@ -789,7 +759,6 @@ function ENT:Nikita_DoExplosion(dmginfo)
     if self.Nikita_Exploded then return end
     self.Nikita_Exploded = true
 
-    -- Safety: eject cap in case we explode without going through PreDetBurst
     EjectTipCap(self)
 
     local pos   = self:GetPos()
@@ -803,12 +772,12 @@ function ENT:Nikita_DoExplosion(dmginfo)
 
     sound.Play("ambient/explosions/explode_8.wav", pos, 100, 100)
 
-    for _, ply in ipairs( player.GetAll() ) do
-        if not IsValid( ply ) then continue end
-        local _sd = ( ply:GetPos() - pos ):Length()
-        if _sd < 3000 then
-            local _sf = math.Clamp( 1 - ( _sd / 3000 ), 0, 1 )
-            util.ScreenShake( ply:GetPos(), 20 * _sf, 200, 1.0, 1 )
+    for _, ply in ipairs(player.GetAll()) do
+        if not IsValid(ply) then continue end
+        local sd = (ply:GetPos() - pos):Length()
+        if sd < 3000 then
+            local sf = math.Clamp(1 - (sd / 3000), 0, 1)
+            util.ScreenShake(ply:GetPos(), 20 * sf, 200, 1.0, 1)
         end
     end
 
@@ -827,7 +796,7 @@ function ENT:Nikita_DoExplosion(dmginfo)
         pe:Fire("Kill",    "", 0.5)
     end
 
-    DoFalloffBlastDamage( self, owner, pos + Vector(0,0,50), rad, dmg )
+    DoFalloffBlastDamage(self, owner, pos + Vector(0,0,50), rad, dmg)
     self:Remove()
 end
 
@@ -859,10 +828,8 @@ function ENT:CustomOnThink()
     local currentDir = self:GetForward()
     local filter     = { self }
 
-    -- Keep the tip cap glued to the missile nose every tick
     if IsValid(self._tipCap) then
-        local capPos = myPos + currentDir * TIPCAP_OFFSET
-        self._tipCap:SetPos(capPos)
+        self._tipCap:SetPos(myPos + currentDir * TIPCAP_OFFSET)
         self._tipCap:SetAngles(self:GetAngles())
     end
 
