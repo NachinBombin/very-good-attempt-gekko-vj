@@ -49,7 +49,7 @@ local GIB_MODELS = {
 -- =========================================================================
 -- Gib helper
 -- =========================================================================
-local function SpawnIgnitedGib(hitPos, hitNormal)
+local function SpawnIgnitedGib(round, hitPos, hitNormal)
     local mdl = GIB_MODELS[math.random(#GIB_MODELS)]
     local gib = ents.Create("prop_physics")
     if not IsValid(gib) then return end
@@ -58,6 +58,16 @@ local function SpawnIgnitedGib(hitPos, hitNormal)
     gib:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
     gib:Spawn(); gib:Activate()
     gib:DrawShadow(false)
+
+    -- ── APS WHITELIST (triple guard, same pattern as Nikita tip-cap) ──
+    -- Guard 7: checked before every pillar in aps_system.lua
+    gib._gekkoOwnedGib = true
+    -- Guard 11: engine owner chain resolves back to Gekko
+    gib:SetOwner( round )
+    -- Guard 12: raw .Owner field belt-and-suspenders fallback
+    gib.Owner = round
+    -- -----------------------------------------------------------------
+
     timer.Simple(GIB_LIFETIME, function()
         if IsValid(gib) then gib:Remove() end
     end)
@@ -273,8 +283,9 @@ function ENT:Explode(hitPos, hitNormal, hitEnt)
         net.WriteUInt(2, 3)
     net.Broadcast()
 
+    -- Pass self so each gib is stamped with the triple APS guard.
     if math.random() < GIB_RICO_CHANCE then
-        SpawnIgnitedGib(hitPos, hitNormal)
+        SpawnIgnitedGib(self, hitPos, hitNormal)
     end
 
     self:Remove()

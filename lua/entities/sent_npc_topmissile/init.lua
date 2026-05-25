@@ -73,7 +73,7 @@ local GIB_MODELS = {
     "models/props_debris/rebar003a_32.mdl",
 }
 
-local function SpawnIgnitedGib( hitPos, hitNormal )
+local function SpawnIgnitedGib( missile, hitPos, hitNormal )
     local mdl = GIB_MODELS[ math.random( #GIB_MODELS ) ]
     local gib = ents.Create( "prop_physics" )
     if not IsValid( gib ) then return end
@@ -83,6 +83,16 @@ local function SpawnIgnitedGib( hitPos, hitNormal )
     gib:Spawn()
     gib:Activate()
     gib:DrawShadow( false )
+
+    -- ── APS WHITELIST (triple guard, same pattern as Nikita tip-cap) ──
+    -- Guard 7: checked before every pillar in aps_system.lua
+    gib._gekkoOwnedGib = true
+    -- Guard 11: engine owner chain resolves back to Gekko
+    gib:SetOwner( missile )
+    -- Guard 12: raw .Owner field belt-and-suspenders fallback
+    gib.Owner = missile
+    -- -----------------------------------------------------------------
+
     timer.Simple( GIB_LIFETIME, function()
         if IsValid( gib ) then gib:Remove() end
     end )
@@ -374,9 +384,10 @@ function ENT:MissileDoExplosion()
     DoFalloffBlastDamage( self, owner, pos + Vector( 0, 0, 50 ), rad, dmg )
 
     -- Always spawn 3 ignited concrete gibs
+    -- Pass self so each gib is stamped with the triple APS guard.
     local upNormal = Vector( 0, 0, 1 )
     for i = 1, 3 do
-        SpawnIgnitedGib( pos, upNormal )
+        SpawnIgnitedGib( self, pos, upNormal )
     end
 
     self:Remove()
