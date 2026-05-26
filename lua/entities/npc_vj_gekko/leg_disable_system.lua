@@ -5,10 +5,13 @@
 local GROUNDED_HEALTH_FRACTION = 0.30
 local GROUNDED_CHANCE          = 0.30
 
--- PELVIS_OFFSET_Z removed: ManipulateBonePosition(-125) was pushing the mesh
--- 125u underground (entity origin = floor contact point, hull min Z = 0),
--- which made the lower body invisible and the upper body appear to float.
--- Floor placement is handled entirely by SnapToFloor + the grounded hull.
+-- Bone manipulation is a CLIENT-SIDE rendering operation in GMod.
+-- Server-side ManipulateBonePosition / ManipulateBoneAngles calls
+-- have no visual effect. The grounded pose is handled entirely in
+-- cl_init.lua:GekkoApplyGroundedPose, which fires when it reads
+-- the GekkoLegsDisabled NW bool == true.
+-- This file's job: set that bool and lock movement.
+
 local L_THIGH_ANG = Angle(0, 0, -50)
 local R_THIGH_ANG = Angle(100, -80, 0)
 
@@ -60,21 +63,12 @@ end
 -- ============================================================
 --  SnapToFloor
 --  Must be called AFTER SetMoveType(MOVETYPE_NONE).
---  On MOVETYPE_NONE entities, SetPos is respected directly.
---
---  FIX: Use MASK_SOLID as primary mask so displacements, props,
---  and all world geometry are included (MASK_SOLID_BRUSHONLY
---  only catches brush faces and would miss displacement/prop
---  floors, causing the trace to return no hit and leaving the
---  entity floating wherever it was).
---
---  The entity hull has min Z = 0, so origin == floor contact
---  point. We place origin exactly at tr.HitPos.z.
+--  FIX: Use MASK_SOLID as primary (catches displacements + props)
+--  before falling back to brush-only masks.
 -- ============================================================
 local function SnapToFloor(ent)
     local pos = ent:GetPos()
 
-    -- Primary: MASK_SOLID catches everything (world + displacements + props)
     local tr = util.TraceLine({
         start  = Vector(pos.x, pos.y, pos.z + 500),
         endpos = Vector(pos.x, pos.y, pos.z - 2048),
@@ -82,7 +76,6 @@ local function SnapToFloor(ent)
         mask   = MASK_SOLID,
     })
 
-    -- Fallback 1: brush-only
     if not tr.Hit or tr.StartSolid then
         tr = util.TraceLine({
             start  = Vector(pos.x, pos.y, pos.z + 500),
@@ -92,7 +85,6 @@ local function SnapToFloor(ent)
         })
     end
 
-    -- Fallback 2: player-solid brush
     if not tr.Hit or tr.StartSolid then
         tr = util.TraceLine({
             start  = Vector(pos.x, pos.y, pos.z + 500),
@@ -110,7 +102,7 @@ local function SnapToFloor(ent)
             pos.z, tr.HitPos.z
         ))
     else
-        print("[GekkoLegs] WARNING: SnapToFloor trace missed — entity may remain elevated")
+        print("[GekkoLegs] WARNING: SnapToFloor trace missed")
     end
 end
 
@@ -150,9 +142,6 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     end
 
     -- 4. Collapse hull to grounded size and clear crouch state
-    --    Using a low hull (72u tall) keeps the origin at floor level
-    --    and prevents the engine from lifting the entity up to satisfy
-    --    a taller standing hull.
     self:SetCollisionBounds(GROUNDED_HULL_MIN, GROUNDED_HULL_MAX)
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching    = false
@@ -165,21 +154,23 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     self:SetMoveType(MOVETYPE_NONE)
     HardLockMovement(self)
 
-    -- 7. Snap to floor (SetPos respected now that type is NONE)
+    -- 7. Snap to floor
     SnapToFloor(self)
 
-    -- 7b. Deferred re-snap one frame later to catch any engine position
-    --     correction that happens after MOVETYPE_NONE is applied.
+    -- 7b. Deferred re-snap one frame later
     local selfRef = self
     timer.Simple(0, function()
         if IsValid(selfRef) and selfRef._gekkoLegsDisabled then
             SnapToFloor(selfRef)
-            selfRef:GekkoLegs_ApplyPose()
         end
     end)
 
-    -- 8. Apply bone pose (broken-leg angles only — no Z offset on pelvis)
-    self:GekkoLegs_ApplyPose()
+    -- 8. Signal the CLIENT to apply the grounded bone pose.
+    --    cl_init.lua:Think checks this NW bool and calls
+    --    GekkoApplyGroundedPose every frame while it is true.
+    --    This is the fix: without this SetNWBool the client
+    --    never knew to apply the grounded pose at all.
+    self:SetNWBool("GekkoLegsDisabled", true)
 
     -- 9. Gibs
     local hitPos = dmginfo:GetDamagePosition()
@@ -199,27 +190,17 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         self:GekkoGib_OnDamage(self.StartHealth or 900, dmginfo)
     end
 
-    print("[GekkoLegs] Grounded state entered")
+    print("[GekkoLegs] Grounded state entered — GekkoLegsDisabled NW bool set")
 end
 
 -- ============================================================
---  GekkoLegs_ApplyPose
---  Only manipulates LEG ANGLES for the broken-leg look.
---  No ManipulateBonePosition on the pelvis — that was the
---  cause of the floating: origin is at floor level (hull min
---  Z = 0), so pushing the pelvis bone down by -125u shoved
---  the mesh underground and made the upper body appear to float.
+--  GekkoLegs_ApplyPose (server stub)
+--  Bone pose is applied CLIENT-SIDE by GekkoApplyGroundedPose
+--  in cl_init.lua. This stub exists only so any legacy call
+--  sites don't error.
 -- ============================================================
 function ENT:GekkoLegs_ApplyPose()
-    if not self._gekkoLegsDisabled then return end
-    -- Pelvis: NO position manipulation — entity origin is already at floor.
-    -- Leg angles give the broken/splayed posture.
-    if self.GekkoLThighBone and self.GekkoLThighBone >= 0 then
-        self:ManipulateBoneAngles(self.GekkoLThighBone, L_THIGH_ANG)
-    end
-    if self.GekkoRThighBone and self.GekkoRThighBone >= 0 then
-        self:ManipulateBoneAngles(self.GekkoRThighBone, R_THIGH_ANG)
-    end
+    -- no-op: visual pose is owned by cl_init.lua
 end
 
 -- ============================================================
@@ -229,7 +210,6 @@ function ENT:GekkoLegs_Think()
     self:SetMoveType(MOVETYPE_NONE)
     self:SetAbsVelocity(Vector(0, 0, 0))
     HardLockMovement(self)
-    self:GekkoLegs_ApplyPose()
 
     local now = CurTime()
     if now >= (self._gekkoLegsBleedNextT or 0) then
