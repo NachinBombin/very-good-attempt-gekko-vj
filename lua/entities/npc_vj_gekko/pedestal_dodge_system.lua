@@ -1,62 +1,57 @@
 -- ============================================================
 -- pedestal_dodge_system.lua
 -- Sideways Pedestal-bone movement: random strafe + reactive dodge.
--- Moves the NPC 100 units left or right via bone manipulation
--- (SetBonePosition on the "ValveBiped.Bip01_Pelvis" / Pedestal bone).
--- Integrates into the Gekko NPC's existing OnThink / OnTakeDamage hooks.
--- ============================================================
+--
 -- HOW IT WORKS
---   Instead of teleporting the NPC entity, we offset the *visual* root bone
---   (the Pedestal or Pelvis bone) sideways by ±100 units, then walk the
---   entity's actual world position toward that offset over several frames.
---   This produces a smooth, physical-looking slide without breaking navmesh
---   routing, and is safe to use on VJ Base NPCs that override OnTakeDamage.
+--   The entity origin NEVER moves.  Instead we accumulate a lateral
+--   offset (_boneOffset, a scalar in local-right space) and apply it
+--   every Think via SetBonePosition on the root/pedestal bone.
+--   Because this is the skeleton root, every child bone (legs, spine,
+--   arms) follows through normal IK/constraint propagation, producing
+--   natural weight-shift without foot-skating or entity teleporting.
+--
+--   When the offset reaches its target we commit it to the entity
+--   origin with a single SetPos + reset offset to 0, so the navmesh
+--   origin stays roughly accurate for the AI pathfinder.
 --
 -- TWO MODES
---   1. Random strafe  – fires every STRAFE_INTERVAL_MIN .. STRAFE_INTERVAL_MAX
---      seconds while an enemy is visible.  Picks a random left/right direction,
---      ground-validates the destination, and slides the NPC there.
---
---   2. Reactive dodge – fires inside CustomOnTakeDamage_BeforeDamage (Gekko uses
---      OnTakeDamage) when hit by bullets/buckshot. Has its own charge + cooldown
---      window identical in spirit to the reference NPC's dodge system.
+--   1. Random strafe  – fires every STRAFE_INTERVAL_MIN..MAX seconds
+--      while an enemy is visible.
+--   2. Reactive dodge – fires on bullet/buckshot hits, charge-gated.
 -- ============================================================
 
-local SLIDE_DIST          = 100       -- units left or right per slide
-local SLIDE_SPEED         = 320       -- units per second during interpolation
-local SLIDE_GROUND_DROP   = 200       -- how far down to look for a floor
+local SLIDE_DIST          = 100      -- units sideways per move
+local SLIDE_SPEED         = 280      -- units per second of bone travel
+local SLIDE_GROUND_DROP   = 200      -- floor-search depth
 
--- Random strafe timings
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
 
--- Reactive dodge charge system
-local DODGE_CHARGES       = 3         -- max dodges before lockout
-local DODGE_WINDOW        = 6.0       -- seconds before charges fully refill
-local DODGE_CHANCE        = 0.72      -- probability per hit (0-1)
+local DODGE_CHARGES       = 3
+local DODGE_WINDOW        = 6.0
+local DODGE_CHANCE        = 0.72
 local DODGE_COOLDOWN_MIN  = 0.8
 local DODGE_COOLDOWN_MAX  = 2.0
-local DODGE_VULN_DUR      = 4.0       -- lockout duration after all charges spent
+local DODGE_VULN_DUR      = 4.0
 
--- Bone names to try in order (model-dependent fallback chain)
-local PEDESTAL_BONE_NAMES = {
+-- Root bone name chain – first match wins (cached per instance)
+local ROOT_BONE_NAMES = {
+    "b_pelvis1",               -- Gekko's own root
     "ValveBiped.Bip01_Pelvis",
     "Bip01_Pelvis",
     "pelvis",
-    "b_pelvis1",   -- Gekko's own pelvis bone name
     "Bip01",
 }
 
 -- ============================================================
--- Helpers
+-- Internal helpers
 -- ============================================================
 
---- Find the NPC's pedestal / root bone index (cached per-instance).
-local function GetPedestalBone(ent)
+local function GetRootBone(ent)
     if ent._pedestalBone and ent._pedestalBone >= 0 then
         return ent._pedestalBone
     end
-    for _, name in ipairs(PEDESTAL_BONE_NAMES) do
+    for _, name in ipairs(ROOT_BONE_NAMES) do
         local idx = ent:LookupBone(name)
         if idx and idx >= 0 then
             ent._pedestalBone = idx
@@ -67,8 +62,6 @@ local function GetPedestalBone(ent)
     return -1
 end
 
---- Ground-snap a world position.  Returns the snapped position, or nil if no
---- solid floor was found within SLIDE_GROUND_DROP units.
 local function GroundSnap(ent, worldPos)
     local mins = ent:OBBMins()
     local maxs = ent:OBBMaxs()
@@ -84,7 +77,6 @@ local function GroundSnap(ent, worldPos)
     return tr.HitPos
 end
 
---- Hull-fit check: returns true if the NPC can stand at worldPos.
 local function CanFitAt(ent, worldPos)
     local mins = ent:OBBMins()
     local maxs = ent:OBBMaxs()
@@ -99,8 +91,6 @@ local function CanFitAt(ent, worldPos)
     return not fit.StartSolid and not fit.AllSolid and not fit.Hit
 end
 
---- Check if the lateral path to the destination is clear (no solid geometry
---- between our current centre and the target centre).
 local function PathIsClear(ent, destPos)
     local center = ent:OBBCenter()
     local mins   = ent:OBBMins()
@@ -116,21 +106,18 @@ local function PathIsClear(ent, destPos)
     return not tr.Hit or tr.Fraction > 0.85
 end
 
---- Pick a valid slide destination ±SLIDE_DIST to the right/left.
---- dir: +1 = right, -1 = left.  Tries the requested side first, then the
---- opposite, then small offsets.  Returns final world position or nil.
+--- Pick a valid world-space destination ±SLIDE_DIST from origin.
+--- Returns (worldPos, sign) or nil.
 local function PickSlideDestination(ent, preferRight)
     local right  = ent:GetRight()
     local origin = ent:GetPos()
     local dirs   = preferRight and { 1, -1 } or { -1, 1 }
     for _, sign in ipairs(dirs) do
         local candidate = origin + right * (sign * SLIDE_DIST)
-        -- Block terrain check
-        local snapped = GroundSnap(ent, candidate)
+        local snapped   = GroundSnap(ent, candidate)
         if snapped and CanFitAt(ent, snapped) and PathIsClear(ent, snapped) then
             return snapped, sign
         end
-        -- Try 75 % and 50 % distances as fallbacks
         for _, frac in ipairs({ 0.75, 0.5 }) do
             local shorter = origin + right * (sign * SLIDE_DIST * frac)
             local snap2   = GroundSnap(ent, shorter)
@@ -143,23 +130,54 @@ local function PickSlideDestination(ent, preferRight)
 end
 
 -- ============================================================
--- Core slide executor
+-- Bone-offset applicator  (called every Think while sliding)
 -- ============================================================
 
---- Smoothly slide the NPC's world position toward `destPos` using per-Think
---- linear interpolation.  The bone offset keeps the visual root aligned during
---- the slide so the model doesn't foot-skate.
-local function BeginSlide(ent, destPos, onComplete)
-    if ent._pedestalSliding then return end   -- already in a slide
+--- Apply the current _boneOffset to the root bone in local-right space.
+--- The entity origin stays put; only the visual skeleton shifts.
+local function ApplyBoneOffset(ent)
+    local boneIdx = GetRootBone(ent)
+    if boneIdx < 0 then return end
 
-    ent._pedestalSliding   = true
-    ent._slideStart        = ent:GetPos()
-    ent._slideDest         = destPos
-    ent._slideStartTime    = CurTime()
-    ent._slideDuration     = ent._slideStart:Distance(destPos) / SLIDE_SPEED
-    ent._slideOnComplete   = onComplete
+    -- Build the offset in world space: right * scalar
+    local worldOffset = ent:GetRight() * ent._boneOffset
 
-    -- Departure spark (cheap visual cue)
+    -- GetBonePosition returns the bone's current world pos & angles.
+    -- We move it to (naturalWorldPos + offset) to shift the whole skeleton.
+    local bonePos, boneAng = ent:GetBonePosition(boneIdx)
+    if not bonePos then return end
+
+    -- We store the bone's "natural" position once per slide so we always
+    -- add to the same base rather than accumulating drift.
+    if not ent._boneNaturalPos then
+        ent._boneNaturalPos = bonePos
+    end
+
+    ent:SetBonePosition(boneIdx, ent._boneNaturalPos + worldOffset, boneAng)
+end
+
+-- ============================================================
+-- BeginSlide: start a bone-space slide toward destPos
+-- ============================================================
+
+local function BeginSlide(ent, destPos)
+    if ent._pedestalSliding then return end
+
+    -- How far right is the destination from current origin?
+    local delta       = destPos - ent:GetPos()
+    delta.z           = 0
+    local rightAxis   = ent:GetRight()
+    local targetOff   = rightAxis:Dot(delta)   -- signed scalar in right-space
+
+    ent._pedestalSliding  = true
+    ent._boneOffsetStart  = ent._boneOffset or 0
+    ent._boneOffsetTarget = targetOff
+    ent._slideStartTime   = CurTime()
+    ent._slideDuration    = math.abs(targetOff - (ent._boneOffset or 0)) / SLIDE_SPEED
+    ent._slideDestWorld   = destPos   -- where to commit origin when done
+    ent._boneNaturalPos   = nil       -- reset so ApplyBoneOffset re-samples
+
+    -- Departure spark
     local ed = EffectData()
     ed:SetOrigin(ent:GetPos() + Vector(0, 0, 30))
     ed:SetNormal(Vector(0, 0, 1))
@@ -168,76 +186,80 @@ local function BeginSlide(ent, destPos, onComplete)
     util.Effect("ElectricSpark", ed)
 end
 
---- Per-Think updater for the active slide.  Must be called from OnThink.
+-- ============================================================
+-- Per-Think slide tick
+-- ============================================================
+
 function ENT:PedestalDodge_ThinkSlide()
     if not self._pedestalSliding then return end
 
-    local now     = CurTime()
-    local elapsed = now - self._slideStartTime
-    local frac    = math.Clamp(elapsed / self._slideDuration, 0, 1)
+    local elapsed = CurTime() - self._slideStartTime
+    local dur     = math.max(self._slideDuration, 0.01)
+    local frac    = math.Clamp(elapsed / dur, 0, 1)
 
-    local newPos = LerpVector(frac, self._slideStart, self._slideDest)
-    self:SetPos(newPos)
+    -- Lerp the bone offset scalar
+    self._boneOffset = Lerp(frac, self._boneOffsetStart, self._boneOffsetTarget)
 
-    -- Bone offset: keep the model visually in line with the world entity position.
-    -- We do NOT manipulate the bone separately; SetPos already moves the skeleton
-    -- root.  However, if the server position jitters, briefly compensate via the
-    -- pelvis bone (purely cosmetic, client-side jitter only) — skipped on server.
-    -- This block intentionally left minimal: the bone manipulation here is just
-    -- the world-position slide itself, which is the "Pedestal bone" approach
-    -- described in the task.
+    -- Push skeleton root sideways
+    ApplyBoneOffset(self)
 
     if frac >= 1 then
-        self:SetPos(self._slideDest)
+        -- Commit: move entity origin to the real destination,
+        -- then zero the bone offset so the skeleton sits naturally again.
+        self:SetPos(self._slideDestWorld)
+        self._boneOffset      = 0
+        self._boneNaturalPos  = nil
         self._pedestalSliding = false
+
+        -- Clear the bone override so the animation system retakes control
+        local boneIdx = GetRootBone(self)
+        if boneIdx >= 0 then
+            local bonePos, boneAng = self:GetBonePosition(boneIdx)
+            if bonePos then
+                self:SetBonePosition(boneIdx, bonePos, boneAng)
+            end
+        end
+
         -- Arrival spark
         local ed = EffectData()
-        ed:SetOrigin(self._slideDest + Vector(0, 0, 20))
+        ed:SetOrigin(self._slideDestWorld + Vector(0, 0, 20))
         ed:SetNormal(Vector(0, 0, 1))
         ed:SetScale(0.8)
         ed:SetMagnitude(1)
         util.Effect("ElectricSpark", ed)
-        if self._slideOnComplete then
-            self._slideOnComplete()
-            self._slideOnComplete = nil
-        end
     end
 end
 
 -- ============================================================
--- RANDOM STRAFE SYSTEM
+-- INIT
 -- ============================================================
 
---- Initialise state (call from ENT:Init or CustomOnInitialize).
 function ENT:PedestalDodge_Init()
-    self._pedestalBone        = -1
-    self._pedestalSliding     = false
-    self._slideStart          = nil
-    self._slideDest           = nil
-    self._slideStartTime      = 0
-    self._slideDuration       = 0.1
-    self._slideOnComplete     = nil
-
-    -- Random strafe
-    self._strafeNextT         = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
-
-    -- Reactive dodge charges
-    self._dodgeChargesLeft    = DODGE_CHARGES
-    self._dodgeWindowStart    = CurTime()
-    self._dodgeVulnerable     = false
-    self._dodgeVulnUntil      = 0
-    self._dodgeCooldownUntil  = 0
-
-    -- Cache bone index
-    GetPedestalBone(self)
+    self._pedestalBone       = -1
+    self._pedestalSliding    = false
+    self._boneOffset         = 0
+    self._boneOffsetStart    = 0
+    self._boneOffsetTarget   = 0
+    self._boneNaturalPos     = nil
+    self._slideStartTime     = 0
+    self._slideDuration      = 0.1
+    self._slideDestWorld     = nil
+    self._strafeNextT        = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
+    self._dodgeChargesLeft   = DODGE_CHARGES
+    self._dodgeWindowStart   = CurTime()
+    self._dodgeVulnerable    = false
+    self._dodgeVulnUntil     = 0
+    self._dodgeCooldownUntil = 0
+    GetRootBone(self)
 end
 
---- Random strafe tick.  Call from OnThink.
+-- ============================================================
+-- RANDOM STRAFE TICK
+-- ============================================================
+
 function ENT:PedestalDodge_ThinkStrafe()
-    -- Advance the active slide if running
     self:PedestalDodge_ThinkSlide()
 
-    -- Recover from vulnerability
     if self._dodgeVulnerable and CurTime() >= self._dodgeVulnUntil then
         self._dodgeVulnerable  = false
         self._dodgeChargesLeft = DODGE_CHARGES
@@ -246,7 +268,6 @@ function ENT:PedestalDodge_ThinkStrafe()
 
     if self._pedestalSliding then return end
     if self._dodgeVulnerable then return end
-
     if CurTime() < self._strafeNextT then return end
 
     local enemy = self.VJ_TheEnemy
@@ -254,73 +275,52 @@ function ENT:PedestalDodge_ThinkStrafe()
     if not IsValid(enemy) then return end
     if not self:Visible(enemy) then return end
 
-    -- Schedule next strafe regardless of success
     self._strafeNextT = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
 
-    local preferRight = math.random() >= 0.5
-    local dest, sign  = PickSlideDestination(self, preferRight)
+    local dest = PickSlideDestination(self, math.random() >= 0.5)
     if not dest then return end
 
     BeginSlide(self, dest)
 end
 
 -- ============================================================
--- REACTIVE DODGE SYSTEM
+-- REACTIVE DODGE ON HIT
 -- ============================================================
 
---- Called when the NPC takes bullet/buckshot damage.  Mirrors the reference
---- NPC's charge + vulnerable lockout pattern.
---- Returns true if a dodge was executed (caller may nullify damage).
 function ENT:PedestalDodge_OnHit(dmginfo)
     if self._gekkoDead then return false end
     if self._pedestalSliding then return false end
 
-    -- Only react to bullet-type damage
     local valid = dmginfo:IsDamageType(DMG_BULLET)
                or dmginfo:IsDamageType(DMG_BUCKSHOT)
                or dmginfo:IsDamageType(DMG_SNIPER)
     if not valid then return false end
 
-    -- Not during vulnerability lockout
     if self._dodgeVulnerable then return false end
-
-    -- Cooldown between dodges
     if CurTime() < self._dodgeCooldownUntil then return false end
-
-    -- Chance roll
     if math.random() > DODGE_CHANCE then return false end
 
-    -- Charge window refresh
     if CurTime() - self._dodgeWindowStart >= DODGE_WINDOW then
         self._dodgeChargesLeft = DODGE_CHARGES
         self._dodgeWindowStart = CurTime()
     end
-
     if self._dodgeChargesLeft <= 0 then return false end
 
-    -- Determine preferred dodge direction: perpendicular to incoming fire
     local attacker  = dmginfo:GetAttacker()
     local dmgOrigin = IsValid(attacker) and attacker:GetPos() or dmginfo:GetDamagePosition()
     local toAtk     = (dmgOrigin - self:GetPos())
     toAtk.z = 0
     toAtk:Normalize()
-    -- Perpendicular = strafe to the side that is NOT facing the attacker
-    local rightDot  = self:GetRight():Dot(toAtk)
-    local preferRight = (rightDot < 0)   -- dodge AWAY from attacker's side
+    local preferRight = self:GetRight():Dot(toAtk) < 0
 
     local dest = PickSlideDestination(self, preferRight)
-    if not dest then
-        -- Try the opposite side as last resort
-        dest = PickSlideDestination(self, not preferRight)
-    end
+    if not dest then dest = PickSlideDestination(self, not preferRight) end
     if not dest then return false end
 
-    -- Consume charge
     self._dodgeChargesLeft   = self._dodgeChargesLeft - 1
     self._dodgeCooldownUntil = CurTime() + math.Rand(DODGE_COOLDOWN_MIN, DODGE_COOLDOWN_MAX)
 
     if self._dodgeChargesLeft <= 0 then
-        -- Enter vulnerable lockout
         self._dodgeVulnerable = true
         self._dodgeVulnUntil  = CurTime() + DODGE_VULN_DUR
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
