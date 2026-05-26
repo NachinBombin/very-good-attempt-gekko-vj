@@ -5,9 +5,16 @@
 local GROUNDED_HEALTH_FRACTION = 0.30
 local GROUNDED_CHANCE          = 0.30
 
-local PELVIS_OFFSET_Z = -125
-local L_THIGH_ANG     = Angle(0, 0, -50)
-local R_THIGH_ANG     = Angle(100, -80, 0)
+-- PELVIS_OFFSET_Z removed: ManipulateBonePosition(-125) was pushing the mesh
+-- 125u underground (entity origin = floor contact point, hull min Z = 0),
+-- which made the lower body invisible and the upper body appear to float.
+-- Floor placement is handled entirely by SnapToFloor + the grounded hull.
+local L_THIGH_ANG = Angle(0, 0, -50)
+local R_THIGH_ANG = Angle(100, -80, 0)
+
+-- Hull used while grounded: low flat box so origin stays on the floor surface.
+local GROUNDED_HULL_MIN = Vector(-64, -64, 0)
+local GROUNDED_HULL_MAX = Vector(64, 64, 72)
 
 -- ============================================================
 function ENT:GekkoLegs_Init()
@@ -53,20 +60,39 @@ end
 -- ============================================================
 --  SnapToFloor
 --  Must be called AFTER SetMoveType(MOVETYPE_NONE).
---  On MOVETYPE_NONE entities SetPos is respected by the engine
---  and moves the origin directly. Traces from 500u above to
---  find the floor, then places the origin on the hit point.
+--  On MOVETYPE_NONE entities, SetPos is respected directly.
+--
+--  FIX: Use MASK_SOLID as primary mask so displacements, props,
+--  and all world geometry are included (MASK_SOLID_BRUSHONLY
+--  only catches brush faces and would miss displacement/prop
+--  floors, causing the trace to return no hit and leaving the
+--  entity floating wherever it was).
+--
+--  The entity hull has min Z = 0, so origin == floor contact
+--  point. We place origin exactly at tr.HitPos.z.
 -- ============================================================
 local function SnapToFloor(ent)
     local pos = ent:GetPos()
 
+    -- Primary: MASK_SOLID catches everything (world + displacements + props)
     local tr = util.TraceLine({
         start  = Vector(pos.x, pos.y, pos.z + 500),
         endpos = Vector(pos.x, pos.y, pos.z - 2048),
         filter = ent,
-        mask   = MASK_SOLID_BRUSHONLY,
+        mask   = MASK_SOLID,
     })
 
+    -- Fallback 1: brush-only
+    if not tr.Hit or tr.StartSolid then
+        tr = util.TraceLine({
+            start  = Vector(pos.x, pos.y, pos.z + 500),
+            endpos = Vector(pos.x, pos.y, pos.z - 2048),
+            filter = ent,
+            mask   = MASK_SOLID_BRUSHONLY,
+        })
+    end
+
+    -- Fallback 2: player-solid brush
     if not tr.Hit or tr.StartSolid then
         tr = util.TraceLine({
             start  = Vector(pos.x, pos.y, pos.z + 500),
@@ -84,7 +110,7 @@ local function SnapToFloor(ent)
             pos.z, tr.HitPos.z
         ))
     else
-        print("[GekkoLegs] WARNING: SnapToFloor trace missed")
+        print("[GekkoLegs] WARNING: SnapToFloor trace missed — entity may remain elevated")
     end
 end
 
@@ -123,8 +149,11 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
         self._preSprint_WalkSpeed = nil
     end
 
-    -- 4. Reset hull / crouch
-    self:SetCollisionBounds(Vector(-64, -64, 0), Vector(64, 64, 200))
+    -- 4. Collapse hull to grounded size and clear crouch state
+    --    Using a low hull (72u tall) keeps the origin at floor level
+    --    and prevents the engine from lifting the entity up to satisfy
+    --    a taller standing hull.
+    self:SetCollisionBounds(GROUNDED_HULL_MIN, GROUNDED_HULL_MAX)
     self:SetNWBool("GekkoIsCrouching", false)
     self._gekkoCrouching    = false
     self.VJ_IsBeingCrouched = false
@@ -139,7 +168,17 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
     -- 7. Snap to floor (SetPos respected now that type is NONE)
     SnapToFloor(self)
 
-    -- 8. Apply bone pose
+    -- 7b. Deferred re-snap one frame later to catch any engine position
+    --     correction that happens after MOVETYPE_NONE is applied.
+    local selfRef = self
+    timer.Simple(0, function()
+        if IsValid(selfRef) and selfRef._gekkoLegsDisabled then
+            SnapToFloor(selfRef)
+            selfRef:GekkoLegs_ApplyPose()
+        end
+    end)
+
+    -- 8. Apply bone pose (broken-leg angles only — no Z offset on pelvis)
     self:GekkoLegs_ApplyPose()
 
     -- 9. Gibs
@@ -164,11 +203,17 @@ function ENT:GekkoLegs_TriggerGrounded(dmginfo)
 end
 
 -- ============================================================
+--  GekkoLegs_ApplyPose
+--  Only manipulates LEG ANGLES for the broken-leg look.
+--  No ManipulateBonePosition on the pelvis — that was the
+--  cause of the floating: origin is at floor level (hull min
+--  Z = 0), so pushing the pelvis bone down by -125u shoved
+--  the mesh underground and made the upper body appear to float.
+-- ============================================================
 function ENT:GekkoLegs_ApplyPose()
     if not self._gekkoLegsDisabled then return end
-    if self.GekkoPelvisBone and self.GekkoPelvisBone >= 0 then
-        self:ManipulateBonePosition(self.GekkoPelvisBone, Vector(0, 0, PELVIS_OFFSET_Z))
-    end
+    -- Pelvis: NO position manipulation — entity origin is already at floor.
+    -- Leg angles give the broken/splayed posture.
     if self.GekkoLThighBone and self.GekkoLThighBone >= 0 then
         self:ManipulateBoneAngles(self.GekkoLThighBone, L_THIGH_ANG)
     end
