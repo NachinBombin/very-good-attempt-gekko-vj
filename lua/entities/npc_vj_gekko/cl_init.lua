@@ -27,35 +27,53 @@ JUMP_FALLING = 2
 JUMP_LAND    = 3
 
 -- ============================================================
---  GROUNDED POSE CONSTANTS  (must match leg_disable_system.lua)
+--  GROUNDED POSE CONSTANTS
 -- ============================================================
-GND_PEDESTAL_OFFSET_Z = -300   -- b_pedestal is the true root: drop the whole body
-GND_PELVIS_OFFSET_Z   = -300   -- belt-and-suspenders on b_pelvis as well
-GND_L_THIGH_ANG       = Angle(0,   0,   -50)
-GND_R_THIGH_ANG       = Angle(126, -105,  0)
+-- FIX: ManipulateBonePosition offsets are in BONE-LOCAL space, not world
+-- space.  The server already snapped the entity origin to the floor via
+-- SnapToFloor(), so the entity origin IS the floor contact point.
+--
+-- b_pedestal sits at roughly Z=0 above the entity origin (it is the
+-- skeleton root).  b_pelvis sits ~72 u above it.  Applying a huge
+-- negative offset (-300) was pushing the root far underground, causing
+-- the mesh renderer to place the visible geometry HIGH above the floor
+-- (the engine keeps the render origin at entity Z, but the skeleton was
+-- displaced downward, producing the "floating" look).
+--
+-- Correct approach:
+--   • Do NOT move b_pedestal — leave the skeleton root at entity origin.
+--   • Apply a SMALL downward offset to b_pelvis (-50) to collapse the
+--     torso toward the floor and create the broken-leg silhouette.
+--   • Drive the hip-piston bones into the broken-leg angles; these are
+--     the actual leg bones for this model (b_l/r_hippiston1).
+--   • b_l_thigh / b_r_thigh do not exist in this model — using them
+--     silently did nothing before.
+-- ============================================================
+GND_PELVIS_OFFSET_Z = -50          -- small drop to seat torso near floor
+GND_LHIP_ANG        = Angle(0,   0,  -70)   -- left  hip piston: splay out
+GND_RHIP_ANG        = Angle(110, -90,  0)   -- right hip piston: collapsed
 
 local function GekkoApplyGroundedPose(ent)
-    -- b_pedestal is the skeleton root that everything else hangs from.
-    -- Dropping it 300u pulls the entire body to floor level.
-    local pedBone = ent:LookupBone("b_pedestal")
-    if pedBone and pedBone >= 0 then
-        ent:ManipulateBonePosition(pedBone, Vector(0, 0, GND_PEDESTAL_OFFSET_Z), false)
+    -- Cache bone indices once per entity.
+    if not ent._gndBonesInited then
+        ent._gndBonesInited = true
+        ent._gndPelBone  = ent:LookupBone("b_pelvis")       or -1
+        ent._gndLHipBone = ent:LookupBone("b_l_hippiston1") or -1
+        ent._gndRHipBone = ent:LookupBone("b_r_hippiston1") or -1
     end
 
-    -- Also offset pelvis in case b_pedestal lookup misses on some model variants.
-    local pelBone = ent:LookupBone("b_pelvis")
-    if pelBone and pelBone >= 0 then
-        ent:ManipulateBonePosition(pelBone, Vector(0, 0, GND_PELVIS_OFFSET_Z), false)
+    -- Pull torso down slightly so the body reads as floor-level.
+    if ent._gndPelBone >= 0 then
+        ent:ManipulateBonePosition(ent._gndPelBone,
+            Vector(0, 0, GND_PELVIS_OFFSET_Z), false)
     end
 
-    local lBone = ent:LookupBone("b_l_thigh")
-    if lBone and lBone >= 0 then
-        ent:ManipulateBoneAngles(lBone, GND_L_THIGH_ANG, false)
+    -- Broken-leg hip angles.
+    if ent._gndLHipBone >= 0 then
+        ent:ManipulateBoneAngles(ent._gndLHipBone, GND_LHIP_ANG, false)
     end
-
-    local rBone = ent:LookupBone("b_r_thigh")
-    if rBone and rBone >= 0 then
-        ent:ManipulateBoneAngles(rBone, GND_R_THIGH_ANG, false)
+    if ent._gndRHipBone >= 0 then
+        ent:ManipulateBoneAngles(ent._gndRHipBone, GND_RHIP_ANG, false)
     end
 end
 
