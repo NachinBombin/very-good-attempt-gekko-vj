@@ -2,6 +2,7 @@
 -- npc_vj_gekko / init.lua
 -- INTEGRATED WITH: Juicy Bleeding Effect (Hemo-fluid-stream)
 -- NEW BLEEDING TYPE: gekko_juicy_bleeding (NPC-owned only)
+-- INTEGRATED WITH: pedestal_dodge_system.lua (random strafe + reactive dodge)
 -- ============================================================
 -- Weapon list:
 -- 1. Machine-gun burst (FireBullets)
@@ -30,6 +31,7 @@ include("death_pose_system.lua")
 include("elastic_system.lua")
 include("aps_system.lua")
 AddCSLuaFile("cl_aps.lua")
+include("pedestal_dodge_system.lua")   -- random strafe + reactive dodge
 
 -- NOTE: extensions.lua is loaded + AddCSLuaFile'd by
 -- lua/autorun/server/gekko_juicy_bleeding.lua which runs first.
@@ -656,6 +658,9 @@ function ENT:Init()
     self:GekkoDeath_Init()
     self:GekkoElastic_Init()
 	self:GekkoAPS_Init()
+    -- ── Pedestal dodge / random strafe initialisation ────────────────
+    self:PedestalDodge_Init()
+    -- ─────────────────────────────────────────────────────────────────
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -698,6 +703,7 @@ end
 
 -- ============================================================
 -- OnTakeDamage: INTEGRATED WITH JUICY BLEEDING + HIT REACT
+--               + PEDESTAL DODGE (reactive sideways slide)
 -- ============================================================
 local BLEED_DMG_TYPES = {
     DMG_BULLET,
@@ -806,6 +812,15 @@ function ENT:OnTakeDamage(dmginfo)
     self:GekkoLegs_OnDamage(dmginfo)
     self:GekkoGib_OnDamage(rawDmg, dmginfo)
 
+    -- ── Reactive pedestal dodge (nullifies damage on successful dodge) ──
+    if self:PedestalDodge_OnHit(dmginfo) then
+        dmginfo:SetDamage(0)
+        dmginfo:ScaleDamage(0)
+        dmginfo:SetDamageForce(Vector(0, 0, 0))
+        return
+    end
+    -- ───────────────────────────────────────────────────────────────────
+
     if hitPosSource ~= "dmgpos" then
         print(string.format("[GekkoHitReact] hitPos reconstructed via '%s'", hitPosSource))
     end
@@ -829,6 +844,9 @@ function ENT:OnThink()
     self:GekkoElastic_Think()
 	self:GekkoAPS_Think()
     GekkoSprint_Think(self)
+    -- ── Pedestal dodge: random strafe tick + slide advancement ──────
+    self:PedestalDodge_ThinkStrafe()
+    -- ────────────────────────────────────────────────────────────────
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
     if CurTime() > self.Gekko_NextDebugT then
