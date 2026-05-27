@@ -29,25 +29,13 @@ JUMP_LAND    = 3
 -- ============================================================
 --  GROUNDED POSE CONSTANTS  (must match leg_disable_system.lua)
 -- ============================================================
--- IMPORTANT AXIS NOTE:
---   For b_pedestal on this model, the bone-local Z axis points UPWARD
---   in world space when negative, and DOWNWARD when positive.
---   This is the opposite of world Z convention.
---   Evidence: ManipulateBonePosition with negative Z caused the model
---   to float HIGHER, confirming negative = world UP for this bone.
---   Therefore: POSITIVE Z drags the pedestal DOWN toward the floor.
---
---   leg_disable_system.lua sets cidle sequence + SetPlaybackRate(0)
---   before this runs, so the pedestal rests at a known zero baseline.
---   We then add +200 in bone-local Z to drag it down to floor level.
-GND_PEDESTAL_Z  = -400       -- positive = DOWN for b_pedestal local axis
+GND_PEDESTAL_Z  = -400
 GND_L_THIGH_ANG = Angle(0,   0,   -50)
-GND_R_THIGH_ANG = Angle(126, -105,  0)
+GND_R_THIGH_ANG = Angle(50, -105,  0)
 GND_L_HIP_ANG   = Angle(0,   0,   40)
 GND_R_HIP_ANG   = Angle(0,   0,  -40)
 
 local function GekkoApplyGroundedPose(ent)
-    -- PRIMARY: drag pedestal down. Positive Z = DOWN for this bone's local axis.
     local pedBone = ent:LookupBone("b_pedestal")
     if pedBone and pedBone >= 0 then
         ent:ManipulateBonePosition(pedBone, Vector(0, 0, GND_PEDESTAL_Z), false)
