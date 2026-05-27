@@ -389,7 +389,6 @@ local function AttachGrenadeTrail(gren)
         GL_TRAIL_LIFETIME, 1 / GL_TRAIL_STARTSIZE, GL_TRAIL_MATERIAL)
 end
 
-
 local function BushmasterSparks(pos, dir, ent)
     local e = EffectData()
     e:SetOrigin(pos + dir * 4); e:SetNormal(dir); e:SetEntity(ent)
@@ -519,35 +518,6 @@ function ENT:AnimApply()
     return false
 end
 
--- ============================================================
--- TranslateActivity
--- Called by VJ Base (and the engine) every time it wants to
--- resolve an ACT_* constant to a sequence index. By intercepting
--- here we guarantee the crouch sequence wins BEFORE VJ ever
--- gets to call ResetSequence with a walk/idle sequence.
--- This is the deepest interception point available without
--- patching VJ Base itself.
--- ============================================================
-function ENT:TranslateActivity(act)
-    if self._gekkoCrouching then
-        local speed = self:GetNWFloat("GekkoSpeed", 0)
-        if speed > 5 then
-            local seq = self.GekkoSeq_CrouchWalk
-            if seq and seq ~= -1 then return seq end
-        else
-            local seq = (self.GekkoSeq_CrouchIdle ~= -1)
-                        and self.GekkoSeq_CrouchIdle
-                        or  self.GekkoSeq_CrouchWalk
-            if seq and seq ~= -1 then return seq end
-        end
-    end
-    -- Fall through to AnimationTranslations table (VJ custom move anim path)
-    if self.AnimationTranslations and self.AnimationTranslations[act] then
-        return self.AnimationTranslations[act]
-    end
-    return self.BaseClass.TranslateActivity(self, act)
-end
-
 function ENT:SetAnimationTranslations()
     if not self.AnimationTranslations then self.AnimationTranslations = {} end
     local walkSeq = self:LookupSequence("walk")
@@ -584,23 +554,14 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastPos  = curPos
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
-
-    -- ── Crouch animation must run even during suppress windows (e.g. dodge slide).
-    -- Check it BEFORE the suppress guard so crouching is never blocked by a dodge.
-    local jumpState = self:GetGekkoJumpState()
-    if jumpState ~= self.JUMP_RISING and jumpState ~= self.JUMP_FALLING and jumpState ~= self.JUMP_LAND
-        and not (self._gekkoJustJumped and now < self._gekkoJustJumped) then
-        if self:GeckoCrouch_Update() then return end
-    end
-
     if now < (self._gekkoSuppressActivity or 0) then return end
-
+    local jumpState = self:GetGekkoJumpState()
     if jumpState == self.JUMP_RISING or jumpState == self.JUMP_FALLING or jumpState == self.JUMP_LAND
         or (self._gekkoJustJumped and now < self._gekkoJustJumped) then
         self:SetPoseParameter("move_x", 0); self:SetPoseParameter("move_y", 0)
         return
     end
-
+    if self:GeckoCrouch_Update() then return end
     local enemy = GetActiveEnemy(self)
     local dist  = 0
     if IsValid(enemy) then
@@ -1185,32 +1146,19 @@ end
 --   played BM_SHELL_DROP_DELAY (0.19 s) after each shot fires.
 -- ============================================================
 local function FireBushmaster(ent, enemy)
-    -- Snapshot the fallback aim position at burst start
     local aimPosBase = enemy:GetPos() + Vector(0, 0, 40)
-
-    -- Task 2: snapshot enemy velocity at burst start for lead calculation.
-    -- We re-sample per shot so the lead tracks the target if it changes direction.
-    -- Using GetAbsVelocity() - works on players and NPCs alike.
     local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
-
-    -- Task 3: pre-build the per-shot fire times with stutter accumulation.
-    -- Each shot decides independently whether to add BM_INTERVAL2 or BM_INTERVAL
-    -- to the running clock. This means a stutter on shot N shifts ALL subsequent shots.
     local shotTimes = {}
     local accumTime = 0
     for i = 0, rounds - 1 do
         shotTimes[i] = accumTime
-        -- Roll stutter for the NEXT gap (no gap after the last shot, doesn't matter)
         local gap = (math.random(100) <= BM_STUTTER_CHANCE) and BM_INTERVAL2 or BM_INTERVAL
         accumTime = accumTime + gap
     end
-
     for i = 0, rounds - 1 do
         local shot = i
         timer.Simple(shotTimes[shot], function()
             if not IsValid(ent) then return end
-
-            -- Resolve muzzle source
             local src, ejectAng
             ejectAng = ent:GetAngles()
             local pelBone = ent.GekkoPelvisBone
@@ -1222,33 +1170,20 @@ local function FireBushmaster(ent, enemy)
                 end
             end
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
-
-            -- Resolve current enemy
             local curEnemy = GetActiveEnemy(ent)
             local basePos  = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0, 0, 40)) or aimPosBase
-
-            -- Task 2: imperfect velocity lead.
-            -- tof = straight-line distance / projectile speed (rough estimate, ignores orbit path)
-            -- lead = velocity * tof * BM_LEAD_FACTOR  (55% -> plausible but not perfect)
             local leadOffset = Vector(0, 0, 0)
             if IsValid(curEnemy) then
                 local enemyVel = curEnemy:GetAbsVelocity()
-                -- Only lead if the target is actually moving (avoids jitter on standing targets)
                 if enemyVel:LengthSqr() > 100 then
                     local dist = src:Distance(basePos)
                     local tof  = dist / BM_PROJ_SPEED
                     leadOffset = enemyVel * (tof * BM_LEAD_FACTOR)
                 end
             end
-
-            -- Task 1: drop compensation + vertical jitter
             local dropCompZ = BM_DROP_COMP_Z + math.Rand(-BM_DROP_JITTER_Z, BM_DROP_JITTER_Z)
-
-            -- Final aim point: base + velocity lead + drop compensation (Z only)
             local curAim = basePos + leadOffset + Vector(0, 0, dropCompZ)
-
             local dir = (curAim - src):GetNormalized()
-
             local shell = ents.Create("sent_gekko_bushmaster")
             if IsValid(shell) then
                 shell:SetPos(src); shell:SetAngles(dir:Angle())
@@ -1263,23 +1198,17 @@ local function FireBushmaster(ent, enemy)
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-
-            -- Shell ejection sound: played 0.19 s after the shot,
-            -- random variant from BM_SHELL_DROP_SOUNDS (01-07).
             local shellSnd = BM_SHELL_DROP_SOUNDS[math.random(#BM_SHELL_DROP_SOUNDS)]
             timer.Simple(BM_SHELL_DROP_DELAY, function()
                 if not IsValid(ent) then return end
                 ent:EmitSound(shellSnd, BM_SHELL_DROP_LEVEL,
                     math.random(BM_SHELL_DROP_PITCH_MIN, BM_SHELL_DROP_PITCH_MAX), 0.8)
             end)
-
-            -- ---- Bushmaster fire-recoil signal (server -> client) ----
             net.Start("GekkoBushRecoil")
                 net.WriteEntity(ent)
                 net.WriteVector(src)
-                net.WriteVector(-dir)   -- recoil direction = opposite of shot
+                net.WriteVector(-dir)
             net.Broadcast()
-            -- -----------------------------------------------------------
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
