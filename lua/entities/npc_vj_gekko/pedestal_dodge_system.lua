@@ -2,26 +2,25 @@
 -- pedestal_dodge_system.lua
 -- Sideways dodge via MOVETYPE_FLYGRAVITY + SetVelocity.
 --
--- WHY THIS WORKS (learned from jump_system.lua):
---   Switching to MOVETYPE_FLYGRAVITY removes the NPC from VJ Base's
---   locomotion system. SetVelocity() then sticks -- the engine's physics
---   integrator owns the movement, not the AI scheduler.
---   On jump: MOVETYPE_FLYGRAVITY -> SetVelocity(up+fwd) -> land -> MOVETYPE_STEP
---   On dodge: MOVETYPE_FLYGRAVITY -> SetVelocity(sideways, Z=0) -> timer -> MOVETYPE_STEP
+-- MOVEMENT (from jump_system.lua):
+--   MOVETYPE_FLYGRAVITY takes the NPC out of VJ Base locomotion so
+--   SetVelocity sticks. timer.Simple(dist/speed) restores MOVETYPE_STEP.
 --
--- ARRIVAL:
---   A jump lands on a ground-hit event. A horizontal dodge has no such
---   event, so we use timer.Simple(SLIDE_DIST / SLIDE_SPEED) to restore the
---   movetype. No per-Think polling, no hull traces, no Z-jitter.
+-- CROUCH (reactive dodge only):
+--   Before launching the slide we enter the crouch state manually
+--   (hull shrink + _gekkoCrouching = true + NWBool). This makes
+--   GeckoCrouch_Update() immediately enforce c_walk/cidle for the whole
+--   slide, giving a smooth crouch-down blend from the model.
+--   On cleanup we clear _gekkoCrouching so GeckoCrouch_Update() exits
+--   normally and plays the stand-up blend on the next tick.
 --
 -- TWO MODES
---   1. Random strafe  -- fires every STRAFE_INTERVAL_MIN..MAX seconds
---      while an enemy is visible.
---   2. Reactive dodge -- fires on bullet/buckshot/sniper hits, charge-gated.
+--   1. Random strafe  -- NO crouch, just a quick sidestep.
+--   2. Reactive dodge -- FULL crouch for the slide duration.
 -- ============================================================
 
-local SLIDE_DIST          = 100      -- units sideways
-local SLIDE_SPEED         = 280      -- units per second (higher = snappier)
+local SLIDE_DIST          = 100
+local SLIDE_SPEED         = 280      -- units/sec
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -32,6 +31,11 @@ local DODGE_CHANCE        = 0.72
 local DODGE_COOLDOWN_MIN  = 0.8
 local DODGE_COOLDOWN_MAX  = 2.0
 local DODGE_VULN_DUR      = 4.0
+
+-- Hull constants mirrored from crouch_system.lua
+local HITBOX_HALF_W   = 64
+local HITBOX_CROUCH_H = 130
+local HITBOX_STAND_H  = 200
 
 -- ============================================================
 -- Internal helpers
@@ -73,9 +77,8 @@ local function PickSlideDir(ent, preferRight)
     for _, sign in ipairs(dirs) do
         local candidate = origin + right * (sign * SLIDE_DIST)
         if CanFitAt(ent, candidate) and PathIsClear(ent, candidate) then
-            return right * sign  -- unit direction vector
+            return right * sign
         end
-        -- try shorter distance
         for _, frac in ipairs({ 0.75, 0.5 }) do
             local shorter = origin + right * (sign * SLIDE_DIST * frac)
             if CanFitAt(ent, shorter) and PathIsClear(ent, shorter) then
@@ -87,31 +90,83 @@ local function PickSlideDir(ent, preferRight)
 end
 
 -- ============================================================
--- BeginSlide
--- Mirrors GekkoJump_Execute's movetype-switch pattern.
+-- Crouch enter/exit helpers
+-- These mirror crouch_system.lua's EnterCrouch / ExitCrouch locals
+-- but are scoped here so pedestal_dodge owns the transition.
 -- ============================================================
 
-local function BeginSlide(ent, slideDir)
+local function Dodge_EnterCrouch(ent, slideDur)
+    ent._gekkoCrouching         = true
+    ent._gekkoCrouchJustEntered = true
+    -- Hold the crouch for the full slide + a little blend-out buffer.
+    ent._gekkoCrouchHoldUntil   = CurTime() + slideDur + 0.05
+    ent._gekkoCrouchSeqSet      = -1  -- force GeckoCrouch_Update to re-pick seq
+
+    ent:SetCollisionBounds(
+        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
+    )
+    ent:SetNWBool("GekkoIsCrouching", true)
+
+    -- Keep _gekkoSuppressActivity alive so nothing overrides the crouch seq
+    -- during the slide. GeckoCrouch_Update will clear this when it exits.
+    ent._gekkoSuppressActivity = CurTime() + slideDur + 0.05
+end
+
+local function Dodge_ExitCrouch(ent)
+    -- Clear the dodge-owned crouch flag. GeckoCrouch_Update will then
+    -- see _gekkoCrouching = true but wantCrouch = false on the next tick,
+    -- call ExitCrouch(), restore the hull, and blend the stand-up animation.
+    ent._gekkoCrouching         = false
+    ent._gekkoCrouchJustEntered = false
+    ent._gekkoCrouchHoldUntil   = -1
+    ent._gekkoCrouchSeqSet      = -1
+
+    -- Re-enable suppress briefly so stand-up blend isn't cut off,
+    -- then GeckoCrouch_Update's ExitCrouch will take over from here.
+    ent._gekkoSuppressActivity  = nil
+
+    ent:SetCollisionBounds(
+        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
+        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
+    )
+    ent:SetNWBool("GekkoIsCrouching", false)
+    ent.VJ_CanMoveThink = true
+end
+
+-- ============================================================
+-- BeginSlide
+-- ============================================================
+
+local function BeginSlide(ent, slideDir, withCrouch)
     if ent._pedestalSliding then return end
     ent._pedestalSliding = true
 
     local slideDur = SLIDE_DIST / SLIDE_SPEED
 
-    -- Mirror jump_system: lock VJ AI movement, clear schedule, suppress anim.
-    ent.VJ_IsMoving        = false
-    ent.VJ_CanMoveThink    = false
-    ent:SetSchedule(SCHED_NONE)
-    ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
+    -- Enter crouch BEFORE switching movetype so the sequence change
+    -- is visible from the very first frame of the slide.
+    if withCrouch then
+        Dodge_EnterCrouch(ent, slideDur)
+    end
 
-    -- Switch to physics-owned movetype so SetVelocity actually sticks.
+    -- Lock VJ AI movement (mirrors jump_system.lua)
+    ent.VJ_IsMoving     = false
+    ent.VJ_CanMoveThink = false
+    ent:SetSchedule(SCHED_NONE)
+    if not withCrouch then
+        -- For non-crouch strafe, suppress activity normally
+        ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
+    end
+
+    -- Switch to physics-owned movetype
     ent:SetMoveType(MOVETYPE_FLYGRAVITY)
 
-    -- Apply purely horizontal velocity; gravity will keep it grounded.
-    local vel    = slideDir * SLIDE_SPEED
-    vel.z        = 0
+    local vel = slideDir * SLIDE_SPEED
+    vel.z     = 0
     ent:SetVelocity(vel)
 
-    -- Spark effect on dodge start.
+    -- Spark on start
     local ed = EffectData()
     ed:SetOrigin(ent:GetPos() + Vector(0, 0, 30))
     ed:SetNormal(Vector(0, 0, 1))
@@ -119,15 +174,22 @@ local function BeginSlide(ent, slideDir)
     ed:SetMagnitude(1.5)
     util.Effect("ElectricSpark", ed)
 
-    -- Mirror jump_system landing cleanup: restore movetype + re-enable AI after travel time.
     timer.Simple(slideDur, function()
         if not IsValid(ent) then return end
+
+        -- Stop horizontal movement, restore MOVETYPE_STEP
         ent:SetVelocity(Vector(0, 0, 0))
         ent:SetMoveType(MOVETYPE_STEP)
-        ent.VJ_CanMoveThink  = true
         ent._pedestalSliding = false
 
-        -- Spark effect on dodge end.
+        -- Hand crouch exit back to crouch_system so it plays stand-up blend
+        if withCrouch then
+            Dodge_ExitCrouch(ent)
+        else
+            ent.VJ_CanMoveThink = true
+        end
+
+        -- Spark on end
         local ed2 = EffectData()
         ed2:SetOrigin(ent:GetPos() + Vector(0, 0, 20))
         ed2:SetNormal(Vector(0, 0, 1))
@@ -152,8 +214,7 @@ function ENT:PedestalDodge_Init()
 end
 
 -- ============================================================
--- RANDOM STRAFE TICK  (called from Think)
--- No per-frame slide tracking needed -- timer handles cleanup.
+-- RANDOM STRAFE TICK  (no crouch)
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkStrafe()
@@ -181,11 +242,11 @@ function ENT:PedestalDodge_ThinkStrafe()
     local dir = PickSlideDir(self, math.random() >= 0.5)
     if not dir then return end
 
-    BeginSlide(self, dir)
+    BeginSlide(self, dir, false)  -- no crouch
 end
 
 -- ============================================================
--- REACTIVE DODGE ON HIT
+-- REACTIVE DODGE ON HIT  (with crouch)
 -- ============================================================
 
 function ENT:PedestalDodge_OnHit(dmginfo)
@@ -227,6 +288,6 @@ function ENT:PedestalDodge_OnHit(dmginfo)
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
     end
 
-    BeginSlide(self, dir)
+    BeginSlide(self, dir, true)  -- with crouch
     return true
 end
