@@ -1,12 +1,14 @@
 -- ============================================================
 -- pedestal_dodge_system.lua
--- Sideways movement via incremental SetPos each Think.
+-- Sideways movement via SetAbsVelocity each Think.
 --
 -- HOW IT WORKS
---   Each Think we advance the entity origin a small delta toward
---   the destination at SLIDE_SPEED units/s.  Moving the origin
---   physically triggers normal IK / skeletal follow-through so
---   legs and body shift naturally.  No bone manipulation needed.
+--   Each Think we inject a lateral velocity toward the destination.
+--   Using SetAbsVelocity lets the engine's MOVETYPE_STEP handle
+--   collision + DropToFloor naturally, so legs and body follow
+--   through without stuttering or teleporting.
+--   A SetPos was previously used here but that fought the engine's
+--   own step-move code, causing visible stutter and teleporting.
 --
 -- TWO MODES
 --   1. Random strafe  – fires every STRAFE_INTERVAL_MIN..MAX seconds
@@ -16,7 +18,6 @@
 
 local SLIDE_DIST          = 100      -- units sideways per move
 local SLIDE_SPEED         = 160      -- units per second (tweak freely)
-local SLIDE_GROUND_DROP   = 200      -- floor-search depth
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -31,21 +32,6 @@ local DODGE_VULN_DUR      = 4.0
 -- ============================================================
 -- Internal helpers
 -- ============================================================
-
-local function GroundSnap(ent, worldPos)
-    local mins = ent:OBBMins()
-    local maxs = ent:OBBMaxs()
-    local tr = util.TraceHull({
-        start  = worldPos + Vector(0, 0, 40),
-        endpos = worldPos - Vector(0, 0, SLIDE_GROUND_DROP),
-        mins   = Vector(mins.x, mins.y, 0),
-        maxs   = Vector(maxs.x, maxs.y, 1),
-        filter = ent,
-        mask   = MASK_NPCSOLID_BRUSHONLY,
-    })
-    if not tr.Hit or tr.StartSolid or tr.HitSky then return nil end
-    return tr.HitPos
-end
 
 local function CanFitAt(ent, worldPos)
     local mins = ent:OBBMins()
@@ -84,15 +70,13 @@ local function PickSlideDestination(ent, preferRight)
     local dirs   = preferRight and { 1, -1 } or { -1, 1 }
     for _, sign in ipairs(dirs) do
         local candidate = origin + right * (sign * SLIDE_DIST)
-        local snapped   = GroundSnap(ent, candidate)
-        if snapped and CanFitAt(ent, snapped) and PathIsClear(ent, snapped) then
-            return snapped
+        if CanFitAt(ent, candidate) and PathIsClear(ent, candidate) then
+            return candidate
         end
         for _, frac in ipairs({ 0.75, 0.5 }) do
             local shorter = origin + right * (sign * SLIDE_DIST * frac)
-            local snap2   = GroundSnap(ent, shorter)
-            if snap2 and CanFitAt(ent, snap2) and PathIsClear(ent, snap2) then
-                return snap2
+            if CanFitAt(ent, shorter) and PathIsClear(ent, shorter) then
+                return shorter
             end
         end
     end
@@ -119,26 +103,34 @@ local function BeginSlide(ent, destPos)
 end
 
 -- ============================================================
--- Per-Think slide tick  (incremental origin movement)
+-- Per-Think slide tick  (velocity-driven, no SetPos)
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkSlide()
-    if not self._pedestalSliding then return end
+    if not self._pedestalSliding then
+        -- Bleed off any leftover lateral velocity we injected last frame.
+        -- Only clear XY so we don't interfere with Z (gravity / jumping).
+        local vel = self:GetAbsVelocity()
+        if vel:Length2D() > 1 then
+            self:SetAbsVelocity(Vector(0, 0, vel.z))
+        end
+        return
+    end
 
-    local dest   = self._slideDestWorld
-    local cur    = self:GetPos()
-    local delta  = dest - cur
-    delta.z      = 0                          -- keep on ground plane
-    local dist   = delta:Length()
+    local dest  = self._slideDestWorld
+    local cur   = self:GetPos()
+    local delta = dest - cur
+    delta.z     = 0          -- stay on the ground plane
+    local dist  = delta:Length()
 
-    if dist <= 1 then
-        -- Close enough: snap to destination and finish
-        self:SetPos(dest)
+    if dist <= 8 then
+        -- Close enough: stop and finish.
+        self:SetAbsVelocity(Vector(0, 0, self:GetAbsVelocity().z))
         self._pedestalSliding = false
 
         -- Arrival spark
         local ed = EffectData()
-        ed:SetOrigin(dest + Vector(0, 0, 20))
+        ed:SetOrigin(cur + Vector(0, 0, 20))
         ed:SetNormal(Vector(0, 0, 1))
         ed:SetScale(0.8)
         ed:SetMagnitude(1)
@@ -146,13 +138,11 @@ function ENT:PedestalDodge_ThinkSlide()
         return
     end
 
-    -- Step this frame
-    local step = math.min(SLIDE_SPEED * FrameTime(), dist)
-    local newPos = cur + delta:GetNormal() * step
-
-    -- Keep ground-snapped so we don't float over ramps
-    local snapped = GroundSnap(self, newPos)
-    self:SetPos(snapped or newPos)
+    -- Inject lateral velocity toward destination.
+    -- Preserve current Z so gravity and jump arcs are unaffected.
+    local slideVel = delta:GetNormal() * SLIDE_SPEED
+    local curZ     = self:GetAbsVelocity().z
+    self:SetAbsVelocity(Vector(slideVel.x, slideVel.y, curZ))
 end
 
 -- ============================================================
@@ -187,8 +177,20 @@ function ENT:PedestalDodge_ThinkStrafe()
     if self._dodgeVulnerable then return end
     if CurTime() < self._strafeNextT then return end
 
+    -- Guard: entity may be mid-removal when this Think fires.
+    -- Calling GetEnemy() on a NULL entity causes the
+    -- '[VJ Base] Tried to use a NULL entity!' error at line 2919.
+    if not IsValid(self) then return end
+
     local enemy = self.VJ_TheEnemy
-    if not IsValid(enemy) then enemy = self:GetEnemy() end
+    if not IsValid(enemy) then
+        -- pcall guards against the NULL-entity error that VJ Base throws
+        -- when self becomes invalid between the IsValid check and the C call.
+        local ok, result = pcall(function() return self:GetEnemy() end)
+        if ok and IsValid(result) then
+            enemy = result
+        end
+    end
     if not IsValid(enemy) then return end
     if not self:Visible(enemy) then return end
 
