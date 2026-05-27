@@ -519,6 +519,35 @@ function ENT:AnimApply()
     return false
 end
 
+-- ============================================================
+-- TranslateActivity
+-- Called by VJ Base (and the engine) every time it wants to
+-- resolve an ACT_* constant to a sequence index. By intercepting
+-- here we guarantee the crouch sequence wins BEFORE VJ ever
+-- gets to call ResetSequence with a walk/idle sequence.
+-- This is the deepest interception point available without
+-- patching VJ Base itself.
+-- ============================================================
+function ENT:TranslateActivity(act)
+    if self._gekkoCrouching then
+        local speed = self:GetNWFloat("GekkoSpeed", 0)
+        if speed > 5 then
+            local seq = self.GekkoSeq_CrouchWalk
+            if seq and seq ~= -1 then return seq end
+        else
+            local seq = (self.GekkoSeq_CrouchIdle ~= -1)
+                        and self.GekkoSeq_CrouchIdle
+                        or  self.GekkoSeq_CrouchWalk
+            if seq and seq ~= -1 then return seq end
+        end
+    end
+    -- Fall through to AnimationTranslations table (VJ custom move anim path)
+    if self.AnimationTranslations and self.AnimationTranslations[act] then
+        return self.AnimationTranslations[act]
+    end
+    return self.BaseClass.TranslateActivity(self, act)
+end
+
 function ENT:SetAnimationTranslations()
     if not self.AnimationTranslations then self.AnimationTranslations = {} end
     local walkSeq = self:LookupSequence("walk")
