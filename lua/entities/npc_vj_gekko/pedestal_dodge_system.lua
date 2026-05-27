@@ -5,6 +5,9 @@
 -- MOVEMENT (from jump_system.lua):
 --   MOVETYPE_FLYGRAVITY takes the NPC out of VJ Base locomotion so
 --   SetVelocity sticks. timer.Simple(dist/speed) restores MOVETYPE_STEP.
+--   Because FLYGRAVITY applies gravity every tick we add a small upward
+--   velocity (SLIDE_HOP_Z) at launch; gravity pulls it back to ground
+--   naturally within the slide window, producing a 4-unit hop.
 --
 -- CROUCH (reactive dodge only):
 --   Before launching the slide we enter the crouch state manually
@@ -15,12 +18,18 @@
 --   normally and plays the stand-up blend on the next tick.
 --
 -- TWO MODES
---   1. Random strafe  -- NO crouch, just a quick sidestep.
---   2. Reactive dodge -- FULL crouch for the slide duration.
+--   1. Random strafe  -- NO crouch, small Z hop.
+--   2. Reactive dodge -- FULL crouch + small Z hop for the slide duration.
 -- ============================================================
 
 local SLIDE_DIST          = 100
 local SLIDE_SPEED         = 280      -- units/sec
+
+-- Upward impulse added to every slide launch.
+-- MOVETYPE_FLYGRAVITY applies ~svgravity (800 u/s²) per tick, so this
+-- value is chosen to reach ~4 units of peak height during the slide:
+--   peak_height ≈ v₀² / (2g)  →  v₀ = √(2 × 800 × 4) ≈ 80 u/s
+local SLIDE_HOP_Z         = 80       -- units/sec upward at launch
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -186,11 +195,14 @@ local function BeginSlide(ent, slideDir, withCrouch)
         ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
     end
 
-    -- Switch to physics-owned movetype
+    -- Switch to physics-owned movetype (same as jump_system.lua).
+    -- FLYGRAVITY applies gravity every server tick, so setting vel.z
+    -- to SLIDE_HOP_Z produces a small ballistic arc peaking at ~4 units,
+    -- returning to ground well within the slide window.
     ent:SetMoveType(MOVETYPE_FLYGRAVITY)
 
     local vel = slideDir * SLIDE_SPEED
-    vel.z     = 0
+    vel.z     = SLIDE_HOP_Z   -- 4-unit ballistic hop; gravity handles the descent
     ent:SetVelocity(vel)
 
     -- Spark on start
@@ -204,7 +216,9 @@ local function BeginSlide(ent, slideDir, withCrouch)
     timer.Simple(slideDur, function()
         if not IsValid(ent) then return end
 
-        -- Stop horizontal movement, restore MOVETYPE_STEP
+        -- Stop horizontal movement, restore MOVETYPE_STEP.
+        -- Zero out velocity completely so residual Z from the hop arc
+        -- doesn't carry over into the stand phase.
         ent:SetVelocity(Vector(0, 0, 0))
         ent:SetMoveType(MOVETYPE_STEP)
         ent._pedestalSliding = false
@@ -274,7 +288,7 @@ function ENT:PedestalDodge_ThinkStrafe()
     local dir = PickSlideDir(self, math.random() >= 0.5)
     if not dir then return end
 
-    BeginSlide(self, dir, false)  -- no crouch
+    BeginSlide(self, dir, false)  -- no crouch, hop still applies
 end
 
 -- ============================================================
@@ -320,6 +334,6 @@ function ENT:PedestalDodge_OnHit(dmginfo)
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
     end
 
-    BeginSlide(self, dir, true)  -- with crouch
+    BeginSlide(self, dir, true)  -- with crouch + hop
     return true
 end
