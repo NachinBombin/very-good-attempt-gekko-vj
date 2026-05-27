@@ -7,12 +7,14 @@
 --   SetVelocity sticks. timer.Simple(dist/speed) restores MOVETYPE_STEP.
 --
 -- CROUCH (reactive dodge only):
---   Before launching the slide we enter the crouch state manually
---   (hull shrink + _gekkoCrouching = true + NWBool). This makes
---   GeckoCrouch_Update() immediately enforce c_walk/cidle for the whole
---   slide, giving a smooth crouch-down blend from the model.
---   On cleanup we clear _gekkoCrouching so GeckoCrouch_Update() exits
---   normally and plays the stand-up blend on the next tick.
+--   The visual crouch is driven entirely CLIENT-SIDE via b_pedestal
+--   ManipulateBoneAngles, using the same NWInt pulse pattern as every
+--   other animation on this model (headbutt, FK360, spinkick, etc.).
+--   On BeginSlide we fire GekkoDodgeCrouchPulse and write the slide
+--   duration to GekkoDodgeCrouchDur. The cl_init driver reads both and
+--   smoothly drives b_pedestal down for the slide, then restores it.
+--   Server-side we still shrink the hull and set GekkoIsCrouching so
+--   hitboxes and GeckoCrouch_Update behave correctly.
 --
 -- TWO MODES
 --   1. Random strafe  -- NO crouch, just a quick sidestep.
@@ -90,17 +92,14 @@ local function PickSlideDir(ent, preferRight)
 end
 
 -- ============================================================
--- Crouch enter/exit helpers
--- These mirror crouch_system.lua's EnterCrouch / ExitCrouch locals
--- but are scoped here so pedestal_dodge owns the transition.
+-- Crouch enter/exit helpers  (hull + NWBool only)
+-- The VISUAL crouch is fired as a client-side pulse below.
 -- ============================================================
 
 local function Dodge_EnterCrouch(ent, slideDur)
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
-    -- Hold the crouch for the full slide + a little blend-out buffer.
     ent._gekkoCrouchHoldUntil   = CurTime() + slideDur + 0.05
-    -- Reset to -1 so GeckoCrouch_Update re-picks idle/walk on subsequent ticks.
     ent._gekkoCrouchSeqSet      = -1
 
     ent:SetCollisionBounds(
@@ -108,32 +107,13 @@ local function Dodge_EnterCrouch(ent, slideDur)
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
-
-    -- FIX: Force the crouch sequence immediately on this frame so VJ Base
-    -- cannot overwrite it during the same game tick.  _gekkoCrouchSeqSet is
-    -- left at -1 so GeckoCrouch_Update still does its normal idle/walk
-    -- switching on every subsequent tick.
-    -- Do NOT also set _gekkoSuppressActivity here: GeckoCrouch_Update owns
-    -- the sequence for the entire slide and must not be blocked by the
-    -- suppress guard inside GekkoUpdateAnimation.
-    local cwSeq = ent.GekkoSeq_CrouchWalk
-    if cwSeq and cwSeq ~= -1 then
-        ent:ResetSequence(cwSeq)
-        ent:SetPlaybackRate(1)
-        print("[DodgeCrouch] Immediate ResetSequence -> c_walk (" .. cwSeq .. ")")
-    end
 end
 
 local function Dodge_ExitCrouch(ent)
-    -- Clear the dodge-owned crouch flag. GeckoCrouch_Update will then
-    -- see _gekkoCrouching = true but wantCrouch = false on the next tick,
-    -- call ExitCrouch(), restore the hull, and blend the stand-up animation.
     ent._gekkoCrouching         = false
     ent._gekkoCrouchJustEntered = false
     ent._gekkoCrouchHoldUntil   = -1
     ent._gekkoCrouchSeqSet      = -1
-
-    -- Clear any suppress so GeckoCrouch_Update's ExitCrouch path runs freely.
     ent._gekkoSuppressActivity  = nil
 
     ent:SetCollisionBounds(
@@ -154,10 +134,14 @@ local function BeginSlide(ent, slideDir, withCrouch)
 
     local slideDur = SLIDE_DIST / SLIDE_SPEED
 
-    -- Enter crouch BEFORE switching movetype so the sequence change
-    -- is visible from the very first frame of the slide.
     if withCrouch then
         Dodge_EnterCrouch(ent, slideDur)
+
+        -- Fire the client-side bone driver pulse.
+        -- The driver reads GekkoDodgeCrouchDur to know how long to hold.
+        ent:SetNWFloat("GekkoDodgeCrouchDur", slideDur)
+        ent:SetNWInt("GekkoDodgeCrouchPulse",
+            (ent:GetNWInt("GekkoDodgeCrouchPulse", 0) % 127) + 1)
     end
 
     -- Lock VJ AI movement (mirrors jump_system.lua)
@@ -165,9 +149,6 @@ local function BeginSlide(ent, slideDir, withCrouch)
     ent.VJ_CanMoveThink = false
     ent:SetSchedule(SCHED_NONE)
     if not withCrouch then
-        -- For non-crouch strafe, suppress activity normally.
-        -- When withCrouch=true we intentionally do NOT set this:
-        -- GeckoCrouch_Update owns the sequence for the full slide duration.
         ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
     end
 
@@ -189,12 +170,10 @@ local function BeginSlide(ent, slideDir, withCrouch)
     timer.Simple(slideDur, function()
         if not IsValid(ent) then return end
 
-        -- Stop horizontal movement, restore MOVETYPE_STEP
         ent:SetVelocity(Vector(0, 0, 0))
         ent:SetMoveType(MOVETYPE_STEP)
         ent._pedestalSliding = false
 
-        -- Hand crouch exit back to crouch_system so it plays stand-up blend
         if withCrouch then
             Dodge_ExitCrouch(ent)
         else
