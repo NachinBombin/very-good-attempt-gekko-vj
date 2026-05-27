@@ -1,27 +1,21 @@
 -- ============================================================
 -- pedestal_dodge_system.lua
--- Sideways Pedestal-bone movement: random strafe + reactive dodge.
+-- Sideways movement via incremental SetPos each Think.
 --
 -- HOW IT WORKS
---   The entity origin NEVER moves.  Instead we accumulate a lateral
---   offset (_boneOffset, a scalar in local-right space) and apply it
---   every Think via SetBonePosition on the root/pedestal bone.
---   Because this is the skeleton root, every child bone (legs, spine,
---   arms) follows through normal IK/constraint propagation, producing
---   natural weight-shift without foot-skating or entity teleporting.
---
---   When the offset reaches its target we commit it to the entity
---   origin with a single SetPos + reset offset to 0, so the navmesh
---   origin stays roughly accurate for the AI pathfinder.
+--   Each Think we advance the entity origin a small delta toward
+--   the destination at SLIDE_SPEED units/s.  Moving the origin
+--   physically triggers normal IK / skeletal follow-through so
+--   legs and body shift naturally.  No bone manipulation needed.
 --
 -- TWO MODES
 --   1. Random strafe  – fires every STRAFE_INTERVAL_MIN..MAX seconds
 --      while an enemy is visible.
---   2. Reactive dodge – fires on bullet/buckshot hits, charge-gated.
+--   2. Reactive dodge – fires on bullet/buckshot/sniper hits, charge-gated.
 -- ============================================================
 
 local SLIDE_DIST          = 100      -- units sideways per move
-local SLIDE_SPEED         = 280      -- units per second of bone travel
+local SLIDE_SPEED         = 160      -- units per second (tweak freely)
 local SLIDE_GROUND_DROP   = 200      -- floor-search depth
 
 local STRAFE_INTERVAL_MIN = 1.5
@@ -34,33 +28,9 @@ local DODGE_COOLDOWN_MIN  = 0.8
 local DODGE_COOLDOWN_MAX  = 2.0
 local DODGE_VULN_DUR      = 4.0
 
--- Root bone name chain – first match wins (cached per instance)
-local ROOT_BONE_NAMES = {
-    "b_pelvis1",               -- Gekko's own root
-    "ValveBiped.Bip01_Pelvis",
-    "Bip01_Pelvis",
-    "pelvis",
-    "Bip01",
-}
-
 -- ============================================================
 -- Internal helpers
 -- ============================================================
-
-local function GetRootBone(ent)
-    if ent._pedestalBone and ent._pedestalBone >= 0 then
-        return ent._pedestalBone
-    end
-    for _, name in ipairs(ROOT_BONE_NAMES) do
-        local idx = ent:LookupBone(name)
-        if idx and idx >= 0 then
-            ent._pedestalBone = idx
-            return idx
-        end
-    end
-    ent._pedestalBone = -1
-    return -1
-end
 
 local function GroundSnap(ent, worldPos)
     local mins = ent:OBBMins()
@@ -107,7 +77,7 @@ local function PathIsClear(ent, destPos)
 end
 
 --- Pick a valid world-space destination ±SLIDE_DIST from origin.
---- Returns (worldPos, sign) or nil.
+--- Returns world position or nil.
 local function PickSlideDestination(ent, preferRight)
     local right  = ent:GetRight()
     local origin = ent:GetPos()
@@ -116,13 +86,13 @@ local function PickSlideDestination(ent, preferRight)
         local candidate = origin + right * (sign * SLIDE_DIST)
         local snapped   = GroundSnap(ent, candidate)
         if snapped and CanFitAt(ent, snapped) and PathIsClear(ent, snapped) then
-            return snapped, sign
+            return snapped
         end
         for _, frac in ipairs({ 0.75, 0.5 }) do
             local shorter = origin + right * (sign * SLIDE_DIST * frac)
             local snap2   = GroundSnap(ent, shorter)
             if snap2 and CanFitAt(ent, snap2) and PathIsClear(ent, snap2) then
-                return snap2, sign
+                return snap2
             end
         end
     end
@@ -130,52 +100,14 @@ local function PickSlideDestination(ent, preferRight)
 end
 
 -- ============================================================
--- Bone-offset applicator  (called every Think while sliding)
--- ============================================================
-
---- Apply the current _boneOffset to the root bone in local-right space.
---- The entity origin stays put; only the visual skeleton shifts.
-local function ApplyBoneOffset(ent)
-    local boneIdx = GetRootBone(ent)
-    if boneIdx < 0 then return end
-
-    -- Build the offset in world space: right * scalar
-    local worldOffset = ent:GetRight() * ent._boneOffset
-
-    -- GetBonePosition returns the bone's current world pos & angles.
-    -- We move it to (naturalWorldPos + offset) to shift the whole skeleton.
-    local bonePos, boneAng = ent:GetBonePosition(boneIdx)
-    if not bonePos then return end
-
-    -- We store the bone's "natural" position once per slide so we always
-    -- add to the same base rather than accumulating drift.
-    if not ent._boneNaturalPos then
-        ent._boneNaturalPos = bonePos
-    end
-
-    ent:SetBonePosition(boneIdx, ent._boneNaturalPos + worldOffset, boneAng)
-end
-
--- ============================================================
--- BeginSlide: start a bone-space slide toward destPos
+-- BeginSlide
 -- ============================================================
 
 local function BeginSlide(ent, destPos)
     if ent._pedestalSliding then return end
 
-    -- How far right is the destination from current origin?
-    local delta       = destPos - ent:GetPos()
-    delta.z           = 0
-    local rightAxis   = ent:GetRight()
-    local targetOff   = rightAxis:Dot(delta)   -- signed scalar in right-space
-
-    ent._pedestalSliding  = true
-    ent._boneOffsetStart  = ent._boneOffset or 0
-    ent._boneOffsetTarget = targetOff
-    ent._slideStartTime   = CurTime()
-    ent._slideDuration    = math.abs(targetOff - (ent._boneOffset or 0)) / SLIDE_SPEED
-    ent._slideDestWorld   = destPos   -- where to commit origin when done
-    ent._boneNaturalPos   = nil       -- reset so ApplyBoneOffset re-samples
+    ent._pedestalSliding = true
+    ent._slideDestWorld  = destPos
 
     -- Departure spark
     local ed = EffectData()
@@ -187,47 +119,40 @@ local function BeginSlide(ent, destPos)
 end
 
 -- ============================================================
--- Per-Think slide tick
+-- Per-Think slide tick  (incremental origin movement)
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkSlide()
     if not self._pedestalSliding then return end
 
-    local elapsed = CurTime() - self._slideStartTime
-    local dur     = math.max(self._slideDuration, 0.01)
-    local frac    = math.Clamp(elapsed / dur, 0, 1)
+    local dest   = self._slideDestWorld
+    local cur    = self:GetPos()
+    local delta  = dest - cur
+    delta.z      = 0                          -- keep on ground plane
+    local dist   = delta:Length()
 
-    -- Lerp the bone offset scalar
-    self._boneOffset = Lerp(frac, self._boneOffsetStart, self._boneOffsetTarget)
-
-    -- Push skeleton root sideways
-    ApplyBoneOffset(self)
-
-    if frac >= 1 then
-        -- Commit: move entity origin to the real destination,
-        -- then zero the bone offset so the skeleton sits naturally again.
-        self:SetPos(self._slideDestWorld)
-        self._boneOffset      = 0
-        self._boneNaturalPos  = nil
+    if dist <= 1 then
+        -- Close enough: snap to destination and finish
+        self:SetPos(dest)
         self._pedestalSliding = false
-
-        -- Clear the bone override so the animation system retakes control
-        local boneIdx = GetRootBone(self)
-        if boneIdx >= 0 then
-            local bonePos, boneAng = self:GetBonePosition(boneIdx)
-            if bonePos then
-                self:SetBonePosition(boneIdx, bonePos, boneAng)
-            end
-        end
 
         -- Arrival spark
         local ed = EffectData()
-        ed:SetOrigin(self._slideDestWorld + Vector(0, 0, 20))
+        ed:SetOrigin(dest + Vector(0, 0, 20))
         ed:SetNormal(Vector(0, 0, 1))
         ed:SetScale(0.8)
         ed:SetMagnitude(1)
         util.Effect("ElectricSpark", ed)
+        return
     end
+
+    -- Step this frame
+    local step = math.min(SLIDE_SPEED * FrameTime(), dist)
+    local newPos = cur + delta:GetNormal() * step
+
+    -- Keep ground-snapped so we don't float over ramps
+    local snapped = GroundSnap(self, newPos)
+    self:SetPos(snapped or newPos)
 end
 
 -- ============================================================
@@ -235,14 +160,7 @@ end
 -- ============================================================
 
 function ENT:PedestalDodge_Init()
-    self._pedestalBone       = -1
     self._pedestalSliding    = false
-    self._boneOffset         = 0
-    self._boneOffsetStart    = 0
-    self._boneOffsetTarget   = 0
-    self._boneNaturalPos     = nil
-    self._slideStartTime     = 0
-    self._slideDuration      = 0.1
     self._slideDestWorld     = nil
     self._strafeNextT        = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
     self._dodgeChargesLeft   = DODGE_CHARGES
@@ -250,7 +168,6 @@ function ENT:PedestalDodge_Init()
     self._dodgeVulnerable    = false
     self._dodgeVulnUntil     = 0
     self._dodgeCooldownUntil = 0
-    GetRootBone(self)
 end
 
 -- ============================================================
