@@ -245,11 +245,6 @@ end
 --  Called every tick from GekkoUpdateAnimation().
 --  Returns true  → crouch active this tick (caller must return)
 --  Returns false → crouch inactive
---
---  IMPORTANT: _gekkoSuppressActivity is checked AFTER the crouch
---  path when _gekkoCrouching is already true. This allows
---  pedestal_dodge to set suppress (blocking idle/walk/run) while
---  still letting the crouch sequence run for the slide duration.
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
@@ -260,8 +255,8 @@ function ENT:GeckoCrouch_Update()
                        jumpState == self.JUMP_LAND
     if jumpActive then return false end
 
-    -- Suppress guard: skip ONLY when we are not already force-crouching.
-    -- A dodge slide sets both _gekkoCrouching=true AND _gekkoSuppressActivity,
+    -- Suppress guard: skip entry logic ONLY when not already crouching.
+    -- A dodge slide sets _gekkoCrouching=true AND _gekkoSuppressActivity,
     -- so we must let the crouch sequence block run even while suppressed.
     if not self._gekkoCrouching then
         if self._gekkoSuppressActivity and now < self._gekkoSuppressActivity then
@@ -299,11 +294,7 @@ function ENT:GeckoCrouch_Update()
             return false
         end
     else
-        -- If this is a dodge-owned crouch (_gekkoCrouchHoldUntil set by
-        -- pedestal_dodge), don't let the normal expiry path exit it early.
-        -- pedestal_dodge's timer.Simple will call Dodge_ExitCrouch directly.
         if ceilHit then
-            -- Only extend hold for ceiling, not for dodge slides
             if not self._pedestalSliding then
                 self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
             end
@@ -329,6 +320,9 @@ function ENT:GeckoCrouch_Update()
     end
 
     -- ── Sequence enforcement ──────────────────────────────────
+    -- ResetSequence is called every tick to beat VJ base's own
+    -- per-frame ResetSequence calls. SetSequence alone is not
+    -- enough — VJ reasserts its chosen sequence immediately after.
     local speed   = self:GetNWFloat("GekkoSpeed", 0)
     local rate, targetSeq
 
@@ -348,11 +342,13 @@ function ENT:GeckoCrouch_Update()
 
     if targetSeq and targetSeq ~= -1 then
         if self._gekkoCrouchSeqSet ~= targetSeq then
+            -- Switched crouch sequence (walk↔idle): hard reset + log
             self:ResetSequence(targetSeq)
             self._gekkoCrouchSeqSet = targetSeq
             print(string.format("[GeckoCrouch] SeqSwitch → %d (speed=%.1f)", targetSeq, speed))
         else
-            self:SetSequence(targetSeq)
+            -- Same sequence: reset every tick to overwrite VJ's reassertion
+            self:ResetSequence(targetSeq)
         end
         self:SetPlaybackRate(rate)
     end
