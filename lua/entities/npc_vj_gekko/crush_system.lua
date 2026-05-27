@@ -194,6 +194,11 @@ end
 -- HELPERS
 -- ============================================================
 
+local function BlastDamage(dmgMax, dmgMin, dist, radius)
+    local frac = math.Clamp(1 - (dist / radius), 0, 1)
+    return Lerp(frac, dmgMin, dmgMax)
+end
+
 local function ClaimKickLock(self, duration)
     self.PauseAttacks        = true
     self.GeckoCrush_LockUntil = CurTime() + duration
@@ -861,6 +866,72 @@ function ENT:GeckoCrush_Think()
     elseif attack == "SPINNINGCAPOEIRA" then FireSpinningCapoeira(self)
     else                                    FireSpinKick(self, dot, inCone)
     end
+end
+
+-- ============================================================
+--  LAUNCH BLAST  (called by targeted_jump_system.lua on jump launch)
+-- ============================================================
+local LAUNCH = {
+    radius   = 220,
+    dmg_max  = 40,
+    dmg_min  = 1,
+    impulse  = 18000,
+}
+
+function ENT:GeckoCrush_LaunchBlast()
+    local origin = self:GetPos() + Vector(0, 0, 40)
+
+    for _, ent in ipairs(ents.FindInSphere(origin, LAUNCH.radius)) do
+        if ent == self then continue end
+        if not ent:IsNPC() and not ent:IsPlayer()
+            and not IsValid(ent:GetPhysicsObject()) then
+            continue
+        end
+
+        local dist = ent:GetPos():Distance(origin)
+        local dmg  = BlastDamage(LAUNCH.dmg_max, LAUNCH.dmg_min, dist, LAUNCH.radius)
+        local dir  = (ent:GetPos() - origin):GetNormalized()
+
+        CrushDamageEnt(self, ent, dmg,
+            (dir + Vector(0, 0, 0.5)):GetNormalized() * LAUNCH.impulse)
+    end
+end
+
+-- ============================================================
+--  LAND BLAST  (called by targeted_jump_system.lua on landing)
+-- ============================================================
+local LAND = {
+    radius   = 300,
+    dmg_max  = 60,
+    dmg_min  = 1,
+    impulse  = 22000,
+}
+
+function ENT:GeckoCrush_LandBlast()
+    local origin   = self:GetPos() + Vector(0, 0, 20)
+    local self_ref = self
+
+    for _, ent in ipairs(ents.FindInSphere(origin, LAND.radius)) do
+        if ent == self then continue end
+        if not ent:IsNPC() and not ent:IsPlayer()
+            and not IsValid(ent:GetPhysicsObject()) then continue end
+
+        local dist = ent:GetPos():Distance(origin)
+        local dmg  = BlastDamage(LAND.dmg_max, LAND.dmg_min, dist, LAND.radius)
+        local dir  = (ent:GetPos() - origin):GetNormalized()
+
+        CrushDamageEnt(self, ent, dmg,
+            (dir + Vector(0, 0, 1.2)):GetNormalized() * LAND.impulse)
+    end
+
+    -- Kill residual upward velocity so the NPC doesn't bounce on landing
+    timer.Simple(0, function()
+        if not IsValid(self_ref) then return end
+        local vel = self_ref:GetVelocity()
+        if vel.z > 50 then
+            self_ref:SetVelocity(Vector(0, 0, 0))
+        end
+    end)
 end
 
 end -- SERVER
