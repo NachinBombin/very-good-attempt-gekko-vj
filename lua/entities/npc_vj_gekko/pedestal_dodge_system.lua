@@ -7,14 +7,12 @@
 --   SetVelocity sticks. timer.Simple(dist/speed) restores MOVETYPE_STEP.
 --
 -- CROUCH (reactive dodge only):
---   The visual crouch is driven entirely CLIENT-SIDE via b_pedestal
---   ManipulateBoneAngles, using the same NWInt pulse pattern as every
---   other animation on this model (headbutt, FK360, spinkick, etc.).
---   On BeginSlide we fire GekkoDodgeCrouchPulse and write the slide
---   duration to GekkoDodgeCrouchDur. The cl_init driver reads both and
---   smoothly drives b_pedestal down for the slide, then restores it.
---   Server-side we still shrink the hull and set GekkoIsCrouching so
---   hitboxes and GeckoCrouch_Update behave correctly.
+--   Before launching the slide we enter the crouch state manually
+--   (hull shrink + _gekkoCrouching = true + NWBool). This makes
+--   GeckoCrouch_Update() immediately enforce c_walk/cidle for the whole
+--   slide, giving a smooth crouch-down blend from the model.
+--   On cleanup we clear _gekkoCrouching so GeckoCrouch_Update() exits
+--   normally and plays the stand-up blend on the next tick.
 --
 -- TWO MODES
 --   1. Random strafe  -- NO crouch, just a quick sidestep.
@@ -34,10 +32,13 @@ local DODGE_COOLDOWN_MIN  = 0.8
 local DODGE_COOLDOWN_MAX  = 2.0
 local DODGE_VULN_DUR      = 4.0
 
--- Hull constants mirrored from crouch_system.lua
-local HITBOX_HALF_W   = 64
-local HITBOX_CROUCH_H = 130
-local HITBOX_STAND_H  = 200
+-- Mirrored from crouch_system.lua
+local STAND_REARM_DELAY   = 1.0
+local HITBOX_HALF_W       = 64
+local HITBOX_CROUCH_H     = 130
+local HITBOX_STAND_H      = 200
+local RAND_CHECK_MIN      = 6
+local RAND_CHECK_MAX      = 8
 
 -- ============================================================
 -- Internal helpers
@@ -92,29 +93,47 @@ local function PickSlideDir(ent, preferRight)
 end
 
 -- ============================================================
--- Crouch enter/exit helpers  (hull + NWBool only)
--- The VISUAL crouch is fired as a client-side pulse below.
+-- Crouch enter/exit
+-- Direct mirrors of EnterCrouch / ExitCrouch in crouch_system.lua.
+-- No ResetSequence at entry, no _gekkoSuppressActivity.
+-- GeckoCrouch_Update's sequence enforcement block runs every tick
+-- and owns the sequence for the full slide, exactly as it does for
+-- all other crouch triggers (obstacle, ceiling, random, VJ).
 -- ============================================================
 
 local function Dodge_EnterCrouch(ent, slideDur)
+    local now = CurTime()
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
-    ent._gekkoCrouchHoldUntil   = CurTime() + slideDur + 0.05
+    ent._gekkoCrouchHoldUntil   = now + slideDur + 0.05
     ent._gekkoCrouchSeqSet      = -1
+    ent._gekkoObsOnSince        = nil
+    ent._gekkoObsDebounced      = false
+    ent._gekkoObsHullHit        = false
 
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
+    print(string.format("[DodgeCrouch] Enter | holdUntil=%.2f", ent._gekkoCrouchHoldUntil))
 end
 
 local function Dodge_ExitCrouch(ent)
-    ent._gekkoCrouching         = false
-    ent._gekkoCrouchJustEntered = false
-    ent._gekkoCrouchHoldUntil   = -1
-    ent._gekkoCrouchSeqSet      = -1
-    ent._gekkoSuppressActivity  = nil
+    local now = CurTime()
+    ent._gekkoCrouching           = false
+    ent._gekkoCrouchJustEntered   = false
+    ent._gekkoCrouchSeqSet        = -1
+    ent._gekkoObsRearmT           = now + STAND_REARM_DELAY
+    ent._gekkoObsOnSince          = nil
+    ent._gekkoObsDebounced        = false
+    ent._gekkoObsHullHit          = false
+    ent._gekkoCeilingHit          = false
+    ent._gekkoCeilNextT           = 0
+    ent._gekkoRandomCrouch        = false
+    ent._gekkoRandomCrouchEndT    = 0
+    ent._gekkoRandomDuration      = 0
+    ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
@@ -122,6 +141,7 @@ local function Dodge_ExitCrouch(ent)
     )
     ent:SetNWBool("GekkoIsCrouching", false)
     ent.VJ_CanMoveThink = true
+    print("[DodgeCrouch] Exit | standing")
 end
 
 -- ============================================================
@@ -134,14 +154,10 @@ local function BeginSlide(ent, slideDir, withCrouch)
 
     local slideDur = SLIDE_DIST / SLIDE_SPEED
 
+    -- Enter crouch BEFORE switching movetype so the sequence change
+    -- is visible from the very first frame of the slide.
     if withCrouch then
         Dodge_EnterCrouch(ent, slideDur)
-
-        -- Fire the client-side bone driver pulse.
-        -- The driver reads GekkoDodgeCrouchDur to know how long to hold.
-        ent:SetNWFloat("GekkoDodgeCrouchDur", slideDur)
-        ent:SetNWInt("GekkoDodgeCrouchPulse",
-            (ent:GetNWInt("GekkoDodgeCrouchPulse", 0) % 127) + 1)
     end
 
     -- Lock VJ AI movement (mirrors jump_system.lua)
@@ -149,6 +165,9 @@ local function BeginSlide(ent, slideDir, withCrouch)
     ent.VJ_CanMoveThink = false
     ent:SetSchedule(SCHED_NONE)
     if not withCrouch then
+        -- For non-crouch strafe only: suppress activity for the slide window.
+        -- When withCrouch=true this is intentionally omitted so
+        -- GeckoCrouch_Update can run freely and own the sequence.
         ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
     end
 
@@ -170,6 +189,7 @@ local function BeginSlide(ent, slideDir, withCrouch)
     timer.Simple(slideDur, function()
         if not IsValid(ent) then return end
 
+        -- Stop horizontal movement, restore MOVETYPE_STEP
         ent:SetVelocity(Vector(0, 0, 0))
         ent:SetMoveType(MOVETYPE_STEP)
         ent._pedestalSliding = false
