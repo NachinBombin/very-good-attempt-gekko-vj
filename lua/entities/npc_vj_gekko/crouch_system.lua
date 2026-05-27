@@ -323,7 +323,17 @@ function ENT:GeckoCrouch_Update()
     -- ResetSequence is called every tick to beat VJ base's own
     -- per-frame ResetSequence calls. SetSequence alone is not
     -- enough — VJ reasserts its chosen sequence immediately after.
-    local speed   = self:GetNWFloat("GekkoSpeed", 0)
+    --
+    -- FIX: During a reactive dodge slide the NPC is on MOVETYPE_FLYGRAVITY
+    -- with VJ locomotion frozen, so GekkoSpeed (NWFloat) is never updated
+    -- and stays at 0 for the whole slide. Read the live physics velocity
+    -- instead so c_walk is correctly selected during the dodge.
+    local speed = self:GetNWFloat("GekkoSpeed", 0)
+    if self._pedestalSliding then
+        local v = self:GetVelocity()
+        speed = math.sqrt(v.x * v.x + v.y * v.y)
+    end
+
     local rate, targetSeq
 
     if speed > CWALK_MOVING_THRESH then
