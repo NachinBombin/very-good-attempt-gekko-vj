@@ -32,6 +32,12 @@ local DODGE_COOLDOWN_MIN  = 0.8
 local DODGE_COOLDOWN_MAX  = 2.0
 local DODGE_VULN_DUR      = 4.0
 
+-- How long AFTER the slide ends we keep _gekkoDodgeCrouch = true.
+-- This prevents the race condition where the timer.Simple fires on the
+-- same tick that _gekkoCrouchHoldUntil expires, causing ExitCrouch to
+-- fire before the sequence block ever runs with the correct physics velocity.
+local DODGE_CROUCH_TAIL   = 0.35
+
 -- Mirrored from crouch_system.lua
 local STAND_REARM_DELAY   = 1.0
 local HITBOX_HALF_W       = 64
@@ -94,29 +100,36 @@ end
 
 -- ============================================================
 -- Crouch enter/exit
--- Direct mirrors of EnterCrouch / ExitCrouch in crouch_system.lua.
--- No ResetSequence at entry, no _gekkoSuppressActivity.
--- GeckoCrouch_Update's sequence enforcement block runs every tick
--- and owns the sequence for the full slide, exactly as it does for
--- all other crouch triggers (obstacle, ceiling, random, VJ).
+--
+-- Dodge_EnterCrouch sets _gekkoDodgeCrouch = true in addition to
+-- _gekkoCrouching. crouch_system.lua checks _gekkoDodgeCrouch to
+-- unconditionally keep the crouch alive for the slide + tail window,
+-- regardless of wantCrouch or holdUntil expiry. This eliminates the
+-- race condition between timer.Simple and _gekkoCrouchHoldUntil.
 -- ============================================================
 
 local function Dodge_EnterCrouch(ent, slideDur)
     local now = CurTime()
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
-    ent._gekkoCrouchHoldUntil   = now + slideDur + 0.05
+    -- Hold = slide + generous tail so the hold never expires mid-slide
+    ent._gekkoCrouchHoldUntil   = now + slideDur + DODGE_CROUCH_TAIL + 0.5
     ent._gekkoCrouchSeqSet      = -1
     ent._gekkoObsOnSince        = nil
     ent._gekkoObsDebounced      = false
     ent._gekkoObsHullHit        = false
+    -- Dedicated flag: crouch_system checks this to skip the wantCrouch
+    -- early-exit path for the entire slide + tail window.
+    ent._gekkoDodgeCrouch       = true
+    ent._gekkoDodgeCrouchUntil  = now + slideDur + DODGE_CROUCH_TAIL
 
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
-    print(string.format("[DodgeCrouch] Enter | holdUntil=%.2f", ent._gekkoCrouchHoldUntil))
+    print(string.format("[DodgeCrouch] Enter | holdUntil=%.2f  dodgeUntil=%.2f",
+        ent._gekkoCrouchHoldUntil, ent._gekkoDodgeCrouchUntil))
 end
 
 local function Dodge_ExitCrouch(ent)
@@ -124,6 +137,8 @@ local function Dodge_ExitCrouch(ent)
     ent._gekkoCrouching           = false
     ent._gekkoCrouchJustEntered   = false
     ent._gekkoCrouchSeqSet        = -1
+    ent._gekkoDodgeCrouch         = false
+    ent._gekkoDodgeCrouchUntil    = 0
     ent._gekkoObsRearmT           = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince          = nil
     ent._gekkoObsDebounced        = false
@@ -195,7 +210,11 @@ local function BeginSlide(ent, slideDir, withCrouch)
         ent._pedestalSliding = false
 
         if withCrouch then
-            Dodge_ExitCrouch(ent)
+            -- Do NOT call Dodge_ExitCrouch here.
+            -- _gekkoDodgeCrouch keeps the crouch animation alive for the
+            -- tail window. crouch_system will call ExitCrouch itself once
+            -- _gekkoDodgeCrouchUntil expires naturally on its next tick.
+            ent.VJ_CanMoveThink = true
         else
             ent.VJ_CanMoveThink = true
         end
@@ -215,13 +234,15 @@ end
 -- ============================================================
 
 function ENT:PedestalDodge_Init()
-    self._pedestalSliding    = false
-    self._strafeNextT        = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
-    self._dodgeChargesLeft   = DODGE_CHARGES
-    self._dodgeWindowStart   = CurTime()
-    self._dodgeVulnerable    = false
-    self._dodgeVulnUntil     = 0
-    self._dodgeCooldownUntil = 0
+    self._pedestalSliding       = false
+    self._strafeNextT           = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
+    self._dodgeChargesLeft      = DODGE_CHARGES
+    self._dodgeWindowStart      = CurTime()
+    self._dodgeVulnerable       = false
+    self._dodgeVulnUntil        = 0
+    self._dodgeCooldownUntil    = 0
+    self._gekkoDodgeCrouch      = false
+    self._gekkoDodgeCrouchUntil = 0
 end
 
 -- ============================================================

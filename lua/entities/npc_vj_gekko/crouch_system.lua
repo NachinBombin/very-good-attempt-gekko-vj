@@ -165,6 +165,9 @@ function ENT:GeckoCrouch_Init()
     self._gekkoRandomCrouchEndT    = 0
     self._gekkoRandomDuration      = 0
     self._gekkoRandomCrouchNextT   = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    -- Dodge-crouch dedicated flag (set by pedestal_dodge_system)
+    self._gekkoDodgeCrouch         = false
+    self._gekkoDodgeCrouchUntil    = 0
     print("[GeckoCrouch] Init() complete")
 end
 
@@ -218,6 +221,8 @@ local function ExitCrouch(ent)
     ent._gekkoCrouching           = false
     ent._gekkoCrouchJustEntered   = false
     ent._gekkoCrouchSeqSet        = -1
+    ent._gekkoDodgeCrouch         = false
+    ent._gekkoDodgeCrouchUntil    = 0
     ent._gekkoObsRearmT           = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince          = nil
     ent._gekkoObsDebounced        = false
@@ -275,11 +280,22 @@ function ENT:GeckoCrouch_Update()
     local randActive = self._gekkoRandomCrouch
     local wantCrouch = vjCrouch or obsHit or ceilHit or randActive
 
+    -- A dodge-triggered crouch is authoritative for its entire window.
+    -- It does not need any of the normal wantCrouch conditions to be true.
+    -- This prevents the race condition where _pedestalSliding clears on the
+    -- same tick that _gekkoCrouchHoldUntil expires, causing a premature exit
+    -- before the sequence block ever runs with the correct physics velocity.
+    local dodgeActive = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
+    if dodgeActive then
+        wantCrouch = true
+    end
+
     if not self._crouchDiagT or now > self._crouchDiagT then
         print(string.format(
-            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  holdLeft=%.2f  rearmLeft=%.2f",
+            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  dodge=%s  holdLeft=%.2f  rearmLeft=%.2f",
             tostring(self._gekkoCrouching), tostring(wantCrouch),
             tostring(vjCrouch), tostring(obsHit), tostring(ceilHit), tostring(randActive),
+            tostring(dodgeActive),
             math.max(0, self._gekkoCrouchHoldUntil - now),
             math.max(0, self._gekkoObsRearmT - now)
         ))
@@ -300,7 +316,7 @@ function ENT:GeckoCrouch_Update()
             end
         end
 
-        if now >= self._gekkoCrouchHoldUntil and not self._pedestalSliding then
+        if now >= self._gekkoCrouchHoldUntil and not self._pedestalSliding and not dodgeActive then
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
@@ -324,12 +340,12 @@ function ENT:GeckoCrouch_Update()
     -- per-frame ResetSequence calls. SetSequence alone is not
     -- enough — VJ reasserts its chosen sequence immediately after.
     --
-    -- FIX: During a reactive dodge slide the NPC is on MOVETYPE_FLYGRAVITY
-    -- with VJ locomotion frozen, so GekkoSpeed (NWFloat) is never updated
-    -- and stays at 0 for the whole slide. Read the live physics velocity
-    -- instead so c_walk is correctly selected during the dodge.
+    -- During a reactive dodge slide the NPC is on MOVETYPE_FLYGRAVITY
+    -- with VJ locomotion frozen, so GekkoSpeed (NWFloat) may lag by one
+    -- tick. Read the live physics velocity instead so c_walk is correctly
+    -- selected for the full slide duration.
     local speed = self:GetNWFloat("GekkoSpeed", 0)
-    if self._pedestalSliding then
+    if self._pedestalSliding or dodgeActive then
         local v = self:GetVelocity()
         speed = math.sqrt(v.x * v.x + v.y * v.y)
     end
