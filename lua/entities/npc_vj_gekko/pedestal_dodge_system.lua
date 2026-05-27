@@ -1,14 +1,17 @@
 -- ============================================================
 -- pedestal_dodge_system.lua
--- Sideways movement via SetAbsVelocity each Think.
+-- Sideways movement via incremental SetPos each Think.
 --
--- HOW IT WORKS
---   During an active slide we inject a lateral velocity toward the
---   destination each Think. SetAbsVelocity lets MOVETYPE_STEP handle
---   collision + DropToFloor naturally, so the NPC moves smoothly
---   without teleporting or stuttering.
---   We ONLY touch the velocity while _pedestalSliding is true, so
---   normal VJ Base locomotion (chase / wander) is never interrupted.
+-- WHY SetPos AND NOT SetAbsVelocity/SetLocalVelocity:
+--   VJ Base MOVETYPE_STEP NPCs have their velocity reset by the engine
+--   every RunAI tick (the locomotion task owns the velocity).  SetPos
+--   bypasses that and physically repositions the NPC.
+--
+-- WHY THE OLD VERSION STUTTERED:
+--   GroundSnap (hull-trace) returned a slightly different Z value every
+--   frame, making the entity bob up and down visibly.  Fix: we snapshot
+--   the NPC's current Z at slide-start and keep it constant throughout
+--   the slide. One DropToFloor at the end re-syncs to ground.
 --
 -- TWO MODES
 --   1. Random strafe  – fires every STRAFE_INTERVAL_MIN..MAX seconds
@@ -83,12 +86,17 @@ end
 
 -- ============================================================
 -- BeginSlide
+-- Snapshot the NPC's current Z so it stays locked during the slide.
+-- This prevents the per-frame Z-jitter that caused the old stutter.
 -- ============================================================
 
 local function BeginSlide(ent, destPos)
     if ent._pedestalSliding then return end
     ent._pedestalSliding = true
-    ent._slideDestWorld  = destPos
+    -- Lock the destination Z to the NPC's current Z so we only
+    -- move horizontally each Think.  One DropToFloor on arrival
+    -- will re-sync to the actual ground level.
+    ent._slideDestWorld  = Vector(destPos.x, destPos.y, ent:GetPos().z)
 
     local ed = EffectData()
     ed:SetOrigin(ent:GetPos() + Vector(0, 0, 30))
@@ -100,28 +108,27 @@ end
 
 -- ============================================================
 -- Per-Think slide tick
--- IMPORTANT: only touches AbsVelocity while sliding is active.
---            Never zeroes velocity when idle - that would kill
---            VJ Base's own locomotion (chase / wander).
+-- Moves only on the XY plane at a fixed Z, preventing Z-jitter.
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkSlide()
-    if not self._pedestalSliding then return end  -- nothing to do
+    if not self._pedestalSliding then return end
 
     local dest  = self._slideDestWorld
     local cur   = self:GetPos()
-    local delta = dest - cur
-    delta.z     = 0
-    local dist  = delta:Length()
+    -- Work purely in XY; Z stays pinned to _slideDestWorld.z
+    local dx    = dest.x - cur.x
+    local dy    = dest.y - cur.y
+    local dist  = math.sqrt(dx * dx + dy * dy)
 
-    if dist <= 8 then
-        -- Arrived: restore Z-only so we don't leave a lateral push behind,
-        -- then hand control back to VJ Base locomotion immediately.
-        self:SetAbsVelocity(Vector(0, 0, self:GetAbsVelocity().z))
+    if dist <= 4 then
+        -- Arrived: snap to XY target, keep current Z, then re-sync ground.
+        self:SetPos(Vector(dest.x, dest.y, cur.z))
+        self:DropToFloor()
         self._pedestalSliding = false
 
         local ed = EffectData()
-        ed:SetOrigin(cur + Vector(0, 0, 20))
+        ed:SetOrigin(self:GetPos() + Vector(0, 0, 20))
         ed:SetNormal(Vector(0, 0, 1))
         ed:SetScale(0.8)
         ed:SetMagnitude(1)
@@ -129,10 +136,11 @@ function ENT:PedestalDodge_ThinkSlide()
         return
     end
 
-    -- Drive toward destination this frame; preserve Z for gravity/jumping.
-    local slideVel = delta:GetNormal() * SLIDE_SPEED
-    local curZ     = self:GetAbsVelocity().z
-    self:SetAbsVelocity(Vector(slideVel.x, slideVel.y, curZ))
+    -- Step this frame (XY only, Z unchanged).
+    local step  = math.min(SLIDE_SPEED * FrameTime(), dist)
+    local nx    = cur.x + (dx / dist) * step
+    local ny    = cur.y + (dy / dist) * step
+    self:SetPos(Vector(nx, ny, dest.z))
 end
 
 -- ============================================================
@@ -167,6 +175,7 @@ function ENT:PedestalDodge_ThinkStrafe()
     if self._dodgeVulnerable then return end
     if CurTime() < self._strafeNextT then return end
 
+    -- Guard: entity may be mid-removal when this Think fires.
     if not IsValid(self) then return end
 
     local enemy = self.VJ_TheEnemy
