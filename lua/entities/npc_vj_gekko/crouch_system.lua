@@ -199,7 +199,6 @@ local function EnterCrouch(ent, randDuration)
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
 
-    -- Shrink collision hull to crouched height
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
@@ -230,7 +229,6 @@ local function ExitCrouch(ent)
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
 
-    -- Restore full standing hull
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
@@ -247,6 +245,11 @@ end
 --  Called every tick from GekkoUpdateAnimation().
 --  Returns true  → crouch active this tick (caller must return)
 --  Returns false → crouch inactive
+--
+--  IMPORTANT: _gekkoSuppressActivity is checked AFTER the crouch
+--  path when _gekkoCrouching is already true. This allows
+--  pedestal_dodge to set suppress (blocking idle/walk/run) while
+--  still letting the crouch sequence run for the slide duration.
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
@@ -257,8 +260,13 @@ function ENT:GeckoCrouch_Update()
                        jumpState == self.JUMP_LAND
     if jumpActive then return false end
 
-    if self._gekkoSuppressActivity and now < self._gekkoSuppressActivity then
-        return false
+    -- Suppress guard: skip ONLY when we are not already force-crouching.
+    -- A dodge slide sets both _gekkoCrouching=true AND _gekkoSuppressActivity,
+    -- so we must let the crouch sequence block run even while suppressed.
+    if not self._gekkoCrouching then
+        if self._gekkoSuppressActivity and now < self._gekkoSuppressActivity then
+            return false
+        end
     end
 
     TickRandom(self)
@@ -291,11 +299,17 @@ function ENT:GeckoCrouch_Update()
             return false
         end
     else
+        -- If this is a dodge-owned crouch (_gekkoCrouchHoldUntil set by
+        -- pedestal_dodge), don't let the normal expiry path exit it early.
+        -- pedestal_dodge's timer.Simple will call Dodge_ExitCrouch directly.
         if ceilHit then
-            self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+            -- Only extend hold for ceiling, not for dodge slides
+            if not self._pedestalSliding then
+                self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+            end
         end
 
-        if now >= self._gekkoCrouchHoldUntil then
+        if now >= self._gekkoCrouchHoldUntil and not self._pedestalSliding then
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
