@@ -555,14 +555,23 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastPos  = curPos
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
-    if now < (self._gekkoSuppressActivity or 0) then return end
+
+    -- ── Crouch animation must run even during suppress windows (e.g. dodge slide).
+    -- Check it BEFORE the suppress guard so crouching is never blocked by a dodge.
     local jumpState = self:GetGekkoJumpState()
+    if jumpState ~= self.JUMP_RISING and jumpState ~= self.JUMP_FALLING and jumpState ~= self.JUMP_LAND
+        and not (self._gekkoJustJumped and now < self._gekkoJustJumped) then
+        if self:GeckoCrouch_Update() then return end
+    end
+
+    if now < (self._gekkoSuppressActivity or 0) then return end
+
     if jumpState == self.JUMP_RISING or jumpState == self.JUMP_FALLING or jumpState == self.JUMP_LAND
         or (self._gekkoJustJumped and now < self._gekkoJustJumped) then
         self:SetPoseParameter("move_x", 0); self:SetPoseParameter("move_y", 0)
         return
     end
-    if self:GeckoCrouch_Update() then return end
+
     local enemy = GetActiveEnemy(self)
     local dist  = 0
     if IsValid(enemy) then
