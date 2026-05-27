@@ -100,7 +100,8 @@ local function Dodge_EnterCrouch(ent, slideDur)
     ent._gekkoCrouchJustEntered = true
     -- Hold the crouch for the full slide + a little blend-out buffer.
     ent._gekkoCrouchHoldUntil   = CurTime() + slideDur + 0.05
-    ent._gekkoCrouchSeqSet      = -1  -- force GeckoCrouch_Update to re-pick seq
+    -- Reset to -1 so GeckoCrouch_Update re-picks idle/walk on subsequent ticks.
+    ent._gekkoCrouchSeqSet      = -1
 
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
@@ -108,9 +109,19 @@ local function Dodge_EnterCrouch(ent, slideDur)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
 
-    -- Keep _gekkoSuppressActivity alive so nothing overrides the crouch seq
-    -- during the slide. GeckoCrouch_Update will clear this when it exits.
-    ent._gekkoSuppressActivity = CurTime() + slideDur + 0.05
+    -- FIX: Force the crouch sequence immediately on this frame so VJ Base
+    -- cannot overwrite it during the same game tick.  _gekkoCrouchSeqSet is
+    -- left at -1 so GeckoCrouch_Update still does its normal idle/walk
+    -- switching on every subsequent tick.
+    -- Do NOT also set _gekkoSuppressActivity here: GeckoCrouch_Update owns
+    -- the sequence for the entire slide and must not be blocked by the
+    -- suppress guard inside GekkoUpdateAnimation.
+    local cwSeq = ent.GekkoSeq_CrouchWalk
+    if cwSeq and cwSeq ~= -1 then
+        ent:ResetSequence(cwSeq)
+        ent:SetPlaybackRate(1)
+        print("[DodgeCrouch] Immediate ResetSequence -> c_walk (" .. cwSeq .. ")")
+    end
 end
 
 local function Dodge_ExitCrouch(ent)
@@ -122,8 +133,7 @@ local function Dodge_ExitCrouch(ent)
     ent._gekkoCrouchHoldUntil   = -1
     ent._gekkoCrouchSeqSet      = -1
 
-    -- Re-enable suppress briefly so stand-up blend isn't cut off,
-    -- then GeckoCrouch_Update's ExitCrouch will take over from here.
+    -- Clear any suppress so GeckoCrouch_Update's ExitCrouch path runs freely.
     ent._gekkoSuppressActivity  = nil
 
     ent:SetCollisionBounds(
@@ -155,7 +165,9 @@ local function BeginSlide(ent, slideDir, withCrouch)
     ent.VJ_CanMoveThink = false
     ent:SetSchedule(SCHED_NONE)
     if not withCrouch then
-        -- For non-crouch strafe, suppress activity normally
+        -- For non-crouch strafe, suppress activity normally.
+        -- When withCrouch=true we intentionally do NOT set this:
+        -- GeckoCrouch_Update owns the sequence for the full slide duration.
         ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
     end
 
