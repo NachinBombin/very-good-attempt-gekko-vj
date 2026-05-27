@@ -1,26 +1,27 @@
 -- ============================================================
 -- pedestal_dodge_system.lua
--- Sideways movement via incremental SetPos each Think.
+-- Sideways dodge via MOVETYPE_FLYGRAVITY + SetVelocity.
 --
--- WHY SetPos AND NOT SetAbsVelocity/SetLocalVelocity:
---   VJ Base MOVETYPE_STEP NPCs have their velocity reset by the engine
---   every RunAI tick (the locomotion task owns the velocity).  SetPos
---   bypasses that and physically repositions the NPC.
+-- WHY THIS WORKS (learned from jump_system.lua):
+--   Switching to MOVETYPE_FLYGRAVITY removes the NPC from VJ Base's
+--   locomotion system. SetVelocity() then sticks -- the engine's physics
+--   integrator owns the movement, not the AI scheduler.
+--   On jump: MOVETYPE_FLYGRAVITY -> SetVelocity(up+fwd) -> land -> MOVETYPE_STEP
+--   On dodge: MOVETYPE_FLYGRAVITY -> SetVelocity(sideways, Z=0) -> timer -> MOVETYPE_STEP
 --
--- WHY THE OLD VERSION STUTTERED:
---   GroundSnap (hull-trace) returned a slightly different Z value every
---   frame, making the entity bob up and down visibly.  Fix: we snapshot
---   the NPC's current Z at slide-start and keep it constant throughout
---   the slide. One DropToFloor at the end re-syncs to ground.
+-- ARRIVAL:
+--   A jump lands on a ground-hit event. A horizontal dodge has no such
+--   event, so we use timer.Simple(SLIDE_DIST / SLIDE_SPEED) to restore the
+--   movetype. No per-Think polling, no hull traces, no Z-jitter.
 --
 -- TWO MODES
---   1. Random strafe  – fires every STRAFE_INTERVAL_MIN..MAX seconds
+--   1. Random strafe  -- fires every STRAFE_INTERVAL_MIN..MAX seconds
 --      while an enemy is visible.
---   2. Reactive dodge – fires on bullet/buckshot/sniper hits, charge-gated.
+--   2. Reactive dodge -- fires on bullet/buckshot/sniper hits, charge-gated.
 -- ============================================================
 
-local SLIDE_DIST          = 100      -- units sideways per move
-local SLIDE_SPEED         = 160      -- units per second
+local SLIDE_DIST          = 100      -- units sideways
+local SLIDE_SPEED         = 280      -- units per second (higher = snappier)
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -65,19 +66,20 @@ local function PathIsClear(ent, destPos)
     return not tr.Hit or tr.Fraction > 0.85
 end
 
-local function PickSlideDestination(ent, preferRight)
+local function PickSlideDir(ent, preferRight)
     local right  = ent:GetRight()
     local origin = ent:GetPos()
     local dirs   = preferRight and { 1, -1 } or { -1, 1 }
     for _, sign in ipairs(dirs) do
         local candidate = origin + right * (sign * SLIDE_DIST)
         if CanFitAt(ent, candidate) and PathIsClear(ent, candidate) then
-            return candidate
+            return right * sign  -- unit direction vector
         end
+        -- try shorter distance
         for _, frac in ipairs({ 0.75, 0.5 }) do
             local shorter = origin + right * (sign * SLIDE_DIST * frac)
             if CanFitAt(ent, shorter) and PathIsClear(ent, shorter) then
-                return shorter
+                return right * sign
             end
         end
     end
@@ -86,61 +88,53 @@ end
 
 -- ============================================================
 -- BeginSlide
--- Snapshot the NPC's current Z so it stays locked during the slide.
--- This prevents the per-frame Z-jitter that caused the old stutter.
+-- Mirrors GekkoJump_Execute's movetype-switch pattern.
 -- ============================================================
 
-local function BeginSlide(ent, destPos)
+local function BeginSlide(ent, slideDir)
     if ent._pedestalSliding then return end
     ent._pedestalSliding = true
-    -- Lock the destination Z to the NPC's current Z so we only
-    -- move horizontally each Think.  One DropToFloor on arrival
-    -- will re-sync to the actual ground level.
-    ent._slideDestWorld  = Vector(destPos.x, destPos.y, ent:GetPos().z)
 
+    local slideDur = SLIDE_DIST / SLIDE_SPEED
+
+    -- Mirror jump_system: lock VJ AI movement, clear schedule, suppress anim.
+    ent.VJ_IsMoving        = false
+    ent.VJ_CanMoveThink    = false
+    ent:SetSchedule(SCHED_NONE)
+    ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
+
+    -- Switch to physics-owned movetype so SetVelocity actually sticks.
+    ent:SetMoveType(MOVETYPE_FLYGRAVITY)
+
+    -- Apply purely horizontal velocity; gravity will keep it grounded.
+    local vel    = slideDir * SLIDE_SPEED
+    vel.z        = 0
+    ent:SetVelocity(vel)
+
+    -- Spark effect on dodge start.
     local ed = EffectData()
     ed:SetOrigin(ent:GetPos() + Vector(0, 0, 30))
     ed:SetNormal(Vector(0, 0, 1))
     ed:SetScale(1)
     ed:SetMagnitude(1.5)
     util.Effect("ElectricSpark", ed)
-end
 
--- ============================================================
--- Per-Think slide tick
--- Moves only on the XY plane at a fixed Z, preventing Z-jitter.
--- ============================================================
+    -- Mirror jump_system landing cleanup: restore movetype + re-enable AI after travel time.
+    timer.Simple(slideDur, function()
+        if not IsValid(ent) then return end
+        ent:SetVelocity(Vector(0, 0, 0))
+        ent:SetMoveType(MOVETYPE_STEP)
+        ent.VJ_CanMoveThink  = true
+        ent._pedestalSliding = false
 
-function ENT:PedestalDodge_ThinkSlide()
-    if not self._pedestalSliding then return end
-
-    local dest  = self._slideDestWorld
-    local cur   = self:GetPos()
-    -- Work purely in XY; Z stays pinned to _slideDestWorld.z
-    local dx    = dest.x - cur.x
-    local dy    = dest.y - cur.y
-    local dist  = math.sqrt(dx * dx + dy * dy)
-
-    if dist <= 4 then
-        -- Arrived: snap to XY target, keep current Z, then re-sync ground.
-        self:SetPos(Vector(dest.x, dest.y, cur.z))
-        self:DropToFloor()
-        self._pedestalSliding = false
-
-        local ed = EffectData()
-        ed:SetOrigin(self:GetPos() + Vector(0, 0, 20))
-        ed:SetNormal(Vector(0, 0, 1))
-        ed:SetScale(0.8)
-        ed:SetMagnitude(1)
-        util.Effect("ElectricSpark", ed)
-        return
-    end
-
-    -- Step this frame (XY only, Z unchanged).
-    local step  = math.min(SLIDE_SPEED * FrameTime(), dist)
-    local nx    = cur.x + (dx / dist) * step
-    local ny    = cur.y + (dy / dist) * step
-    self:SetPos(Vector(nx, ny, dest.z))
+        -- Spark effect on dodge end.
+        local ed2 = EffectData()
+        ed2:SetOrigin(ent:GetPos() + Vector(0, 0, 20))
+        ed2:SetNormal(Vector(0, 0, 1))
+        ed2:SetScale(0.8)
+        ed2:SetMagnitude(1)
+        util.Effect("ElectricSpark", ed2)
+    end)
 end
 
 -- ============================================================
@@ -149,7 +143,6 @@ end
 
 function ENT:PedestalDodge_Init()
     self._pedestalSliding    = false
-    self._slideDestWorld     = nil
     self._strafeNextT        = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
     self._dodgeChargesLeft   = DODGE_CHARGES
     self._dodgeWindowStart   = CurTime()
@@ -159,12 +152,11 @@ function ENT:PedestalDodge_Init()
 end
 
 -- ============================================================
--- RANDOM STRAFE TICK
+-- RANDOM STRAFE TICK  (called from Think)
+-- No per-frame slide tracking needed -- timer handles cleanup.
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkStrafe()
-    self:PedestalDodge_ThinkSlide()
-
     if self._dodgeVulnerable and CurTime() >= self._dodgeVulnUntil then
         self._dodgeVulnerable  = false
         self._dodgeChargesLeft = DODGE_CHARGES
@@ -174,8 +166,6 @@ function ENT:PedestalDodge_ThinkStrafe()
     if self._pedestalSliding then return end
     if self._dodgeVulnerable then return end
     if CurTime() < self._strafeNextT then return end
-
-    -- Guard: entity may be mid-removal when this Think fires.
     if not IsValid(self) then return end
 
     local enemy = self.VJ_TheEnemy
@@ -188,10 +178,10 @@ function ENT:PedestalDodge_ThinkStrafe()
 
     self._strafeNextT = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
 
-    local dest = PickSlideDestination(self, math.random() >= 0.5)
-    if not dest then return end
+    local dir = PickSlideDir(self, math.random() >= 0.5)
+    if not dir then return end
 
-    BeginSlide(self, dest)
+    BeginSlide(self, dir)
 end
 
 -- ============================================================
@@ -224,9 +214,9 @@ function ENT:PedestalDodge_OnHit(dmginfo)
     toAtk:Normalize()
     local preferRight = self:GetRight():Dot(toAtk) < 0
 
-    local dest = PickSlideDestination(self, preferRight)
-    if not dest then dest = PickSlideDestination(self, not preferRight) end
-    if not dest then return false end
+    local dir = PickSlideDir(self, preferRight)
+    if not dir then dir = PickSlideDir(self, not preferRight) end
+    if not dir then return false end
 
     self._dodgeChargesLeft   = self._dodgeChargesLeft - 1
     self._dodgeCooldownUntil = CurTime() + math.Rand(DODGE_COOLDOWN_MIN, DODGE_COOLDOWN_MAX)
@@ -237,6 +227,6 @@ function ENT:PedestalDodge_OnHit(dmginfo)
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
     end
 
-    BeginSlide(self, dest)
+    BeginSlide(self, dir)
     return true
 end
