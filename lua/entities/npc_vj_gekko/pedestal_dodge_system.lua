@@ -3,12 +3,12 @@
 -- Sideways movement via SetAbsVelocity each Think.
 --
 -- HOW IT WORKS
---   Each Think we inject a lateral velocity toward the destination.
---   Using SetAbsVelocity lets the engine's MOVETYPE_STEP handle
---   collision + DropToFloor naturally, so legs and body follow
---   through without stuttering or teleporting.
---   A SetPos was previously used here but that fought the engine's
---   own step-move code, causing visible stutter and teleporting.
+--   During an active slide we inject a lateral velocity toward the
+--   destination each Think. SetAbsVelocity lets MOVETYPE_STEP handle
+--   collision + DropToFloor naturally, so the NPC moves smoothly
+--   without teleporting or stuttering.
+--   We ONLY touch the velocity while _pedestalSliding is true, so
+--   normal VJ Base locomotion (chase / wander) is never interrupted.
 --
 -- TWO MODES
 --   1. Random strafe  – fires every STRAFE_INTERVAL_MIN..MAX seconds
@@ -17,7 +17,7 @@
 -- ============================================================
 
 local SLIDE_DIST          = 100      -- units sideways per move
-local SLIDE_SPEED         = 160      -- units per second (tweak freely)
+local SLIDE_SPEED         = 160      -- units per second
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -62,8 +62,6 @@ local function PathIsClear(ent, destPos)
     return not tr.Hit or tr.Fraction > 0.85
 end
 
---- Pick a valid world-space destination ±SLIDE_DIST from origin.
---- Returns world position or nil.
 local function PickSlideDestination(ent, preferRight)
     local right  = ent:GetRight()
     local origin = ent:GetPos()
@@ -89,11 +87,9 @@ end
 
 local function BeginSlide(ent, destPos)
     if ent._pedestalSliding then return end
-
     ent._pedestalSliding = true
     ent._slideDestWorld  = destPos
 
-    -- Departure spark
     local ed = EffectData()
     ed:SetOrigin(ent:GetPos() + Vector(0, 0, 30))
     ed:SetNormal(Vector(0, 0, 1))
@@ -103,32 +99,27 @@ local function BeginSlide(ent, destPos)
 end
 
 -- ============================================================
--- Per-Think slide tick  (velocity-driven, no SetPos)
+-- Per-Think slide tick
+-- IMPORTANT: only touches AbsVelocity while sliding is active.
+--            Never zeroes velocity when idle - that would kill
+--            VJ Base's own locomotion (chase / wander).
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkSlide()
-    if not self._pedestalSliding then
-        -- Bleed off any leftover lateral velocity we injected last frame.
-        -- Only clear XY so we don't interfere with Z (gravity / jumping).
-        local vel = self:GetAbsVelocity()
-        if vel:Length2D() > 1 then
-            self:SetAbsVelocity(Vector(0, 0, vel.z))
-        end
-        return
-    end
+    if not self._pedestalSliding then return end  -- nothing to do
 
     local dest  = self._slideDestWorld
     local cur   = self:GetPos()
     local delta = dest - cur
-    delta.z     = 0          -- stay on the ground plane
+    delta.z     = 0
     local dist  = delta:Length()
 
     if dist <= 8 then
-        -- Close enough: stop and finish.
+        -- Arrived: restore Z-only so we don't leave a lateral push behind,
+        -- then hand control back to VJ Base locomotion immediately.
         self:SetAbsVelocity(Vector(0, 0, self:GetAbsVelocity().z))
         self._pedestalSliding = false
 
-        -- Arrival spark
         local ed = EffectData()
         ed:SetOrigin(cur + Vector(0, 0, 20))
         ed:SetNormal(Vector(0, 0, 1))
@@ -138,8 +129,7 @@ function ENT:PedestalDodge_ThinkSlide()
         return
     end
 
-    -- Inject lateral velocity toward destination.
-    -- Preserve current Z so gravity and jump arcs are unaffected.
+    -- Drive toward destination this frame; preserve Z for gravity/jumping.
     local slideVel = delta:GetNormal() * SLIDE_SPEED
     local curZ     = self:GetAbsVelocity().z
     self:SetAbsVelocity(Vector(slideVel.x, slideVel.y, curZ))
@@ -177,19 +167,12 @@ function ENT:PedestalDodge_ThinkStrafe()
     if self._dodgeVulnerable then return end
     if CurTime() < self._strafeNextT then return end
 
-    -- Guard: entity may be mid-removal when this Think fires.
-    -- Calling GetEnemy() on a NULL entity causes the
-    -- '[VJ Base] Tried to use a NULL entity!' error at line 2919.
     if not IsValid(self) then return end
 
     local enemy = self.VJ_TheEnemy
     if not IsValid(enemy) then
-        -- pcall guards against the NULL-entity error that VJ Base throws
-        -- when self becomes invalid between the IsValid check and the C call.
         local ok, result = pcall(function() return self:GetEnemy() end)
-        if ok and IsValid(result) then
-            enemy = result
-        end
+        if ok and IsValid(result) then enemy = result end
     end
     if not IsValid(enemy) then return end
     if not self:Visible(enemy) then return end
