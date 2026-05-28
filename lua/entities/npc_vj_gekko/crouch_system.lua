@@ -165,13 +165,8 @@ function ENT:GeckoCrouch_Init()
     self._gekkoRandomCrouchEndT    = 0
     self._gekkoRandomDuration      = 0
     self._gekkoRandomCrouchNextT   = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-    -- Dodge-crouch dedicated flags (set by pedestal_dodge_system)
     self._gekkoDodgeCrouch         = false
     self._gekkoDodgeCrouchUntil    = 0
-    -- Force-tick flag: when true, GeckoCrouch_Update skips ALL guards
-    -- (jump state, suppress activity) for exactly one call. Set by
-    -- Dodge_EnterCrouch immediately before the first GeckoCrouch_Update
-    -- call in BeginSlide, consumed and cleared inside GeckoCrouch_Update.
     self._gekkoDodgeCrouchForced   = false
     print("[GeckoCrouch] Init() complete")
 end
@@ -222,8 +217,6 @@ end
 --  ExitCrouch
 -- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
-    -- Hard guard: never exit while a dodge is still holding the crouch.
-    -- Handles any race condition where the hold timer expires a tick early.
     if ent._gekkoDodgeCrouch and CurTime() < (ent._gekkoDodgeCrouchUntil or 0) then
         return
     end
@@ -257,6 +250,64 @@ local function ExitCrouch(ent)
 end
 
 -- ─────────────────────────────────────────────────────────────
+--  EnforceSequence  (shared between normal path and force-tick path)
+--
+--  Reads the current speed from the live physics velocity when in a
+--  dodge slide (MOVETYPE_FLYGRAVITY), otherwise from the NWFloat.
+--  Calls ResetSequence every tick to beat VJ Base's own reassertion.
+-- ─────────────────────────────────────────────────────────────
+local function EnforceSequence(ent)
+    -- Lazy re-cache if model wasn't loaded yet at spawn time
+    if ent.GekkoSeq_CrouchWalk == -1 then
+        local cwalk = ent:LookupSequence("c_walk")
+        local cidle = ent:LookupSequence("cidle")
+        ent.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
+        ent.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
+        if ent.GekkoSeq_CrouchWalk == -1 then
+            ent.GekkoSeq_CrouchWalk = ent.GekkoSeq_Idle or 0
+        end
+        ent._gekkoCrouchSeqSet = -1
+    end
+
+    local speed = ent:GetNWFloat("GekkoSpeed", 0)
+    if ent._pedestalSliding or ent._gekkoDodgeCrouch then
+        local v = ent:GetVelocity()
+        speed = math.sqrt(v.x * v.x + v.y * v.y)
+    end
+
+    local rate, targetSeq
+
+    if speed > CWALK_MOVING_THRESH then
+        rate      = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.3, 1.5)
+        targetSeq = ent.GekkoSeq_CrouchWalk
+    else
+        rate      = CWALK_STATIONARY_RATE
+        targetSeq = (ent.GekkoSeq_CrouchIdle ~= -1)
+                    and ent.GekkoSeq_CrouchIdle
+                    or  ent.GekkoSeq_CrouchWalk
+    end
+
+    if not targetSeq or targetSeq == -1 then
+        targetSeq = ent.GekkoSeq_CrouchWalk
+    end
+
+    if targetSeq and targetSeq ~= -1 then
+        if ent._gekkoCrouchSeqSet ~= targetSeq then
+            ent:ResetSequence(targetSeq)
+            ent._gekkoCrouchSeqSet = targetSeq
+            print(string.format("[GeckoCrouch] SeqSwitch → %d (speed=%.1f)", targetSeq, speed))
+        else
+            ent:ResetSequence(targetSeq)
+        end
+        ent:SetPlaybackRate(rate)
+    end
+
+    ent:SetPoseParameter("move_x", 0)
+    ent:SetPoseParameter("move_y", 0)
+    ent.Gekko_LastSeqName = (targetSeq == ent.GekkoSeq_CrouchWalk) and "c_walk" or "cidle"
+end
+
+-- ─────────────────────────────────────────────────────────────
 --  GeckoCrouch_Update
 --  Called every tick from GekkoUpdateAnimation().
 --  Returns true  → crouch active this tick (caller must return)
@@ -266,15 +317,14 @@ function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
     -- ── FORCE-TICK PATH ──────────────────────────────────────
-    -- When _gekkoDodgeCrouchForced is true this function was called
-    -- directly by BeginSlide (pedestal_dodge_system.lua) BEFORE
-    -- SetMoveType(FLYGRAVITY) fires. Skip ALL guards and go straight
-    -- to the sequence-enforcement block. Consume the flag immediately.
+    -- Called directly by BeginSlide BEFORE SetMoveType(FLYGRAVITY).
+    -- _gekkoCrouching and _gekkoDodgeCrouch are already set by
+    -- Dodge_EnterCrouch. Skip all guards; stamp the sequence now
+    -- in the same callstack so VJ Base cannot win the reassertion race.
     if self._gekkoDodgeCrouchForced then
         self._gekkoDodgeCrouchForced = false
-        -- Fall through to sequence enforcement below.
-        -- All the entry/condition logic is already done by Dodge_EnterCrouch.
-        goto enforce_sequence
+        EnforceSequence(self)
+        return true
     end
     -- ─────────────────────────────────────────────────────────
 
@@ -283,16 +333,9 @@ function ENT:GeckoCrouch_Update()
                        jumpState == self.JUMP_FALLING or
                        jumpState == self.JUMP_LAND
 
-    -- During a dodge slide the NPC is on MOVETYPE_FLYGRAVITY.
-    -- Even with vel.z=0 the engine can briefly report a non-zero jump state.
-    -- A dodge-crouching NPC must NEVER be interrupted by the jump guard —
-    -- that is exactly what caused the violent up/down bounce.
     local dodgeLock = self._gekkoDodgeCrouch or self._pedestalSliding
     if jumpActive and not dodgeLock then return false end
 
-    -- Suppress guard: skip entry logic ONLY when not already crouching.
-    -- A dodge slide sets _gekkoCrouching=true AND _gekkoSuppressActivity,
-    -- so we must let the crouch sequence block run even while suppressed.
     if not self._gekkoCrouching then
         if self._gekkoSuppressActivity and now < self._gekkoSuppressActivity then
             return false
@@ -310,11 +353,6 @@ function ENT:GeckoCrouch_Update()
     local randActive = self._gekkoRandomCrouch
     local wantCrouch = vjCrouch or obsHit or ceilHit or randActive
 
-    -- A dodge-triggered crouch is authoritative for its entire window.
-    -- It does not need any of the normal wantCrouch conditions to be true.
-    -- This prevents the race condition where _pedestalSliding clears on the
-    -- same tick that _gekkoCrouchHoldUntil expires, causing a premature exit
-    -- before the sequence block ever runs with the correct physics velocity.
     local dodgeActive = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
     if dodgeActive then
         wantCrouch = true
@@ -365,71 +403,6 @@ function ENT:GeckoCrouch_Update()
         end
     end
 
-    -- ── Sequence enforcement ──────────────────────────────────
-    ::enforce_sequence::
-    -- ResetSequence is called every tick to beat VJ base's own
-    -- per-frame ResetSequence calls. SetSequence alone is not
-    -- enough — VJ reasserts its chosen sequence immediately after.
-    --
-    -- During a reactive dodge slide the NPC is on MOVETYPE_FLYGRAVITY
-    -- with VJ locomotion frozen, so GekkoSpeed (NWFloat) may lag by one
-    -- tick. Read the live physics velocity instead so c_walk is correctly
-    -- selected for the full slide duration.
-    --
-    -- Lazy re-cache: GeckoCrouch_CacheSeqs() runs in a deferred timer at
-    -- spawn. If the workshop model hasn't finished loading yet, LookupSequence
-    -- returns -1. Re-attempt every tick until we get a valid sequence index.
-    if self.GekkoSeq_CrouchWalk == -1 then
-        local cwalk = self:LookupSequence("c_walk")
-        local cidle = self:LookupSequence("cidle")
-        self.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
-        self.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
-        if self.GekkoSeq_CrouchWalk == -1 then
-            -- Model has no c_walk at all; fall back to stand-idle so at
-            -- least the NPC holds a valid pose rather than T-posing.
-            self.GekkoSeq_CrouchWalk = self.GekkoSeq_Idle or 0
-        end
-        self._gekkoCrouchSeqSet = -1  -- force ResetSequence on next tick
-    end
-
-    local speed = self:GetNWFloat("GekkoSpeed", 0)
-    if self._pedestalSliding or self._gekkoDodgeCrouch then
-        local v = self:GetVelocity()
-        speed = math.sqrt(v.x * v.x + v.y * v.y)
-    end
-
-    local rate, targetSeq
-
-    if speed > CWALK_MOVING_THRESH then
-        rate      = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.3, 1.5)
-        targetSeq = self.GekkoSeq_CrouchWalk
-    else
-        rate      = CWALK_STATIONARY_RATE
-        targetSeq = (self.GekkoSeq_CrouchIdle ~= -1)
-                    and self.GekkoSeq_CrouchIdle
-                    or  self.GekkoSeq_CrouchWalk
-    end
-
-    if not targetSeq or targetSeq == -1 then
-        targetSeq = self.GekkoSeq_CrouchWalk
-    end
-
-    if targetSeq and targetSeq ~= -1 then
-        if self._gekkoCrouchSeqSet ~= targetSeq then
-            -- Switched crouch sequence (walk<->idle): hard reset + log
-            self:ResetSequence(targetSeq)
-            self._gekkoCrouchSeqSet = targetSeq
-            print(string.format("[GeckoCrouch] SeqSwitch → %d (speed=%.1f)", targetSeq, speed))
-        else
-            -- Same sequence: reset every tick to overwrite VJ's reassertion
-            self:ResetSequence(targetSeq)
-        end
-        self:SetPlaybackRate(rate)
-    end
-
-    self:SetPoseParameter("move_x", 0)
-    self:SetPoseParameter("move_y", 0)
-    self.Gekko_LastSeqName = (targetSeq == self.GekkoSeq_CrouchWalk) and "c_walk" or "cidle"
-
+    EnforceSequence(self)
     return true
 end
