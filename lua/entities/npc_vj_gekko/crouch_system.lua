@@ -217,6 +217,11 @@ end
 --  ExitCrouch
 -- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
+    -- Hard guard: never exit while a dodge is still holding the crouch.
+    -- Handles any race condition where the hold timer expires a tick early.
+    if ent._gekkoDodgeCrouch and CurTime() < (ent._gekkoDodgeCrouchUntil or 0) then
+        return
+    end
     local now = CurTime()
     ent._gekkoCrouching           = false
     ent._gekkoCrouchJustEntered   = false
@@ -258,7 +263,13 @@ function ENT:GeckoCrouch_Update()
     local jumpActive = jumpState == self.JUMP_RISING  or
                        jumpState == self.JUMP_FALLING or
                        jumpState == self.JUMP_LAND
-    if jumpActive then return false end
+
+    -- During a dodge slide the NPC is on MOVETYPE_FLYGRAVITY.
+    -- Even with vel.z=0 the engine can briefly report a non-zero jump state.
+    -- A dodge-crouching NPC must NEVER be interrupted by the jump guard —
+    -- that is exactly what caused the violent up/down bounce.
+    local dodgeLock = self._gekkoDodgeCrouch or self._pedestalSliding
+    if jumpActive and not dodgeLock then return false end
 
     -- Suppress guard: skip entry logic ONLY when not already crouching.
     -- A dodge slide sets _gekkoCrouching=true AND _gekkoSuppressActivity,

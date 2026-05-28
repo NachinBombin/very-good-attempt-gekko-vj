@@ -5,9 +5,8 @@
 -- MOVEMENT (from jump_system.lua):
 --   MOVETYPE_FLYGRAVITY takes the NPC out of VJ Base locomotion so
 --   SetVelocity sticks. timer.Simple(dist/speed) restores MOVETYPE_STEP.
---   Because FLYGRAVITY applies gravity every tick we add a small upward
---   velocity (SLIDE_HOP_Z) at launch; gravity pulls it back to ground
---   naturally within the slide window, producing a 4-unit hop.
+--   FLYGRAVITY applies gravity every tick; vel.z is set to 0 at launch
+--   so the slide is a pure flat lateral glide with no hop arc.
 --
 -- CROUCH (reactive dodge only):
 --   Before launching the slide we enter the crouch state manually
@@ -18,18 +17,16 @@
 --   normally and plays the stand-up blend on the next tick.
 --
 -- TWO MODES
---   1. Random strafe  -- NO crouch, small Z hop.
---   2. Reactive dodge -- FULL crouch + small Z hop for the slide duration.
+--   1. Random strafe  -- NO crouch, no Z hop.
+--   2. Reactive dodge -- FULL crouch, flat lateral slide.
 -- ============================================================
 
 local SLIDE_DIST          = 100
 local SLIDE_SPEED         = 280      -- units/sec
 
--- Upward impulse added to every slide launch.
--- MOVETYPE_FLYGRAVITY applies ~svgravity (800 u/s²) per tick, so this
--- value is chosen to reach ~4 units of peak height during the slide:
---   peak_height ≈ v₀² / (2g)  →  v₀ = √(2 × 800 × 4) ≈ 80 u/s
-local SLIDE_HOP_Z         = 80       -- units/sec upward at launch
+-- No upward hop. vel.z is zeroed at launch; FLYGRAVITY gravity is the only
+-- vertical force during the slide, keeping the NPC firmly on the ground.
+local SLIDE_HOP_Z         = 0        -- flat slide, no ballistic hop
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -196,13 +193,12 @@ local function BeginSlide(ent, slideDir, withCrouch)
     end
 
     -- Switch to physics-owned movetype (same as jump_system.lua).
-    -- FLYGRAVITY applies gravity every server tick, so setting vel.z
-    -- to SLIDE_HOP_Z produces a small ballistic arc peaking at ~4 units,
-    -- returning to ground well within the slide window.
+    -- vel.z = 0 keeps the slide perfectly flat; FLYGRAVITY applies gravity
+    -- naturally but since the NPC starts grounded there is no visible hop.
     ent:SetMoveType(MOVETYPE_FLYGRAVITY)
 
     local vel = slideDir * SLIDE_SPEED
-    vel.z     = SLIDE_HOP_Z   -- 4-unit ballistic hop; gravity handles the descent
+    vel.z     = 0   -- no hop: flat lateral slide so FLYGRAVITY gravity is the only Z force
     ent:SetVelocity(vel)
 
     -- Spark on start
@@ -217,8 +213,6 @@ local function BeginSlide(ent, slideDir, withCrouch)
         if not IsValid(ent) then return end
 
         -- Stop horizontal movement, restore MOVETYPE_STEP.
-        -- Zero out velocity completely so residual Z from the hop arc
-        -- doesn't carry over into the stand phase.
         ent:SetVelocity(Vector(0, 0, 0))
         ent:SetMoveType(MOVETYPE_STEP)
         ent._pedestalSliding = false
@@ -288,7 +282,7 @@ function ENT:PedestalDodge_ThinkStrafe()
     local dir = PickSlideDir(self, math.random() >= 0.5)
     if not dir then return end
 
-    BeginSlide(self, dir, false)  -- no crouch, hop still applies
+    BeginSlide(self, dir, false)  -- no crouch, flat slide
 end
 
 -- ============================================================
@@ -302,6 +296,8 @@ function ENT:PedestalDodge_OnHit(dmginfo)
     local valid = dmginfo:IsDamageType(DMG_BULLET)
                or dmginfo:IsDamageType(DMG_BUCKSHOT)
                or dmginfo:IsDamageType(DMG_SNIPER)
+               or dmginfo:IsDamageType(DMG_BLAST)
+               or dmginfo:IsDamageType(DMG_EXPLOSION)
     if not valid then return false end
 
     if self._dodgeVulnerable then return false end
@@ -334,6 +330,6 @@ function ENT:PedestalDodge_OnHit(dmginfo)
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
     end
 
-    BeginSlide(self, dir, true)  -- with crouch + hop
+    BeginSlide(self, dir, true)  -- with crouch, flat slide
     return true
 end
