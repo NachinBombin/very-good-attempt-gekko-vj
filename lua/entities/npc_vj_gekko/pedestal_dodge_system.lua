@@ -128,6 +128,15 @@ local function Dodge_EnterCrouch(ent, slideDur)
     -- early-exit path for the entire slide + tail window.
     ent._gekkoDodgeCrouch       = true
     ent._gekkoDodgeCrouchUntil  = now + slideDur + DODGE_CROUCH_TAIL
+    -- Force-tick flag: GeckoCrouch_Update reads this on the FIRST call
+    -- after Dodge_EnterCrouch and skips all guards so the sequence is
+    -- stamped onto the NPC before SetMoveType(FLYGRAVITY) fires.
+    -- This is the fix for the "crouch doesn't play when standing" bug:
+    -- without this flag, the very first GeckoCrouch_Update tick after
+    -- BeginSlide sees jumpState=JUMP_RISING (from FLYGRAVITY Z velocity)
+    -- and _gekkoCrouching=false (not yet propagated), so the crouch
+    -- branch is skipped and VJ's sequence reassertion wins.
+    ent._gekkoDodgeCrouchForced = true
 
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
@@ -145,6 +154,7 @@ local function Dodge_ExitCrouch(ent)
     ent._gekkoCrouchSeqSet        = -1
     ent._gekkoDodgeCrouch         = false
     ent._gekkoDodgeCrouchUntil    = 0
+    ent._gekkoDodgeCrouchForced   = false
     ent._gekkoObsRearmT           = now + STAND_REARM_DELAY
     ent._gekkoObsOnSince          = nil
     ent._gekkoObsDebounced        = false
@@ -175,10 +185,32 @@ local function BeginSlide(ent, slideDir, withCrouch)
 
     local slideDur = SLIDE_DIST / SLIDE_SPEED
 
-    -- Enter crouch BEFORE switching movetype so the sequence change
-    -- is visible from the very first frame of the slide.
+    -- ── FIX: Enter crouch AND force-stamp the sequence BEFORE SetMoveType.
+    --
+    -- Why this order matters:
+    --   SetMoveType(FLYGRAVITY) causes the engine to give the NPC a non-zero
+    --   Z velocity on the very next physics tick. That briefly sets jumpState
+    --   to JUMP_RISING. GekkoUpdateAnimation's guard is:
+    --       not isJumpBlocking OR self._gekkoCrouching
+    --   If _gekkoCrouching is still false when that first tick fires, the
+    --   entire crouch branch is skipped and VJ Base's sequence reassertion wins.
+    --
+    --   By calling Dodge_EnterCrouch first we set _gekkoCrouching=true.
+    --   Then we immediately call GeckoCrouch_Update() with the force-tick flag
+    --   active (_gekkoDodgeCrouchForced=true). This stamps the crouch sequence
+    --   onto the entity in the same call stack, BEFORE SetMoveType fires.
+    --   When FLYGRAVITY flips jumpState on the next tick, _gekkoCrouching is
+    --   already true so the guard passes and GeckoCrouch_Update runs normally.
     if withCrouch then
         Dodge_EnterCrouch(ent, slideDur)
+        -- Force-stamp the crouch sequence right now, before SetMoveType.
+        -- _gekkoDodgeCrouchForced=true tells GeckoCrouch_Update to skip all
+        -- guards (jump state, suppress activity, etc.) for this one call.
+        ent:GeckoCrouch_Update()
+        -- Flag is consumed by GeckoCrouch_Update; clear it explicitly here
+        -- too as a safety net in case the function returned early for any reason.
+        ent._gekkoDodgeCrouchForced = false
+
         -- VJ Base's own EntityTakeDamage hook sets ent.Flinching=true
         -- independently of our OnTakeDamage return. This causes
         -- GekkoUpdateAnimation to bail at "if self.Flinching then return end"
@@ -256,15 +288,16 @@ end
 -- ============================================================
 
 function ENT:PedestalDodge_Init()
-    self._pedestalSliding       = false
-    self._strafeNextT           = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
-    self._dodgeChargesLeft      = DODGE_CHARGES
-    self._dodgeWindowStart      = CurTime()
-    self._dodgeVulnerable       = false
-    self._dodgeVulnUntil        = 0
-    self._dodgeCooldownUntil    = 0
-    self._gekkoDodgeCrouch      = false
-    self._gekkoDodgeCrouchUntil = 0
+    self._pedestalSliding         = false
+    self._strafeNextT             = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
+    self._dodgeChargesLeft        = DODGE_CHARGES
+    self._dodgeWindowStart        = CurTime()
+    self._dodgeVulnerable         = false
+    self._dodgeVulnUntil          = 0
+    self._dodgeCooldownUntil      = 0
+    self._gekkoDodgeCrouch        = false
+    self._gekkoDodgeCrouchUntil   = 0
+    self._gekkoDodgeCrouchForced  = false
 end
 
 -- ============================================================
@@ -307,7 +340,7 @@ function ENT:PedestalDodge_OnHit(dmginfo)
     if self._gekkoDead then return false end
     if self._pedestalSliding then return false end
 
-    -- Guard each constant: DMG_EXPLOSION does not exist in GMod (nil → crash).
+    -- Guard each constant: DMG_EXPLOSION does not exist in GMod (nil -> crash).
     -- Use bit.band on the raw type field so we never pass nil to IsDamageType.
     local dtype = dmginfo:GetDamageType()
     local valid = (DMG_BULLET   and bit.band(dtype, DMG_BULLET)   ~= 0)
