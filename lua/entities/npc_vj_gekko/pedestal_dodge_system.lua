@@ -179,6 +179,20 @@ local function BeginSlide(ent, slideDir, withCrouch)
     -- is visible from the very first frame of the slide.
     if withCrouch then
         Dodge_EnterCrouch(ent, slideDur)
+        -- VJ Base's own EntityTakeDamage hook sets ent.Flinching=true
+        -- independently of our OnTakeDamage return. This causes
+        -- GekkoUpdateAnimation to bail at "if self.Flinching then return end"
+        -- before GeckoCrouch_Update ever runs. Clear it immediately and suppress
+        -- it for the full slide window with a tight repeating timer.
+        ent.Flinching = false
+        local flinchEnd = CurTime() + slideDur + DODGE_CROUCH_TAIL + 0.1
+        local function SuppressFlinch()
+            if not IsValid(ent) then return end
+            if CurTime() > flinchEnd then return end
+            ent.Flinching = false
+            timer.Simple(0.05, SuppressFlinch)
+        end
+        timer.Simple(0.05, SuppressFlinch)
     end
 
     -- Lock VJ AI movement (mirrors jump_system.lua)
@@ -293,11 +307,14 @@ function ENT:PedestalDodge_OnHit(dmginfo)
     if self._gekkoDead then return false end
     if self._pedestalSliding then return false end
 
-    local valid = dmginfo:IsDamageType(DMG_BULLET)
-               or dmginfo:IsDamageType(DMG_BUCKSHOT)
-               or dmginfo:IsDamageType(DMG_SNIPER)
-               or dmginfo:IsDamageType(DMG_BLAST)
-               or dmginfo:IsDamageType(DMG_EXPLOSION)
+    -- Guard each constant: DMG_EXPLOSION does not exist in GMod (nil → crash).
+    -- Use bit.band on the raw type field so we never pass nil to IsDamageType.
+    local dtype = dmginfo:GetDamageType()
+    local valid = (DMG_BULLET   and bit.band(dtype, DMG_BULLET)   ~= 0)
+               or (DMG_BUCKSHOT and bit.band(dtype, DMG_BUCKSHOT) ~= 0)
+               or (DMG_SNIPER   and bit.band(dtype, DMG_SNIPER)   ~= 0)
+               or (DMG_BLAST    and bit.band(dtype, DMG_BLAST)    ~= 0)
+               or bit.band(dtype, 8) ~= 0   -- DMG_BLAST raw (8) safety fallback
     if not valid then return false end
 
     if self._dodgeVulnerable then return false end
