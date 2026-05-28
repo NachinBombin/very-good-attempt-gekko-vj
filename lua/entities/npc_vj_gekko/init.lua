@@ -1,4 +1,0 @@
--- ============================================================
--- npc_vj_gekko / init.lua
--- INTEGRATED WITH: Juicy Bleeding Effect (Hemo-fluid-stream)
--- NEW BLEEDING TYPE: gekko_juicy_bleeding (NPC
