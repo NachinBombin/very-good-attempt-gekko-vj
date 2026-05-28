@@ -689,6 +689,7 @@ function ENT:Init()
     self._lastWeaponChoice        = ""
     self._glSparkCounter          = 0
     self._gekkoDead               = false
+    self._gekkoInvulnUntil        = 0  -- invulnerability window during dodge (set by pedestal_dodge_system)
     self._gekkoSprinting          = false
     self._gekkoSprintEndT         = 0
     self._gekkoSprintNextT        = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
@@ -836,9 +837,47 @@ local function GekkoResolveHitPos(self, dmginfo)
     return bodyCenter, "bodycenter_fallback"
 end
 
+
+-- ============================================================
+-- TraceAttack override
+-- Suppresses engine-side blood decals and impact effects
+-- (ImpactEffect, BloodImpact, surface decals) that the engine
+-- fires through the C++ TraceAttack path BEFORE OnTakeDamage
+-- is ever called. Without this override those effects always
+-- fire even when OnTakeDamage zeroes and discards the damage.
+-- During the invulnerability window we zero the damage in the
+-- dmginfo and return without calling BaseClass so the engine
+-- skips every visual associated with the hit.
+-- ============================================================
+function ENT:TraceAttack(dmginfo, dir, trace)
+    if self._gekkoDead then
+        dmginfo:SetDamage(0)
+        return
+    end
+    -- Invulnerability window set by PedestalDodge_OnHit
+    if CurTime() < (self._gekkoInvulnUntil or 0) then
+        dmginfo:SetDamage(0)
+        dmginfo:ScaleDamage(0)
+        dmginfo:SetDamageForce(Vector(0, 0, 0))
+        -- Returning without BaseClass call suppresses engine blood/impact effects.
+        return
+    end
+    self.BaseClass.TraceAttack(self, dmginfo, dir, trace)
+end
+
 function ENT:OnTakeDamage(dmginfo)
     if self._gekkoDead then
         dmginfo:SetDamage(0)
+        return
+    end
+
+    -- Early invulnerability window check (set by PedestalDodge_OnHit).
+    -- TraceAttack already blocks engine effects; this guard blocks anything
+    -- that reaches OnTakeDamage through a non-TraceAttack path (blast, etc.)
+    if CurTime() < (self._gekkoInvulnUntil or 0) then
+        dmginfo:SetDamage(0)
+        dmginfo:ScaleDamage(0)
+        dmginfo:SetDamageForce(Vector(0, 0, 0))
         return
     end
 
@@ -858,14 +897,17 @@ function ENT:OnTakeDamage(dmginfo)
         and (hitPos - attacker:GetPos()):GetNormalized()
         or self:GetForward()
 
-    -- ── FIX #1: Reactive pedestal dodge runs FIRST, before ANY visual effect.
-    -- On a successful dodge we zero all damage and return immediately so that
-    -- GekkoVanillaBleed, GekkoSignalBloodHit, BloodImpact decals and
-    -- GekkoTriggerJuicyBleed are NEVER called for a dodged hit.
+    -- ── Reactive pedestal dodge runs FIRST, before ANY visual effect.
+    -- PedestalDodge_OnHit sets _gekkoInvulnUntil on the entity so that
+    -- TraceAttack (engine blood/impact effects) and any follow-up blast
+    -- damage are also blocked for the full dodge+tail window.
+    -- On a successful dodge we zero damage and return immediately.
     if self:PedestalDodge_OnHit(dmginfo) then
         dmginfo:SetDamage(0)
         dmginfo:ScaleDamage(0)
         dmginfo:SetDamageForce(Vector(0, 0, 0))
+        -- Suppress VJ Base flinch from this tick onward (it runs after us).
+        self.Flinching = false
         return
     end
     -- ───────────────────────────────────────────────────────────────────────
