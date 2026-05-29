@@ -14,6 +14,10 @@
 --     NPC stays crouched for the whole slide + stand-up blend.
 --     Previously slideDur = 100/280 = 0.36 s which expired almost
 --     immediately, losing the crouch lock before the slide finished.
+--   * Flinch suppression moved into GeckoCrouch_Update itself (runs
+--     every engine tick, ~100 Hz) instead of a 0.03 s recursive timer
+--     (~33 Hz). The old timer left a race window where VJ Base could
+--     set Flinching=true between ticks and win the sequence reassertion.
 -- ============================================================
 
 local SLIDE_DIST          = 100
@@ -169,13 +173,13 @@ local function BeginSlide(ent, slideDir, withCrouch)
     local crouchHold = DODGE_CROUCH_HOLD           -- 2.5 s total crouch lock
     local invulnEnd  = CurTime() + crouchHold + INVULN_PAD
 
-    -- ── SET INVULNERABILITY WINDOW ──────────────────────────
+    -- ── SET INVULNERABILITY WINDOW ──────────────────────────────
     -- Written here, at the top, BEFORE any other state changes.
     -- init.lua's TraceAttack and OnTakeDamage both check:
     --     CurTime() < (self._gekkoInvulnUntil or 0)
     -- This suppresses all damage, blood decals, BloodImpact effects,
     -- and blast-splash ticks for the entire dodge + crouch window.
-    -- ────────────────────────────────────────────────────────
+    -- ─────────────────────────────────────────────────────────
     ent._gekkoInvulnUntil = invulnEnd
 
     if withCrouch then
@@ -186,18 +190,12 @@ local function BeginSlide(ent, slideDir, withCrouch)
         ent:GeckoCrouch_Update()
         ent._gekkoDodgeCrouchForced = false   -- safety clear
 
-        -- Suppress VJ Base's Flinching=true for the entire invuln window.
-        -- VJ Base's EntityTakeDamage hook sets Flinching independently of
-        -- our OnTakeDamage return, blocking GeckoCrouch_Update.
-        -- We kill it immediately and keep it dead every 0.03 s.
+        -- Flinch suppression is now handled every engine tick inside
+        -- GeckoCrouch_Update() itself (self-healing flinch kill at function
+        -- top). The old 0.03 s recursive timer fired less frequently than
+        -- the engine think loop, leaving gaps where VJ Base could win the
+        -- reassertion race and snap the NPC out of crouch mid-slide.
         ent.Flinching = false
-        local function SuppressFlinch()
-            if not IsValid(ent) then return end
-            if CurTime() > invulnEnd then return end
-            ent.Flinching = false
-            timer.Simple(0.03, SuppressFlinch)
-        end
-        timer.Simple(0.03, SuppressFlinch)
     end
 
     -- Lock VJ AI movement
@@ -209,8 +207,7 @@ local function BeginSlide(ent, slideDir, withCrouch)
     end
 
     -- MOVETYPE_FLY (no gravity): flat lateral slide with zero vertical force.
-    -- Previous version used MOVETYPE_FLYGRAVITY which applied gravity every
-    -- tick, causing the visible up-down bounce during the slide.
+    -- MOVETYPE_FLYGRAVITY (old) applied gravity every tick → visible up-down bounce.
     ent:SetMoveType(MOVETYPE_FLY)
 
     local vel = slideDir * SLIDE_SPEED
