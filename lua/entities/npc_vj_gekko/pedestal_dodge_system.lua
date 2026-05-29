@@ -1,32 +1,23 @@
 -- ============================================================
 -- pedestal_dodge_system.lua
--- Sideways dodge via MOVETYPE_FLYGRAVITY + SetVelocity.
---
--- MOVEMENT (from jump_system.lua):
---   MOVETYPE_FLYGRAVITY takes the NPC out of VJ Base locomotion so
---   SetVelocity sticks. timer.Simple(dist/speed) restores MOVETYPE_STEP.
---   FLYGRAVITY applies gravity every tick; vel.z is set to 0 at launch
---   so the slide is a pure flat lateral glide with no hop arc.
---
--- CROUCH (reactive dodge only):
---   Before launching the slide we enter the crouch state manually
---   (hull shrink + _gekkoCrouching = true + NWBool). This makes
---   GeckoCrouch_Update() immediately enforce c_walk/cidle for the whole
---   slide, giving a smooth crouch-down blend from the model.
---   On cleanup we clear _gekkoCrouching so GeckoCrouch_Update() exits
---   normally and plays the stand-up blend on the next tick.
---
 -- TWO MODES
 --   1. Random strafe  -- NO crouch, no Z hop.
---   2. Reactive dodge -- FULL crouch, flat lateral slide.
+--   2. Reactive dodge -- FULL crouch, flat lateral slide + INVULN WINDOW.
+--
+-- FIX SUMMARY (vs previous version):
+--   * MOVETYPE_FLY instead of MOVETYPE_FLYGRAVITY: removes the gravity-
+--     induced vertical bounce/hop that was causing the up-down motion.
+--   * _gekkoInvulnUntil is now written by BeginSlide. init.lua's
+--     TraceAttack and OnTakeDamage guards check this to suppress all
+--     damage, blood decals, and impact effects during the dodge window.
+--   * Crouch hold duration uses a longer fixed window (2.5 s) so the
+--     NPC stays crouched for the whole slide + stand-up blend.
+--     Previously slideDur = 100/280 = 0.36 s which expired almost
+--     immediately, losing the crouch lock before the slide finished.
 -- ============================================================
 
 local SLIDE_DIST          = 100
 local SLIDE_SPEED         = 280      -- units/sec
-
--- No upward hop. vel.z is zeroed at launch; FLYGRAVITY gravity is the only
--- vertical force during the slide, keeping the NPC firmly on the ground.
-local SLIDE_HOP_Z         = 0        -- flat slide, no ballistic hop
 
 local STRAFE_INTERVAL_MIN = 1.5
 local STRAFE_INTERVAL_MAX = 4.5
@@ -38,13 +29,19 @@ local DODGE_COOLDOWN_MIN  = 0.8
 local DODGE_COOLDOWN_MAX  = 2.0
 local DODGE_VULN_DUR      = 4.0
 
--- How long AFTER the slide ends we keep _gekkoDodgeCrouch = true.
--- This prevents the race condition where the timer.Simple fires on the
--- same tick that _gekkoCrouchHoldUntil expires, causing ExitCrouch to
--- fire before the sequence block ever runs with the correct physics velocity.
-local DODGE_CROUCH_TAIL   = 0.35
+-- Crouch hold window: covers slide travel + stand-up blend.
+-- Must be longer than slideDur (0.36 s). 2.5 s gives a full
+-- crouched-slide look with smooth stand-up at the end.
+local DODGE_CROUCH_HOLD   = 2.5
 
--- Mirrored from crouch_system.lua
+-- Tail: extra time AFTER the slide timer fires before releasing
+-- _gekkoDodgeCrouch so the stand-up blend plays uninterrupted.
+local DODGE_CROUCH_TAIL   = 0.6
+
+-- Invuln pad: extra time after (slide + tail) to cover any
+-- lingering blast-splash ticks.
+local INVULN_PAD          = 0.3
+
 local STAND_REARM_DELAY   = 1.0
 local HITBOX_HALF_W       = 64
 local HITBOX_CROUCH_H     = 130
@@ -105,37 +102,23 @@ local function PickSlideDir(ent, preferRight)
 end
 
 -- ============================================================
--- Crouch enter/exit
---
--- Dodge_EnterCrouch sets _gekkoDodgeCrouch = true in addition to
--- _gekkoCrouching. crouch_system.lua checks _gekkoDodgeCrouch to
--- unconditionally keep the crouch alive for the slide + tail window,
--- regardless of wantCrouch or holdUntil expiry. This eliminates the
--- race condition between timer.Simple and _gekkoCrouchHoldUntil.
+-- Crouch enter / exit
 -- ============================================================
 
-local function Dodge_EnterCrouch(ent, slideDur)
+local function Dodge_EnterCrouch(ent, holdDur)
     local now = CurTime()
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
-    -- Hold = slide + generous tail so the hold never expires mid-slide
-    ent._gekkoCrouchHoldUntil   = now + slideDur + DODGE_CROUCH_TAIL + 0.5
+    ent._gekkoCrouchHoldUntil   = now + holdDur
     ent._gekkoCrouchSeqSet      = -1
     ent._gekkoObsOnSince        = nil
     ent._gekkoObsDebounced      = false
     ent._gekkoObsHullHit        = false
-    -- Dedicated flag: crouch_system checks this to skip the wantCrouch
-    -- early-exit path for the entire slide + tail window.
     ent._gekkoDodgeCrouch       = true
-    ent._gekkoDodgeCrouchUntil  = now + slideDur + DODGE_CROUCH_TAIL
-    -- Force-tick flag: GeckoCrouch_Update reads this on the FIRST call
-    -- after Dodge_EnterCrouch and skips all guards so the sequence is
-    -- stamped onto the NPC before SetMoveType(FLYGRAVITY) fires.
-    -- This is the fix for the "crouch doesn't play when standing" bug:
-    -- without this flag, the very first GeckoCrouch_Update tick after
-    -- BeginSlide sees jumpState=JUMP_RISING (from FLYGRAVITY Z velocity)
-    -- and _gekkoCrouching=false (not yet propagated), so the crouch
-    -- branch is skipped and VJ's sequence reassertion wins.
+    ent._gekkoDodgeCrouchUntil  = now + holdDur
+    -- Force-tick flag: GeckoCrouch_Update skips all guards on the very
+    -- first call after this, stamping the crouch sequence before
+    -- SetMoveType fires. Fixes the "VJ wins the reassertion race" bug.
     ent._gekkoDodgeCrouchForced = true
 
     ent:SetCollisionBounds(
@@ -143,8 +126,7 @@ local function Dodge_EnterCrouch(ent, slideDur)
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
     ent:SetNWBool("GekkoIsCrouching", true)
-    print(string.format("[DodgeCrouch] Enter | holdUntil=%.2f  dodgeUntil=%.2f",
-        ent._gekkoCrouchHoldUntil, ent._gekkoDodgeCrouchUntil))
+    print(string.format("[DodgeCrouch] Enter | holdUntil=%.2f", ent._gekkoCrouchHoldUntil))
 end
 
 local function Dodge_ExitCrouch(ent)
@@ -183,68 +165,56 @@ local function BeginSlide(ent, slideDir, withCrouch)
     if ent._pedestalSliding then return end
     ent._pedestalSliding = true
 
-    local slideDur = SLIDE_DIST / SLIDE_SPEED
+    local slideDur   = SLIDE_DIST / SLIDE_SPEED   -- ~0.357 s travel time
+    local crouchHold = DODGE_CROUCH_HOLD           -- 2.5 s total crouch lock
+    local invulnEnd  = CurTime() + crouchHold + INVULN_PAD
 
-    -- ── FIX: Enter crouch AND force-stamp the sequence BEFORE SetMoveType.
-    --
-    -- Why this order matters:
-    --   SetMoveType(FLYGRAVITY) causes the engine to give the NPC a non-zero
-    --   Z velocity on the very next physics tick. That briefly sets jumpState
-    --   to JUMP_RISING. GekkoUpdateAnimation's guard is:
-    --       not isJumpBlocking OR self._gekkoCrouching
-    --   If _gekkoCrouching is still false when that first tick fires, the
-    --   entire crouch branch is skipped and VJ Base's sequence reassertion wins.
-    --
-    --   By calling Dodge_EnterCrouch first we set _gekkoCrouching=true.
-    --   Then we immediately call GeckoCrouch_Update() with the force-tick flag
-    --   active (_gekkoDodgeCrouchForced=true). This stamps the crouch sequence
-    --   onto the entity in the same call stack, BEFORE SetMoveType fires.
-    --   When FLYGRAVITY flips jumpState on the next tick, _gekkoCrouching is
-    --   already true so the guard passes and GeckoCrouch_Update runs normally.
+    -- ── SET INVULNERABILITY WINDOW ──────────────────────────
+    -- Written here, at the top, BEFORE any other state changes.
+    -- init.lua's TraceAttack and OnTakeDamage both check:
+    --     CurTime() < (self._gekkoInvulnUntil or 0)
+    -- This suppresses all damage, blood decals, BloodImpact effects,
+    -- and blast-splash ticks for the entire dodge + crouch window.
+    -- ────────────────────────────────────────────────────────
+    ent._gekkoInvulnUntil = invulnEnd
+
     if withCrouch then
-        Dodge_EnterCrouch(ent, slideDur)
-        -- Force-stamp the crouch sequence right now, before SetMoveType.
-        -- _gekkoDodgeCrouchForced=true tells GeckoCrouch_Update to skip all
-        -- guards (jump state, suppress activity, etc.) for this one call.
-        ent:GeckoCrouch_Update()
-        -- Flag is consumed by GeckoCrouch_Update; clear it explicitly here
-        -- too as a safety net in case the function returned early for any reason.
-        ent._gekkoDodgeCrouchForced = false
+        Dodge_EnterCrouch(ent, crouchHold)
 
-        -- VJ Base's own EntityTakeDamage hook sets ent.Flinching=true
-        -- independently of our OnTakeDamage return. This causes
-        -- GekkoUpdateAnimation to bail at "if self.Flinching then return end"
-        -- before GeckoCrouch_Update ever runs. Clear it immediately and suppress
-        -- it for the full slide window with a tight repeating timer.
+        -- Force-stamp the crouch sequence in this same callstack,
+        -- before SetMoveType fires on the next engine tick.
+        ent:GeckoCrouch_Update()
+        ent._gekkoDodgeCrouchForced = false   -- safety clear
+
+        -- Suppress VJ Base's Flinching=true for the entire invuln window.
+        -- VJ Base's EntityTakeDamage hook sets Flinching independently of
+        -- our OnTakeDamage return, blocking GeckoCrouch_Update.
+        -- We kill it immediately and keep it dead every 0.03 s.
         ent.Flinching = false
-        local flinchEnd = CurTime() + slideDur + DODGE_CROUCH_TAIL + 0.1
         local function SuppressFlinch()
             if not IsValid(ent) then return end
-            if CurTime() > flinchEnd then return end
+            if CurTime() > invulnEnd then return end
             ent.Flinching = false
-            timer.Simple(0.05, SuppressFlinch)
+            timer.Simple(0.03, SuppressFlinch)
         end
-        timer.Simple(0.05, SuppressFlinch)
+        timer.Simple(0.03, SuppressFlinch)
     end
 
-    -- Lock VJ AI movement (mirrors jump_system.lua)
+    -- Lock VJ AI movement
     ent.VJ_IsMoving     = false
     ent.VJ_CanMoveThink = false
     ent:SetSchedule(SCHED_NONE)
     if not withCrouch then
-        -- For non-crouch strafe only: suppress activity for the slide window.
-        -- When withCrouch=true this is intentionally omitted so
-        -- GeckoCrouch_Update can run freely and own the sequence.
         ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
     end
 
-    -- Switch to physics-owned movetype (same as jump_system.lua).
-    -- vel.z = 0 keeps the slide perfectly flat; FLYGRAVITY applies gravity
-    -- naturally but since the NPC starts grounded there is no visible hop.
-    ent:SetMoveType(MOVETYPE_FLYGRAVITY)
+    -- MOVETYPE_FLY (no gravity): flat lateral slide with zero vertical force.
+    -- Previous version used MOVETYPE_FLYGRAVITY which applied gravity every
+    -- tick, causing the visible up-down bounce during the slide.
+    ent:SetMoveType(MOVETYPE_FLY)
 
     local vel = slideDir * SLIDE_SPEED
-    vel.z     = 0   -- no hop: flat lateral slide so FLYGRAVITY gravity is the only Z force
+    vel.z     = 0
     ent:SetVelocity(vel)
 
     -- Spark on start
@@ -255,25 +225,17 @@ local function BeginSlide(ent, slideDir, withCrouch)
     ed:SetMagnitude(1.5)
     util.Effect("ElectricSpark", ed)
 
+    -- Stop the slide after travel time, restore MOVETYPE_STEP.
+    -- _gekkoDodgeCrouch and _gekkoInvulnUntil are NOT cleared here;
+    -- they expire naturally so the tail window is fully covered.
     timer.Simple(slideDur, function()
         if not IsValid(ent) then return end
 
-        -- Stop horizontal movement, restore MOVETYPE_STEP.
         ent:SetVelocity(Vector(0, 0, 0))
         ent:SetMoveType(MOVETYPE_STEP)
         ent._pedestalSliding = false
+        ent.VJ_CanMoveThink  = true
 
-        if withCrouch then
-            -- Do NOT call Dodge_ExitCrouch here.
-            -- _gekkoDodgeCrouch keeps the crouch animation alive for the
-            -- tail window. crouch_system will call ExitCrouch itself once
-            -- _gekkoDodgeCrouchUntil expires naturally on its next tick.
-            ent.VJ_CanMoveThink = true
-        else
-            ent.VJ_CanMoveThink = true
-        end
-
-        -- Spark on end
         local ed2 = EffectData()
         ed2:SetOrigin(ent:GetPos() + Vector(0, 0, 20))
         ed2:SetNormal(Vector(0, 0, 1))
@@ -298,10 +260,11 @@ function ENT:PedestalDodge_Init()
     self._gekkoDodgeCrouch        = false
     self._gekkoDodgeCrouchUntil   = 0
     self._gekkoDodgeCrouchForced  = false
+    self._gekkoInvulnUntil        = 0
 end
 
 -- ============================================================
--- RANDOM STRAFE TICK  (no crouch)
+-- RANDOM STRAFE TICK  (no crouch, no invuln)
 -- ============================================================
 
 function ENT:PedestalDodge_ThinkStrafe()
@@ -329,25 +292,33 @@ function ENT:PedestalDodge_ThinkStrafe()
     local dir = PickSlideDir(self, math.random() >= 0.5)
     if not dir then return end
 
-    BeginSlide(self, dir, false)  -- no crouch, flat slide
+    BeginSlide(self, dir, false)
 end
 
 -- ============================================================
--- REACTIVE DODGE ON HIT  (with crouch)
+-- REACTIVE DODGE ON HIT  (with crouch + invuln)
 -- ============================================================
 
 function ENT:PedestalDodge_OnHit(dmginfo)
     if self._gekkoDead then return false end
     if self._pedestalSliding then return false end
 
-    -- Guard each constant: DMG_EXPLOSION does not exist in GMod (nil -> crash).
-    -- Use bit.band on the raw type field so we never pass nil to IsDamageType.
+    -- Already in an invuln window from a previous dodge in this burst:
+    -- silently discard the damage without starting another slide.
+    if CurTime() < (self._gekkoInvulnUntil or 0) then
+        dmginfo:SetDamage(0)
+        dmginfo:ScaleDamage(0)
+        dmginfo:SetDamageForce(Vector(0, 0, 0))
+        self.Flinching = false
+        return true
+    end
+
     local dtype = dmginfo:GetDamageType()
     local valid = (DMG_BULLET   and bit.band(dtype, DMG_BULLET)   ~= 0)
                or (DMG_BUCKSHOT and bit.band(dtype, DMG_BUCKSHOT) ~= 0)
                or (DMG_SNIPER   and bit.band(dtype, DMG_SNIPER)   ~= 0)
                or (DMG_BLAST    and bit.band(dtype, DMG_BLAST)    ~= 0)
-               or bit.band(dtype, 8) ~= 0   -- DMG_BLAST raw (8) safety fallback
+               or bit.band(dtype, 8) ~= 0
     if not valid then return false end
 
     if self._dodgeVulnerable then return false end
@@ -380,6 +351,6 @@ function ENT:PedestalDodge_OnHit(dmginfo)
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
     end
 
-    BeginSlide(self, dir, true)  -- with crouch, flat slide
+    BeginSlide(self, dir, true)
     return true
 end
