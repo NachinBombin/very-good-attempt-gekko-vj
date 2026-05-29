@@ -217,6 +217,8 @@ end
 --  ExitCrouch
 -- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
+    -- Hold the crouch as long as a dodge lock OR a slide is still active.
+    if ent._pedestalSliding then return end
     if ent._gekkoDodgeCrouch and CurTime() < (ent._gekkoDodgeCrouchUntil or 0) then
         return
     end
@@ -253,7 +255,7 @@ end
 --  EnforceSequence  (shared between normal path and force-tick path)
 --
 --  Reads the current speed from the live physics velocity when in a
---  dodge slide (MOVETYPE_FLYGRAVITY), otherwise from the NWFloat.
+--  dodge slide (MOVETYPE_FLY), otherwise from the NWFloat.
 --  Calls ResetSequence every tick to beat VJ Base's own reassertion.
 -- ─────────────────────────────────────────────────────────────
 local function EnforceSequence(ent)
@@ -269,6 +271,8 @@ local function EnforceSequence(ent)
         ent._gekkoCrouchSeqSet = -1
     end
 
+    -- Use live physics velocity during a slide (MOVETYPE_FLY, no gravity)
+    -- so the correct c_walk/cidle selection is based on actual movement.
     local speed = ent:GetNWFloat("GekkoSpeed", 0)
     if ent._pedestalSliding or ent._gekkoDodgeCrouch then
         local v = ent:GetVelocity()
@@ -315,6 +319,16 @@ end
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
+
+    -- ── FLINCH SELF-HEAL ─────────────────────────────────────
+    -- VJ Base's EntityTakeDamage hook can set Flinching=true between
+    -- timer ticks, causing GekkoUpdateAnimation to bail before reaching
+    -- this function. When a dodge/slide lock is active we forcibly kill
+    -- it here, every tick, regardless of how we were called.
+    if self._gekkoDodgeCrouch or self._pedestalSliding then
+        self.Flinching = false
+    end
+    -- ─────────────────────────────────────────────────────────
 
     -- ── FORCE-TICK PATH ──────────────────────────────────────
     -- Called directly by BeginSlide BEFORE SetMoveType(FLYGRAVITY).
@@ -384,6 +398,8 @@ function ENT:GeckoCrouch_Update()
             end
         end
 
+        -- _pedestalSliding guard is redundant here (ExitCrouch already checks it)
+        -- but kept explicit so a future refactor cannot accidentally drop it.
         if now >= self._gekkoCrouchHoldUntil and not self._pedestalSliding and not dodgeActive then
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
