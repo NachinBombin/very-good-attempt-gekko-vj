@@ -1,1 +1,1 @@
-PLACEHOLDER_CROUCH
+$(python3 -c "with open('/tmp/crouch_final.lua') as f: print(f.read(), end='')")

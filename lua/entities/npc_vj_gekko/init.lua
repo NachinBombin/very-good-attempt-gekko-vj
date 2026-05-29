@@ -1,1 +1,1 @@
-PLACEHOLDER_INIT
+$(python3 -c "with open('/tmp/init_final.lua') as f: print(f.read(), end='')")
