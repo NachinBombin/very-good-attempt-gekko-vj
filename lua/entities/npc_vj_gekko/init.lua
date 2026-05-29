@@ -4,18 +4,6 @@
 -- NEW BLEEDING TYPE: gekko_juicy_bleeding (NPC-owned only)
 -- INTEGRATED WITH: pedestal_dodge_system.lua (random strafe + reactive dodge)
 -- ============================================================
--- Weapon list:
--- 1. Machine-gun burst (FireBullets)
--- 2. Single accurate missile (obj_gekko_rocket)
--- 3. Double inaccurate salvo (obj_gekko_rocket x2)
--- 4. Grenade launcher barrage (bombin_gas_grenade / stun / flash)
--- 5. Top-attack terror missile (sent_npc_topmissile)
--- 6. Active-track missile (sent_npc_trackmissile)
--- 7. Orbit RPG (sent_orbital_rpg)
--- 8. Nikita cruise missile (npc_vj_gekko_nikita)
--- 9. Bushmaster 25mm cannon (sent_gekko_bushmaster x7-13)
--- 10. Elastic tether (elastic_system.lua - 0-900 u)
--- ============================================================
 include("shared.lua")
 AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
@@ -31,12 +19,7 @@ include("death_pose_system.lua")
 include("elastic_system.lua")
 include("aps_system.lua")
 AddCSLuaFile("cl_aps.lua")
-include("pedestal_dodge_system.lua")   -- random strafe + reactive dodge
-
--- NOTE: extensions.lua is loaded + AddCSLuaFile'd by
--- lua/autorun/server/gekko_juicy_bleeding.lua which runs first.
--- DO NOT include it again here - that caused a double-load and
--- the relative path from entity scope resolved incorrectly.
+include("pedestal_dodge_system.lua")
 
 util.AddNetworkString("GekkoSonarLock")
 util.AddNetworkString("GekkoFK360LandDust")
@@ -55,9 +38,6 @@ local ANIM_RUN_SPEED = 20
 local RUN_ENGAGE_DIST = 2200
 local RUN_DISENGAGE_DIST = 1600
 
--- ============================================================
--- CLOSE-RANGE SPRINT BURST SYSTEM
--- ============================================================
 local SPRINT_ENGAGE_DIST    = 1500
 local SPRINT_DUR_MIN        = 2.0
 local SPRINT_DUR_MAX        = 6.0
@@ -96,18 +76,13 @@ local TOPMISSILE_SND_LEVEL = 100
 
 local BM_ROUNDS_MIN = 3
 local BM_ROUNDS_MAX = 16
-local BM_INTERVAL  = 0.36   -- normal interval between shots
-local BM_INTERVAL2 = 0.72   -- stutter interval (task 3): used for 10% of shots
-local BM_STUTTER_CHANCE = 10 -- % of shots that get the doubled delay
-
--- Task 1: bullet drop compensation
-local BM_DROP_COMP_Z   = 30     -- constant upward aim offset (units)
-local BM_DROP_JITTER_Z = 17     -- +/- vertical jitter on top of the compensation
-
--- Task 2: imperfect velocity lead
--- Projectile speed from sent_gekko_bushmaster (SPEED = 3950 u/s)
+local BM_INTERVAL  = 0.36
+local BM_INTERVAL2 = 0.72
+local BM_STUTTER_CHANCE = 10
+local BM_DROP_COMP_Z   = 30
+local BM_DROP_JITTER_Z = 17
 local BM_PROJ_SPEED  = 3950
-local BM_LEAD_FACTOR = 0.55     -- 55% of perfect lead -> plausible but not perfect
+local BM_LEAD_FACTOR = 0.55
 
 local BM_SND_SHOOT = "gekko/brushmaster_25mm/20mm_shoot.wav"
 local BM_SND_RELOAD = "gekko/brushmaster_25mm/20mm_reload.wav"
@@ -121,11 +96,6 @@ local BM_SMOKE_SCALE = 0.9
 local BM_SMOKE_FORWARD = 12
 local BM_SMOKE_UP = 2
 
--- ============================================================
--- BUSHMASTER SHELL EJECTION SOUNDS
--- Played 0.19 s after each shot via timer.Simple.
--- Seven variants are picked at random each ejection.
--- ============================================================
 local BM_SHELL_DROP_SOUNDS = {
     "gekko/shell/cannon_shell_drop_01.wav",
     "gekko/shell/cannon_shell_drop_02.wav",
@@ -136,7 +106,7 @@ local BM_SHELL_DROP_SOUNDS = {
     "gekko/shell/cannon_shell_drop_07.wav",
 }
 local BM_SHELL_DROP_DELAY  = 0.19
-local BM_SHELL_DROP_LEVEL  = 75   -- quieter than the cannon blast
+local BM_SHELL_DROP_LEVEL  = 75
 local BM_SHELL_DROP_PITCH_MIN = 95
 local BM_SHELL_DROP_PITCH_MAX = 105
 
@@ -145,7 +115,6 @@ if SERVER then
         util.PrecacheSound(snd)
     end
 end
--- ============================================================
 
 local SHELL_MODEL = "models/props_debris/shellcasing_09.mdl"
 local SHELL_LIFETIME = 5
@@ -257,6 +226,15 @@ local BLOOD_RANDOM_CHANCE = 80
 local GROUNDED_BLEED_CHANCE = 0.85
 
 -- ============================================================
+-- INVULNERABILITY WINDOW DURATION
+-- Set to slide duration + generous tail so the entire dodge is covered.
+-- pedestal_dodge_system sets _gekkoInvulnUntil = CurTime() + this value
+-- right before BeginSlide fires. TraceAttack AND OnTakeDamage both check
+-- this timestamp and discard all damage + effects while it is active.
+-- ============================================================
+local INVULN_TAIL = 0.25   -- extra seconds of invuln after slide ends
+
+-- ============================================================
 -- BLOOD SIGNAL (ORIGINAL)
 -- ============================================================
 local function GekkoSignalBloodHit(ent, hitPos, hitNormal)
@@ -274,9 +252,6 @@ local function GekkoSignalBloodHit(ent, hitPos, hitNormal)
     util.Effect("gekko_bloodstream", ed)
 end
 
--- ============================================================
--- VANILLA BLEEDING (ORIGINAL)
--- ============================================================
 local function GekkoVanillaBleed(ent, hitPos, hitDir)
     util.Decal("Blood", hitPos - hitDir * 4, hitPos + hitDir * 8, ent)
     local ed = EffectData()
@@ -288,9 +263,6 @@ local function GekkoVanillaBleed(ent, hitPos, hitDir)
     util.Effect("BloodImpact", ed)
 end
 
--- ============================================================
--- UTILITY FUNCTIONS
--- ============================================================
 local function GetActiveEnemy(ent)
     local e = ent.VJ_TheEnemy
     if IsValid(e) then return e end
@@ -388,7 +360,6 @@ local function AttachGrenadeTrail(gren)
     util.SpriteTrail(gren, 0, GL_TRAIL_COLOR, false, GL_TRAIL_STARTSIZE, GL_TRAIL_ENDSIZE,
         GL_TRAIL_LIFETIME, 1 / GL_TRAIL_STARTSIZE, GL_TRAIL_MATERIAL)
 end
-
 
 local function BushmasterSparks(pos, dir, ent)
     local e = EffectData()
@@ -519,15 +490,6 @@ function ENT:AnimApply()
     return false
 end
 
--- ============================================================
--- TranslateActivity
--- Called by VJ Base (and the engine) every time it wants to
--- resolve an ACT_* constant to a sequence index. By intercepting
--- here we guarantee the crouch sequence wins BEFORE VJ ever
--- gets to call ResetSequence with a walk/idle sequence.
--- This is the deepest interception point available without
--- patching VJ Base itself.
--- ============================================================
 function ENT:TranslateActivity(act)
     if self._gekkoCrouching then
         local speed = self:GetNWFloat("GekkoSpeed", 0)
@@ -541,7 +503,6 @@ function ENT:TranslateActivity(act)
             if seq and seq ~= -1 then return seq end
         end
     end
-    -- Fall through to AnimationTranslations table (VJ custom move anim path)
     if self.AnimationTranslations and self.AnimationTranslations[act] then
         return self.AnimationTranslations[act]
     end
@@ -573,7 +534,14 @@ function ENT:SetAnimationTranslations()
 end
 
 function ENT:GekkoUpdateAnimation()
+    -- During the invuln/dodge window, suppress VJ flinch every frame so
+    -- it can never block GeckoCrouch_Update from running.
+    if CurTime() < (self._gekkoInvulnUntil or 0) then
+        self.Flinching = false
+    end
+
     if self.Flinching then return end
+
     local now    = CurTime()
     local curPos = self:GetPos()
     local vel    = 0
@@ -585,11 +553,6 @@ function ENT:GekkoUpdateAnimation()
     self._gekkoLastTime = now
     self:SetNWFloat("GekkoSpeed", vel)
 
-    -- ── FIX #2: Crouch runs even during a dodge hop.
-    -- The dodge slide uses MOVETYPE_FLYGRAVITY + small Z kick which briefly
-    -- flips jumpState to JUMP_RISING and caused the old guard to skip
-    -- GeckoCrouch_Update for the entire dodge duration. We now bypass that
-    -- gate when the NPC is explicitly crouching (_gekkoCrouching == true).
     local jumpState = self:GetGekkoJumpState()
     local isJumpBlocking = (jumpState == self.JUMP_RISING or
                             jumpState == self.JUMP_FALLING or
@@ -597,14 +560,9 @@ function ENT:GekkoUpdateAnimation()
                             (self._gekkoJustJumped and now < self._gekkoJustJumped))
 
     if not isJumpBlocking or self._gekkoCrouching then
-        -- FIX #3: lazy sequence re-cache.
-        -- If the model finished loading AFTER the deferred timer in Init fired,
-        -- LookupSequence("c_walk") returned -1 and was never retried. Re-attempt
-        -- here so the very first dodge-crouch actually finds the right sequence.
         if self.GekkoSeq_CrouchWalk == nil or self.GekkoSeq_CrouchWalk == -1 then
             self:GeckoCrouch_CacheSeqs()
             if self.GekkoSeq_CrouchWalk == nil or self.GekkoSeq_CrouchWalk == -1 then
-                -- model has no c_walk at all: fall back to idle to at least hold a pose
                 self.GekkoSeq_CrouchWalk = self.GekkoSeq_Idle or 0
             end
         end
@@ -689,7 +647,10 @@ function ENT:Init()
     self._lastWeaponChoice        = ""
     self._glSparkCounter          = 0
     self._gekkoDead               = false
-    self._gekkoInvulnUntil        = 0  -- invulnerability window during dodge (set by pedestal_dodge_system)
+    -- Invulnerability timestamp: TraceAttack and OnTakeDamage both check
+    -- CurTime() < _gekkoInvulnUntil and discard all damage + effects.
+    -- Set by PedestalDodge_OnHit before BeginSlide fires.
+    self._gekkoInvulnUntil        = 0
     self._gekkoSprinting          = false
     self._gekkoSprintEndT         = 0
     self._gekkoSprintNextT        = CurTime() + math.Rand(SPRINT_COOLDOWN_MIN, SPRINT_COOLDOWN_MAX)
@@ -701,7 +662,6 @@ function ENT:Init()
     self:SetNWInt("GekkoLandDust",       0)
     self:SetNWInt("GekkoFK360LandDust",  0)
     self:SetNWInt("GekkoBloodSplat",     0)
-    -- Hit-react pulse signal initialised to 0 so client baseline matches.
     self:SetNWInt("GekkoHitReactPulse",  0)
     self:SetNW2Vector("GekkoHitPos",     Vector(0, 0, 0))
     self:SetNW2Vector("GekkoHitDir",     Vector(0, 1, 0))
@@ -713,10 +673,8 @@ function ENT:Init()
     self:GekkoLegs_Init()
     self:GekkoDeath_Init()
     self:GekkoElastic_Init()
-	self:GekkoAPS_Init()
-    -- ── Pedestal dodge / random strafe initialisation ────────────────
+    self:GekkoAPS_Init()
     self:PedestalDodge_Init()
-    -- ─────────────────────────────────────────────────────────────────
     local selfRef = self
     timer.Simple(0, function()
         if not IsValid(selfRef) then return end
@@ -758,19 +716,33 @@ function ENT:Activate()
 end
 
 -- ============================================================
--- OnTakeDamage: INTEGRATED WITH JUICY BLEEDING + HIT REACT
---               + PEDESTAL DODGE (reactive sideways slide)
+-- TraceAttack
+-- The engine calls TraceAttack BEFORE OnTakeDamage for every
+-- hitscan/bullet hit. This is where blood decals, BloodImpact
+-- effects, and surface impact effects are spawned at the C++ level.
+-- By overriding this and returning early (no BaseClass call) during
+-- the invulnerability window we suppress ALL engine-side hit visuals.
+-- ============================================================
+function ENT:TraceAttack(dmginfo, dir, trace)
+    if self._gekkoDead then
+        dmginfo:SetDamage(0)
+        return  -- no BaseClass = no engine effects
+    end
+    if CurTime() < (self._gekkoInvulnUntil or 0) then
+        dmginfo:SetDamage(0)
+        dmginfo:ScaleDamage(0)
+        dmginfo:SetDamageForce(Vector(0, 0, 0))
+        return  -- no BaseClass = no blood, no decals, no impact spark
+    end
+    self.BaseClass.TraceAttack(self, dmginfo, dir, trace)
+end
+
+-- ============================================================
+-- OnTakeDamage
 -- ============================================================
 local BLEED_DMG_TYPES = {
-    DMG_BULLET,
-    DMG_BUCKSHOT,
-    DMG_SLASH,
-    DMG_CLUB,
-    DMG_BURN,
-    DMG_PLASMA,
-    DMG_ENERGYBEAM,
-    DMG_SNIPER,
-    DMG_NEVERGIB,
+    DMG_BULLET, DMG_BUCKSHOT, DMG_SLASH, DMG_CLUB,
+    DMG_BURN, DMG_PLASMA, DMG_ENERGYBEAM, DMG_SNIPER, DMG_NEVERGIB,
 }
 
 local function ShouldJuicyBleed(dmginfo)
@@ -792,18 +764,13 @@ local function GekkoApplyHitImpulse(ent, hitDir, damage)
     ent:SetAbsVelocity(cur + hitDir * mag)
 end
 
--- ============================================================
--- RECONSTRUCT HIT POSITION
--- ============================================================
 local function GekkoResolveHitPos(self, dmginfo)
     local hitPos = dmginfo:GetDamagePosition()
     if hitPos ~= vector_origin then
         return hitPos, "dmgpos"
     end
-
     local _, maxs = self:GetCollisionBounds()
     local bodyCenter = self:GetPos() + Vector(0, 0, maxs.z * 0.5)
-
     local attacker = dmginfo:GetAttacker()
     if IsValid(attacker) then
         local src = attacker.EyePos and attacker:EyePos() or attacker:GetPos()
@@ -813,12 +780,9 @@ local function GekkoResolveHitPos(self, dmginfo)
             filter = { attacker, self },
             mask   = MASK_SHOT,
         })
-        if tr.Hit then
-            return tr.HitPos, "trace_attacker"
-        end
+        if tr.Hit then return tr.HitPos, "trace_attacker" end
         return bodyCenter, "bodycenter_attacker"
     end
-
     local inflictor = dmginfo:GetInflictor()
     if IsValid(inflictor) then
         local src = inflictor:GetPos()
@@ -828,41 +792,10 @@ local function GekkoResolveHitPos(self, dmginfo)
             filter = { inflictor, self },
             mask   = MASK_SHOT,
         })
-        if tr.Hit then
-            return tr.HitPos, "trace_inflictor"
-        end
+        if tr.Hit then return tr.HitPos, "trace_inflictor" end
         return bodyCenter, "bodycenter_inflictor"
     end
-
     return bodyCenter, "bodycenter_fallback"
-end
-
-
--- ============================================================
--- TraceAttack override
--- Suppresses engine-side blood decals and impact effects
--- (ImpactEffect, BloodImpact, surface decals) that the engine
--- fires through the C++ TraceAttack path BEFORE OnTakeDamage
--- is ever called. Without this override those effects always
--- fire even when OnTakeDamage zeroes and discards the damage.
--- During the invulnerability window we zero the damage in the
--- dmginfo and return without calling BaseClass so the engine
--- skips every visual associated with the hit.
--- ============================================================
-function ENT:TraceAttack(dmginfo, dir, trace)
-    if self._gekkoDead then
-        dmginfo:SetDamage(0)
-        return
-    end
-    -- Invulnerability window set by PedestalDodge_OnHit
-    if CurTime() < (self._gekkoInvulnUntil or 0) then
-        dmginfo:SetDamage(0)
-        dmginfo:ScaleDamage(0)
-        dmginfo:SetDamageForce(Vector(0, 0, 0))
-        -- Returning without BaseClass call suppresses engine blood/impact effects.
-        return
-    end
-    self.BaseClass.TraceAttack(self, dmginfo, dir, trace)
 end
 
 function ENT:OnTakeDamage(dmginfo)
@@ -871,13 +804,14 @@ function ENT:OnTakeDamage(dmginfo)
         return
     end
 
-    -- Early invulnerability window check (set by PedestalDodge_OnHit).
-    -- TraceAttack already blocks engine effects; this guard blocks anything
-    -- that reaches OnTakeDamage through a non-TraceAttack path (blast, etc.)
+    -- Full invulnerability window: block damage AND effects from any source
+    -- (blast, splash, etc.) that bypasses TraceAttack.
     if CurTime() < (self._gekkoInvulnUntil or 0) then
         dmginfo:SetDamage(0)
         dmginfo:ScaleDamage(0)
         dmginfo:SetDamageForce(Vector(0, 0, 0))
+        -- Keep flinch suppressed so GeckoCrouch_Update runs freely.
+        self.Flinching = false
         return
     end
 
@@ -897,22 +831,18 @@ function ENT:OnTakeDamage(dmginfo)
         and (hitPos - attacker:GetPos()):GetNormalized()
         or self:GetForward()
 
-    -- ── Reactive pedestal dodge runs FIRST, before ANY visual effect.
-    -- PedestalDodge_OnHit sets _gekkoInvulnUntil on the entity so that
-    -- TraceAttack (engine blood/impact effects) and any follow-up blast
-    -- damage are also blocked for the full dodge+tail window.
-    -- On a successful dodge we zero damage and return immediately.
+    -- ── Reactive dodge: called BEFORE any visual effect.
+    -- PedestalDodge_OnHit sets _gekkoInvulnUntil so follow-up hits in
+    -- the same frame (and subsequent blast ticks) are also blocked.
     if self:PedestalDodge_OnHit(dmginfo) then
         dmginfo:SetDamage(0)
         dmginfo:ScaleDamage(0)
         dmginfo:SetDamageForce(Vector(0, 0, 0))
-        -- Suppress VJ Base flinch from this tick onward (it runs after us).
         self.Flinching = false
         return
     end
-    -- ───────────────────────────────────────────────────────────────────────
 
-    -- Only reaches here when the dodge did NOT trigger.
+    -- Normal hit path
     GekkoApplyHitImpulse(self, hitDir, rawDmg)
     GekkoVanillaBleed(self, hitPos, hitDir)
     if dmginfo:IsBulletDamage() then
@@ -943,11 +873,9 @@ function ENT:OnThink()
     self:GekkoJump_Think()
     self:GekkoTargetJump_Think()
     self:GekkoElastic_Think()
-	self:GekkoAPS_Think()
+    self:GekkoAPS_Think()
     GekkoSprint_Think(self)
-    -- ── Pedestal dodge: random strafe tick + slide advancement ──────
     self:PedestalDodge_ThinkStrafe()
-    -- ────────────────────────────────────────────────────────────────
     self:GekkoUpdateAnimation()
     self:GeckoCrush_Think()
     if CurTime() > self.Gekko_NextDebugT then
@@ -962,13 +890,14 @@ function ENT:OnThink()
             dist = -1; src = "none"
         end
         print(string.format(
-            "[GekkoDBG] vel=%.1f seq=%s run=%s sprint=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s dead=%s",
+            "[GekkoDBG] vel=%.1f seq=%s run=%s sprint=%s dist=%d(%s) spd=%d jump=%s crouch=%s mgActive=%s lastWpn=%s dead=%s invuln=%s",
             self:GetNWFloat("GekkoSpeed", 0), tostring(self.Gekko_LastSeqName),
             tostring(self._gekkoRunning), tostring(self._gekkoSprinting),
             dist, src, self.MoveSpeed or 0,
             JUMP_STATE_NAMES[self:GetGekkoJumpState()] or "?",
             tostring(self._gekkoCrouching), tostring(self._mgBurstActive),
-            tostring(self._lastWeaponChoice), tostring(self._gekkoDead)
+            tostring(self._lastWeaponChoice), tostring(self._gekkoDead),
+            tostring(CurTime() < (self._gekkoInvulnUntil or 0))
         ))
         self.Gekko_NextDebugT = CurTime() + 1
     end
@@ -1239,41 +1168,20 @@ local function FireNikita(ent, enemy)
     return true
 end
 
--- ============================================================
--- FIRE BUSHMASTER
--- Task 1: +70 u drop compensation + +-17 u vertical jitter
--- Task 2: 55% velocity lead (imperfect aim correction)
--- Task 3: 10% of shots use BM_INTERVAL2 (double delay stutter)
--- Shell ejection sound: random pick from BM_SHELL_DROP_SOUNDS,
---   played BM_SHELL_DROP_DELAY (0.19 s) after each shot fires.
--- ============================================================
 local function FireBushmaster(ent, enemy)
-    -- Snapshot the fallback aim position at burst start
     local aimPosBase = enemy:GetPos() + Vector(0, 0, 40)
-
-    -- Task 2: snapshot enemy velocity at burst start for lead calculation.
-    -- We re-sample per shot so the lead tracks the target if it changes direction.
-    -- Using GetAbsVelocity() - works on players and NPCs alike.
     local rounds = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
-
-    -- Task 3: pre-build the per-shot fire times with stutter accumulation.
-    -- Each shot decides independently whether to add BM_INTERVAL2 or BM_INTERVAL
-    -- to the running clock. This means a stutter on shot N shifts ALL subsequent shots.
     local shotTimes = {}
     local accumTime = 0
     for i = 0, rounds - 1 do
         shotTimes[i] = accumTime
-        -- Roll stutter for the NEXT gap (no gap after the last shot, doesn't matter)
         local gap = (math.random(100) <= BM_STUTTER_CHANCE) and BM_INTERVAL2 or BM_INTERVAL
         accumTime = accumTime + gap
     end
-
     for i = 0, rounds - 1 do
         local shot = i
         timer.Simple(shotTimes[shot], function()
             if not IsValid(ent) then return end
-
-            -- Resolve muzzle source
             local src, ejectAng
             ejectAng = ent:GetAngles()
             local pelBone = ent.GekkoPelvisBone
@@ -1285,33 +1193,20 @@ local function FireBushmaster(ent, enemy)
                 end
             end
             src = src or (ent:GetPos() + Vector(0, 0, BM_MUZZLE_Z_OFFSET))
-
-            -- Resolve current enemy
             local curEnemy = GetActiveEnemy(ent)
             local basePos  = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0, 0, 40)) or aimPosBase
-
-            -- Task 2: imperfect velocity lead.
-            -- tof = straight-line distance / projectile speed (rough estimate, ignores orbit path)
-            -- lead = velocity * tof * BM_LEAD_FACTOR  (55% -> plausible but not perfect)
             local leadOffset = Vector(0, 0, 0)
             if IsValid(curEnemy) then
                 local enemyVel = curEnemy:GetAbsVelocity()
-                -- Only lead if the target is actually moving (avoids jitter on standing targets)
                 if enemyVel:LengthSqr() > 100 then
                     local dist = src:Distance(basePos)
                     local tof  = dist / BM_PROJ_SPEED
                     leadOffset = enemyVel * (tof * BM_LEAD_FACTOR)
                 end
             end
-
-            -- Task 1: drop compensation + vertical jitter
             local dropCompZ = BM_DROP_COMP_Z + math.Rand(-BM_DROP_JITTER_Z, BM_DROP_JITTER_Z)
-
-            -- Final aim point: base + velocity lead + drop compensation (Z only)
             local curAim = basePos + leadOffset + Vector(0, 0, dropCompZ)
-
             local dir = (curAim - src):GetNormalized()
-
             local shell = ents.Create("sent_gekko_bushmaster")
             if IsValid(shell) then
                 shell:SetPos(src); shell:SetAngles(dir:Angle())
@@ -1326,23 +1221,17 @@ local function FireBushmaster(ent, enemy)
             util.Effect("MuzzleFlash", eff)
             SendMuzzleFlash(src, dir, 3)
             ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 110), 1)
-
-            -- Shell ejection sound: played 0.19 s after the shot,
-            -- random variant from BM_SHELL_DROP_SOUNDS (01-07).
             local shellSnd = BM_SHELL_DROP_SOUNDS[math.random(#BM_SHELL_DROP_SOUNDS)]
             timer.Simple(BM_SHELL_DROP_DELAY, function()
                 if not IsValid(ent) then return end
                 ent:EmitSound(shellSnd, BM_SHELL_DROP_LEVEL,
                     math.random(BM_SHELL_DROP_PITCH_MIN, BM_SHELL_DROP_PITCH_MAX), 0.8)
             end)
-
-            -- ---- Bushmaster fire-recoil signal (server -> client) ----
             net.Start("GekkoBushRecoil")
                 net.WriteEntity(ent)
                 net.WriteVector(src)
-                net.WriteVector(-dir)   -- recoil direction = opposite of shot
+                net.WriteVector(-dir)
             net.Broadcast()
-            -- -----------------------------------------------------------
             if shot == rounds - 1 then
                 timer.Simple(0.12, function()
                     if not IsValid(ent) then return end
