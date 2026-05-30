@@ -21,7 +21,23 @@ local ELASTIC_ROPE_B        = 0
 local ELASTIC_SNAP_DELAY    = 2.8
 local ANCHOR_MODEL          = "models/hunter/blocks/cube025x025x025.mdl"
 
-local GEKKO_ORIGIN_Z        = 380
+local GEKKO_ORIGIN_Z        = 380   -- used only as fallback below
+
+-- Returns the tentacle-origin position for a Gekko entity.
+-- Prefers the spine bone's actual world position so the tentacle root
+-- stays glued to the model even when the NPC is crouching or downed
+-- by the leg-disable system.  Falls back to the flat Z offset.
+local function GekkoElastic_GetOrigin(gekko)
+    local boneIdx = gekko.GekkoSpineBone or gekko.GekkoPelvisBone or -1
+    if boneIdx >= 0 then
+        local m = gekko:GetBoneMatrix(boneIdx)
+        if m then return m:GetTranslation() end
+    end
+    -- Fallback: model-relative up direction so the offset is not world-Z fixed
+    local up = gekko:GetAngles():Up()
+    return gekko:GetPos() + up * GEKKO_ORIGIN_Z
+end
+
 local ELASTIC_PREFIRE_DELAY = 0.9
 local EXTEND_SPEED          = 600
 
@@ -84,7 +100,7 @@ local function MakeAnchor(pos)
 end
 
 local function GekkoElastic_HasLOS(gekko, enemy)
-    local fromPos = gekko:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
+    local fromPos = GekkoElastic_GetOrigin(gekko)
     local toPos   = enemy:GetPos() + Vector(0, 0, 40)
     local tr = util.TraceLine({
         start  = fromPos,
@@ -262,7 +278,7 @@ function ENT:GekkoElastic_Think()
 
         if now >= self._elasticPullStartT and now >= self._elasticNextKickT then
             self._elasticNextKickT = now + ELASTIC_PULL_INTERVAL
-            local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
+            local gekkoPos = GekkoElastic_GetOrigin(self)
             local enemyPos = enemy:GetPos() + Vector(0, 0, 40)
             local dir      = (gekkoPos - enemyPos):GetNormalized()
             local vel      = dir * ELASTIC_PULL_SPEED
@@ -275,63 +291,49 @@ function ENT:GekkoElastic_Think()
                     phys:SetVelocity(vel)
                     phys:Wake()
                 end
-                if enemy.SetVelocity then
-                    enemy:SetVelocity(vel)
-                end
-            else
-                local phys = enemy:GetPhysicsObject()
-                if IsValid(phys) then
-                    phys:SetVelocity(vel)
-                    phys:Wake()
-                elseif enemy.SetVelocity then
-                    enemy:SetVelocity(vel)
-                end
+
+                local dmg = DamageInfo()
+                dmg:SetDamage(ELASTIC_DAMAGE)
+                dmg:SetAttacker(self)
+                dmg:SetInflictor(self)
+                dmg:SetDamageType(DMG_CRUSH)
+                dmg:SetDamageForce((enemyPos - gekkoPos):GetNormalized() * 55000)
+                dmg:SetDamagePosition(enemyPos)
+                enemy:TakeDamageInfo(dmg)
             end
         end
         return
     end
 
-    if now < (self._elasticNextShotT or 0) then return end
+    if now < (self._elasticNextShotT or 0)   then return end
     if now < (self._elasticRetractUntil or 0) then return end
+    if self._gekkoDead                         then return end
 
     local enemy = self:GetEnemy()
+    if not IsValid(enemy) then return end
     if not IsAliveAndValid(enemy) then return end
     if IsNikitaOrProjectile(enemy) then return end
     if self:GetPos():Distance(enemy:GetPos()) > ELASTIC_MAX_RANGE then return end
     if not GekkoElastic_HasLOS(self, enemy) then return end
-    if math.random() > 0.18 then return end
-    self:GekkoElastic_Fire(enemy)
-end
 
--- ============================================================
---  GekkoElastic_Fire
--- ============================================================
-function ENT:GekkoElastic_Fire(enemy)
-    if not IsAliveAndValid(enemy) then return false end
-    if IsNikitaOrProjectile(enemy) then return false end
-
-    self._elasticNextShotT = CurTime() + math.Rand(
-        ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
-    self:_GekkoElastic_Cleanup()
+    -- Schedule the shot after prefire delay
+    self._elasticPending      = true
+    self._elasticPendingT     = now + ELASTIC_PREFIRE_DELAY
+    self._elasticPendingEnemy = enemy
 
     net.Start("GekkoElasticShootSound")
         net.WriteEntity(self)
     net.Broadcast()
-
-    self._elasticPending      = true
-    self._elasticPendingT     = CurTime() + ELASTIC_PREFIRE_DELAY
-    self._elasticPendingEnemy = enemy
-    return true
 end
 
 -- ============================================================
---  _GekkoElastic_Detonate
+--  _GekkoElastic_Detonate  (fires the actual tentacle)
 -- ============================================================
 function ENT:_GekkoElastic_Detonate(enemy)
     if not IsAliveAndValid(enemy) then return end
     if IsNikitaOrProjectile(enemy) then return end
 
-    local gekkoPos = self:GetPos() + Vector(0, 0, GEKKO_ORIGIN_Z)
+    local gekkoPos = GekkoElastic_GetOrigin(self)
     local enemyPos = enemy:GetPos() + Vector(0, 0, 40)
 
     local anchorG = MakeAnchor(gekkoPos)
@@ -348,7 +350,7 @@ function ENT:_GekkoElastic_Detonate(enemy)
     self._elasticActive     = true
     self._elasticCleanupT   = CurTime() + ELASTIC_DURATION
     self._elasticPullStartT = CurTime() + travelTime
-    self._elasticNextKickT  = CurTime() + travelTime
+    self._elasticNextKickT  = 0
     self._elasticAnchorG    = anchorG
     self._elasticAnchorE    = anchorE
     self._elasticEnemy      = enemy
@@ -356,32 +358,19 @@ function ENT:_GekkoElastic_Detonate(enemy)
     net.Start("GekkoElasticRope")
         net.WriteEntity(self)
         net.WriteEntity(enemy)
-        net.WriteFloat(ELASTIC_SNAP_DELAY)
-        net.WriteUInt(math.floor(ELASTIC_ROPE_WIDTH), 8)
+        net.WriteVector(gekkoPos)
+        net.WriteVector(enemyPos)
+        net.WriteFloat(travelTime)
+        net.WriteFloat(ELASTIC_DURATION)
+        net.WriteFloat(ELASTIC_ROPE_WIDTH)
         net.WriteUInt(ELASTIC_ROPE_R, 8)
         net.WriteUInt(ELASTIC_ROPE_G, 8)
         net.WriteUInt(ELASTIC_ROPE_B, 8)
     net.Broadcast()
 
-    -- Capture a safe reference to self for the timer closure.
-    -- If the Gekko is removed before travelTime elapses, self becomes
-    -- NULL and SetAttacker/SetInflictor would crash. Guard with IsValid
-    -- and fall back to game.GetWorld() so the damage is still applied
-    -- but attributed to a safe, always-valid entity.
-    local gekkoRef = self
-    timer.Simple(travelTime, function()
-        if not IsAliveAndValid(enemy) then return end
-        local attacker  = IsValid(gekkoRef) and gekkoRef or game.GetWorld()
-        local inflictor = IsValid(gekkoRef) and gekkoRef or game.GetWorld()
-        local dmg = DamageInfo()
-        dmg:SetDamage(ELASTIC_DAMAGE)
-        dmg:SetAttacker(attacker)
-        dmg:SetInflictor(inflictor)
-        dmg:SetDamageType(DMG_CLUB)
-        dmg:SetDamageForce((enemyPos - gekkoPos):GetNormalized() * 55000)
-        dmg:SetDamagePosition(enemyPos)
-        enemy:TakeDamageInfo(dmg)
-    end)
+    self._elasticNextShotT = CurTime() + ELASTIC_DURATION +
+        RETRACT_BLOCK_PAD +
+        math.Rand(ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
 end
 
 -- ============================================================
@@ -390,32 +379,29 @@ end
 function ENT:_GekkoElastic_Cleanup()
     if IsValid(self._elasticAnchorG) then self._elasticAnchorG:Remove() end
     if IsValid(self._elasticAnchorE) then self._elasticAnchorE:Remove() end
-    self._elasticActive       = false
-    self._elasticPending      = false
-    self._elasticPendingEnemy = nil
-    self._elasticAnchorG      = nil
-    self._elasticAnchorE      = nil
-    self._elasticEnemy        = nil
-    self._elasticPullStartT   = 0
+    self._elasticAnchorG  = nil
+    self._elasticAnchorE  = nil
+    self._elasticActive   = false
+    self._elasticEnemy    = nil
     self._elasticRetractUntil = CurTime() + RETRACT_BLOCK_PAD
+
+    if self._elasticNextShotT < CurTime() then
+        self._elasticNextShotT = CurTime() +
+            math.Rand(ELASTIC_COOLDOWN_MIN, ELASTIC_COOLDOWN_MAX)
+    end
 end
 
 -- ============================================================
---  GekkoElastic_OnRemove
+--  GekkoElastic_OnOwnerDeath  (called from init.lua death hook)
 -- ============================================================
-function ENT:GekkoElastic_OnRemove()
-    local activeEnemy  = self._elasticEnemy
-    local hadActive    = self._elasticActive
-
+function ENT:GekkoElastic_OnOwnerDeath()
+    if not self._elasticActive then return end
+    local activeEnemy = self._elasticEnemy
+    local breakPos = IsValid(activeEnemy) and
+        (activeEnemy:GetPos() + Vector(0, 0, 40)) or Vector(0,0,0)
     self:_GekkoElastic_Cleanup()
-    self._elasticNextShotT    = math.huge
-    self._elasticRetractUntil = math.huge
-
-    if hadActive and IsValid(activeEnemy) then
-        local breakPos = activeEnemy:GetPos() + Vector(0, 0, 40)
-        net.Start("GekkoElasticBreak")
-            net.WriteEntity(activeEnemy)
-            net.WriteVector(breakPos)
-        net.Broadcast()
-    end
+    net.Start("GekkoElasticBreak")
+        net.WriteEntity(activeEnemy or game.GetWorld())
+        net.WriteVector(breakPos)
+    net.Broadcast()
 end
