@@ -60,138 +60,29 @@ end
 local function CeilingCheck(ent)
     local now = CurTime()
     if now < (ent._gekkoCeilNextT or 0) then
-        return ent._gekkoCeilingHit
+        return ent._gekkoCeilingHit or false
     end
     ent._gekkoCeilNextT = now + CEIL_CHECK_INTERVAL
 
-    local pos    = ent:GetPos()
-    local startZ = pos.z + HITBOX_STAND_H - 4
-    local endZ   = pos.z + HITBOX_STAND_H + CEIL_CLEARANCE + CEIL_TRACE_EXTRA
-
-    local tr = util.TraceLine({
-        start  = Vector(pos.x, pos.y, startZ),
-        endpos = Vector(pos.x, pos.y, endZ),
+    local pos   = ent:GetPos()
+    local mins  = Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, HITBOX_CROUCH_H)
+    local maxs  = Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H + CEIL_TRACE_EXTRA)
+    local tr    = util.TraceHull({
+        start  = pos,
+        endpos = pos + Vector(0, 0, CEIL_CLEARANCE),
+        mins   = mins,
+        maxs   = maxs,
         filter = ent,
         mask   = MASK_SOLID,
     })
-
-    local hit = false
-    if tr.Hit then
-        local gap = tr.HitPos.z - (pos.z + HITBOX_STAND_H)
-        hit = (gap <= CEIL_CLEARANCE)
-        if hit then
-            print(string.format(
-                "[GeckoCrouch] CeilingTrace | gap=%.1f → CROUCHING",
-                gap
-            ))
-        end
-    end
-
-    ent._gekkoCeilingHit = hit
-    return hit
+    ent._gekkoCeilingHit = tr.Hit
+    return tr.Hit
 end
 
 -- ─────────────────────────────────────────────────────────────
---  TickObstacle  (only while STANDING and moving)
+--  EnterCrouch / ExitCrouch  (internal)
 -- ─────────────────────────────────────────────────────────────
-local function TickObstacle(ent)
-    local now = CurTime()
-    if now < ent._gekkoObsRearmT then
-        ent._gekkoObsOnSince  = nil
-        ent._gekkoObsHullHit  = false
-        return false
-    end
-    local vel = ent:GetVelocity()
-    local spd = vel.x * vel.x + vel.y * vel.y
-    if spd < OBS_MIN_VELOCITY * OBS_MIN_VELOCITY then
-        ent._gekkoObsOnSince  = nil
-        ent._gekkoObsHullHit  = false
-        return false
-    end
-    local raw = RawObstacleCheck(ent)
-    ent._gekkoObsHullHit = raw
-    if raw then
-        if not ent._gekkoObsOnSince then
-            ent._gekkoObsOnSince = now
-        elseif now - ent._gekkoObsOnSince >= OBS_ON_DEBOUNCE then
-            if not ent._gekkoObsDebounced then
-                ent._gekkoObsDebounced = true
-            end
-        end
-    else
-        ent._gekkoObsOnSince   = nil
-        ent._gekkoObsDebounced = false
-    end
-    return ent._gekkoObsDebounced or false
-end
-
--- ─────────────────────────────────────────────────────────────
---  TickRandom
--- ─────────────────────────────────────────────────────────────
-local function TickRandom(ent)
-    local now = CurTime()
-    if ent._gekkoRandomCrouch then return end
-    if now < ent._gekkoRandomCrouchNextT then return end
-    if math.random() < RAND_CHANCE then
-        local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
-        ent._gekkoRandomCrouch     = true
-        ent._gekkoRandomCrouchEndT = now + dur
-        ent._gekkoRandomDuration   = dur
-        print(string.format("[GeckoCrouch] Random TRIGGERED — holding for %.1fs", dur))
-    else
-        ent._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-        print(string.format("[GeckoCrouch] Random FAILED — next in %.1fs",
-            ent._gekkoRandomCrouchNextT - now))
-    end
-end
-
--- ─────────────────────────────────────────────────────────────
---  GeckoCrouch_Init
--- ─────────────────────────────────────────────────────────────
-function ENT:GeckoCrouch_Init()
-    self._gekkoCrouching           = false
-    self._gekkoCrouchHoldUntil     = -1
-    self._gekkoCrouchJustEntered   = false
-    self._gekkoObsRearmT           = 0
-    self._gekkoObsOnSince          = nil
-    self._gekkoObsDebounced        = false
-    self._gekkoObsHullHit          = false
-    self._gekkoCeilingHit          = false
-    self._gekkoCeilNextT           = 0
-    self.GekkoSeq_CrouchWalk       = -1
-    self.GekkoSeq_CrouchIdle       = -1
-    self._gekkoCrouchSeqSet        = -1
-    self._gekkoRandomCrouch        = false
-    self._gekkoRandomCrouchEndT    = 0
-    self._gekkoRandomDuration      = 0
-    self._gekkoRandomCrouchNextT   = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-    self._gekkoDodgeCrouch         = false
-    self._gekkoDodgeCrouchUntil    = 0
-    self._gekkoDodgeCrouchForced   = false
-    print("[GeckoCrouch] Init() complete")
-end
-
--- ─────────────────────────────────────────────────────────────
---  GeckoCrouch_CacheSeqs
--- ─────────────────────────────────────────────────────────────
-function ENT:GeckoCrouch_CacheSeqs()
-    local cwalk = self:LookupSequence("c_walk")
-    local cidle = self:LookupSequence("cidle")
-    self.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
-    self.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
-    print(string.format(
-        "[GeckoCrouch] CacheSeqs | c_walk=%d  cidle=%d",
-        self.GekkoSeq_CrouchWalk, self.GekkoSeq_CrouchIdle
-    ))
-end
-
--- ─────────────────────────────────────────────────────────────
---  EnterCrouch
---  holdDuration: explicit lock duration (seconds). When called from
---  a dodge, pass the full slide duration so _gekkoCrouchHoldUntil
---  always covers the entire dodge window.
--- ─────────────────────────────────────────────────────────────
-local function EnterCrouch(ent, randDuration, holdDuration)
+local function EnterCrouch(ent, holdDuration, randDuration)
     local now = CurTime()
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
@@ -211,207 +102,199 @@ local function EnterCrouch(ent, randDuration, holdDuration)
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
-
     ent:SetNWBool("GekkoIsCrouching", true)
-
-    print(string.format("[GeckoCrouch] → Crouching holdLen=%.1fs  holdUntil=%.2f",
-        holdLen, ent._gekkoCrouchHoldUntil))
+    print(string.format("[GeckoCrouch] Enter | holdUntil=%.2f", ent._gekkoCrouchHoldUntil))
 end
 
--- ─────────────────────────────────────────────────────────────
---  ExitCrouch
---  Guards: will NOT exit while any dodge/slide lock is active.
--- ─────────────────────────────────────────────────────────────
 local function ExitCrouch(ent)
     local now = CurTime()
-    -- FIX: guard on BOTH _pedestalSliding and _gekkoDodgeCrouchUntil
+    -- Never exit while sliding
     if ent._pedestalSliding then return end
-    if ent._gekkoDodgeCrouch and now < (ent._gekkoDodgeCrouchUntil or 0) then
-        return
-    end
 
-    ent._gekkoCrouching           = false
-    ent._gekkoCrouchJustEntered   = false
-    ent._gekkoCrouchSeqSet        = -1
-    ent._gekkoDodgeCrouch         = false
-    ent._gekkoDodgeCrouchUntil    = 0
-    ent._gekkoDodgeCrouchForced   = false
-    ent._gekkoObsRearmT           = now + STAND_REARM_DELAY
-    ent._gekkoObsOnSince          = nil
-    ent._gekkoObsDebounced        = false
-    ent._gekkoObsHullHit          = false
-    ent._gekkoCeilingHit          = false
-    ent._gekkoCeilNextT           = 0
-    ent._gekkoRandomCrouch        = false
-    ent._gekkoRandomCrouchEndT    = 0
-    ent._gekkoRandomDuration      = 0
-    ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    ent._gekkoCrouching         = false
+    ent._gekkoCrouchJustEntered = false
+    ent._gekkoCrouchSeqSet      = -1
+    ent._gekkoDodgeCrouch       = false
+    ent._gekkoDodgeCrouchUntil  = 0
+    ent._gekkoDodgeCrouchForced = false
+    ent._gekkoObsRearmT         = now + STAND_REARM_DELAY
+    ent._gekkoObsOnSince        = nil
+    ent._gekkoObsDebounced      = false
+    ent._gekkoObsHullHit        = false
+    ent._gekkoCeilingHit        = false
+    ent._gekkoCeilNextT         = 0
 
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
-
     ent:SetNWBool("GekkoIsCrouching", false)
-    ent.VJ_CanMoveThink = true
-
-    print("[GeckoCrouch] → Standing")
+    print("[GeckoCrouch] Exit | standing")
 end
 
 -- ─────────────────────────────────────────────────────────────
---  EnforceSequence  (shared between normal path and force-tick path)
---
---  Reads the current speed from the live physics velocity when in a
---  dodge slide (MOVETYPE_FLY), otherwise from the NWFloat.
---  Calls ResetSequence every tick to beat VJ Base's own reassertion.
+--  EnforceSequence  (called every tick while crouched)
 -- ─────────────────────────────────────────────────────────────
 local function EnforceSequence(ent)
-    -- Lazy re-cache if model wasn't loaded yet at spawn time
-    if ent.GekkoSeq_CrouchWalk == -1 then
-        local cwalk = ent:LookupSequence("c_walk")
-        local cidle = ent:LookupSequence("cidle")
-        ent.GekkoSeq_CrouchWalk = (cwalk and cwalk ~= -1) and cwalk or -1
-        ent.GekkoSeq_CrouchIdle = (cidle and cidle ~= -1) and cidle or -1
-        if ent.GekkoSeq_CrouchWalk == -1 then
-            ent.GekkoSeq_CrouchWalk = ent.GekkoSeq_Idle or 0
-        end
-        ent._gekkoCrouchSeqSet = -1
+    local speed    = ent:GetVelocity():Length2D()
+    local isMoving = speed > CWALK_MOVING_THRESH
+    local seqName  = isMoving and "c_walk" or "c_walk"   -- same seq; split point for future
+    local seqIdx   = ent:LookupSequence(seqName)
+
+    if seqIdx < 0 then return end
+
+    if ent._gekkoCrouchSeqSet ~= seqIdx then
+        ent:ResetSequence(seqIdx)
+        ent._gekkoCrouchSeqSet = seqIdx
     end
 
-    local speed = ent:GetNWFloat("GekkoSpeed", 0)
-    if ent._pedestalSliding or ent._gekkoDodgeCrouch then
-        local v = ent:GetVelocity()
-        speed = math.sqrt(v.x * v.x + v.y * v.y)
-    end
-
-    local rate, targetSeq
-
-    if speed > CWALK_MOVING_THRESH then
-        rate      = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.3, 1.5)
-        targetSeq = ent.GekkoSeq_CrouchWalk
+    -- Continuously drive playback rate so VJ Base can't starve it.
+    local rate
+    if isMoving then
+        rate = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.4, 2.0)
     else
-        rate      = CWALK_STATIONARY_RATE
-        targetSeq = (ent.GekkoSeq_CrouchIdle ~= -1)
-                    and ent.GekkoSeq_CrouchIdle
-                    or  ent.GekkoSeq_CrouchWalk
+        rate = CWALK_STATIONARY_RATE
     end
-
-    if not targetSeq or targetSeq == -1 then
-        targetSeq = ent.GekkoSeq_CrouchWalk
-    end
-
-    if targetSeq and targetSeq ~= -1 then
-        if ent._gekkoCrouchSeqSet ~= targetSeq then
-            ent:ResetSequence(targetSeq)
-            ent._gekkoCrouchSeqSet = targetSeq
-            print(string.format("[GeckoCrouch] SeqSwitch → %d (speed=%.1f)", targetSeq, speed))
-        else
-            ent:ResetSequence(targetSeq)
-        end
-        ent:SetPlaybackRate(rate)
-    end
-
-    ent:SetPoseParameter("move_x", 0)
-    ent:SetPoseParameter("move_y", 0)
-    ent.Gekko_LastSeqName = (targetSeq == ent.GekkoSeq_CrouchWalk) and "c_walk" or "cidle"
+    ent:SetPlaybackRate(rate)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  Dodge_EnterCrouch
---  Called by pedestal_dodge_system.lua before BeginSlide fires.
---  Sets both the dodge flags AND calls EnterCrouch with the explicit
---  slide duration so _gekkoCrouchHoldUntil covers the full dodge.
+--  ENT:Dodge_EnterCrouch  (called by pedestal_dodge_system BeginSlide)
 -- ─────────────────────────────────────────────────────────────
 function ENT:Dodge_EnterCrouch(slideDuration)
     local now = CurTime()
     self._gekkoDodgeCrouch       = true
     self._gekkoDodgeCrouchUntil  = now + slideDuration
     self._gekkoDodgeCrouchForced = true
-    -- Pass slideDuration as holdDuration so the hold timer is set to at
-    -- least the slide length regardless of CROUCH_HOLD_MIN.
-    EnterCrouch(self, nil, slideDuration)
-    print(string.format("[GeckoCrouch] Dodge_EnterCrouch | dur=%.2fs  holdUntil=%.2f",
-        slideDuration, self._gekkoCrouchHoldUntil))
+    EnterCrouch(self, slideDuration, nil)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  GeckoCrouch_Update
---  Called every tick from GekkoUpdateAnimation().
---  Returns true  → crouch active this tick (caller must return)
---  Returns false → crouch inactive
+--  ENT:GeckoCrouch_Init
+-- ─────────────────────────────────────────────────────────────
+function ENT:GeckoCrouch_Init()
+    self._gekkoCrouching         = false
+    self._gekkoCrouchJustEntered = false
+    self._gekkoCrouchHoldUntil   = 0
+    self._gekkoCrouchSeqSet      = -1
+    self._gekkoObsOnSince        = nil
+    self._gekkoObsDebounced      = false
+    self._gekkoObsHullHit        = false
+    self._gekkoObsRearmT         = 0
+    self._gekkoCeilingHit        = false
+    self._gekkoCeilNextT         = 0
+    self._gekkoRandomCrouch      = false
+    self._gekkoRandomCrouchEndT  = 0
+    self._gekkoRandomDuration    = 0
+    self._gekkoRandomCrouchNextT = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    self._gekkoDodgeCrouch       = false
+    self._gekkoDodgeCrouchUntil  = 0
+    self._gekkoDodgeCrouchForced = false
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  ENT:GeckoCrouch_Update  (called every OnThink via GekkoUpdateAnimation)
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
-    -- ── DODGE LOCK: extend hold timer every tick while active ────
-    -- This is the primary fix. Every tick that the dodge or slide is
-    -- active we push _gekkoCrouchHoldUntil forward, so the expiry
-    -- path inside the crouching branch can NEVER reach ExitCrouch.
-    local dodgeActive    = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
-    local slideActive    = self._pedestalSliding
-    local anyLock        = dodgeActive or slideActive
-    if anyLock and self._gekkoCrouching then
-        -- Keep the hold timer at least 0.5 s ahead so it cannot expire
-        -- mid-dodge even if a frame takes longer than expected.
-        local needed = now + 0.5
-        if (self._gekkoCrouchHoldUntil or 0) < needed then
-            self._gekkoCrouchHoldUntil = needed
-        end
+    -- ── FIX: Self-healing Flinching kill ────────────────────────
+    -- Kill Flinching at the very top of every GeckoCrouch_Update call
+    -- while any dodge or slide lock is active. This is a last-resort
+    -- guard: even if GekkoUpdateAnimation's Flinching check was somehow
+    -- skipped (e.g. called directly from BeginSlide), the sequence
+    -- enforcement below can never be blocked by a stale flinch flag.
+    do
+        local _dA = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
+        local _sA = self._pedestalSliding
+        if _dA or _sA then self.Flinching = false end
     end
-    -- ─────────────────────────────────────────────────────────
+    -- ─────────────────────────────────────────────────────────────
 
-    -- ── FORCE-TICK PATH ──────────────────────────────────────
-    -- Called directly by BeginSlide BEFORE SetMoveType(FLY).
-    -- _gekkoCrouching and _gekkoDodgeCrouch are already set by
-    -- Dodge_EnterCrouch. Skip all guards; stamp the sequence now
-    -- in the same callstack so VJ Base cannot win the reassertion race.
+    -- ── DODGE LOCK: extend hold timer every tick while active ────
+    local dodgeActive = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
+    local slideActive = self._pedestalSliding
+
+    -- ── FORCE-TICK (fired once by BeginSlide) ───────────────────
     if self._gekkoDodgeCrouchForced then
         self._gekkoDodgeCrouchForced = false
+        if not self._gekkoCrouching then
+            EnterCrouch(self, nil, nil)
+        end
         EnforceSequence(self)
         return true
     end
-    -- ─────────────────────────────────────────────────────────
 
-    local jumpState  = self:GetGekkoJumpState()
-    local jumpActive = jumpState == self.JUMP_RISING  or
-                       jumpState == self.JUMP_FALLING or
-                       jumpState == self.JUMP_LAND
+    -- ── VJ BASE CROUCH FLAG ─────────────────────────────────────
+    local vjCrouch = self.VJ_IsCrouching or false
 
-    if jumpActive and not anyLock then return false end
+    -- ── OBSTACLE CHECK ──────────────────────────────────────────
+    local vel     = self:GetVelocity():Length2D()
+    local moving  = vel > OBS_MIN_VELOCITY
+    local rearmOk = now >= (self._gekkoObsRearmT or 0)
+    local obsHit  = false
 
+    if moving and rearmOk then
+        local raw = RawObstacleCheck(self)
+        if raw then
+            if not self._gekkoObsDebounced then
+                if not self._gekkoObsOnSince then
+                    self._gekkoObsOnSince = now
+                end
+                if now - self._gekkoObsOnSince >= OBS_ON_DEBOUNCE then
+                    self._gekkoObsDebounced = true
+                    self._gekkoObsHullHit   = true
+                end
+            end
+        else
+            self._gekkoObsOnSince   = nil
+            self._gekkoObsDebounced = false
+            self._gekkoObsHullHit   = false
+        end
+        obsHit = self._gekkoObsHullHit
+    else
+        self._gekkoObsOnSince   = nil
+        self._gekkoObsDebounced = false
+        self._gekkoObsHullHit   = false
+    end
+
+    -- ── CEILING CHECK ───────────────────────────────────────────
+    local ceilHit = self._gekkoCrouching and CeilingCheck(self)
+
+    -- ── RANDOM CROUCH TICK ──────────────────────────────────────
     if not self._gekkoCrouching then
-        if self._gekkoSuppressActivity and now < self._gekkoSuppressActivity then
-            return false
+        if now >= (self._gekkoRandomCrouchNextT or 0) then
+            if math.random() < RAND_CHANCE then
+                local dur = math.Rand(RAND_DUR_MIN, RAND_DUR_MAX)
+                self._gekkoRandomCrouch     = true
+                self._gekkoRandomCrouchEndT = now + dur
+                self._gekkoRandomDuration   = dur
+                print(string.format("[GeckoCrouch] Random ENTER | dur=%.1f", dur))
+            else
+                self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+            end
+        end
+    else
+        if self._gekkoRandomCrouch and now >= self._gekkoRandomCrouchEndT then
+            -- random expired — handled in exit-guard below
         end
     end
 
-    TickRandom(self)
-    local ceilHit = CeilingCheck(self)
-    local obsHit  = false
-    if not self._gekkoCrouching then
-        obsHit = TickObstacle(self)
-    end
+    -- ── WANT-CROUCH AGGREGATION ─────────────────────────────────
+    local wantCrouch = vjCrouch or obsHit or ceilHit
+        or self._gekkoRandomCrouch
+        or dodgeActive
+        or slideActive
 
-    local vjCrouch   = (self.VJ_IsBeingCrouched == true)
-    local randActive = self._gekkoRandomCrouch
-    local wantCrouch = vjCrouch or obsHit or ceilHit or randActive or anyLock
+    -- ── ANY-LOCK (prevents exit even when hold timer expires) ───
+    local anyLock = dodgeActive or slideActive or ceilHit
 
-    if not self._crouchDiagT or now > self._crouchDiagT then
-        print(string.format(
-            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  dodge=%s  slide=%s  holdLeft=%.2f  rearmLeft=%.2f",
-            tostring(self._gekkoCrouching), tostring(wantCrouch),
-            tostring(vjCrouch), tostring(obsHit), tostring(ceilHit), tostring(randActive),
-            tostring(dodgeActive), tostring(slideActive),
-            math.max(0, self._gekkoCrouchHoldUntil - now),
-            math.max(0, self._gekkoObsRearmT - now)
-        ))
-        self._crouchDiagT = now + 2
-    end
-
+    -- ── ENTER PATH ──────────────────────────────────────────────
     if not self._gekkoCrouching then
         if wantCrouch then
-            local randDur = randActive and self._gekkoRandomDuration or nil
-            EnterCrouch(self, randDur, nil)
+            local holdDur = nil
+            if self._gekkoRandomCrouch then holdDur = self._gekkoRandomDuration end
+            EnterCrouch(self, holdDur, nil)
         else
             return false
         end
