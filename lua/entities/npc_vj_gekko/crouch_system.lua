@@ -160,12 +160,25 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  ENT:Dodge_EnterCrouch  (called by pedestal_dodge_system BeginSlide)
+--
+--  FIX: Do NOT set _gekkoDodgeCrouchForced = true here.
+--  The old code set it true, then BeginSlide called GeckoCrouch_Update()
+--  immediately after, which hit the _gekkoDodgeCrouchForced branch and
+--  called EnterCrouch a second time with nil holdDuration. That second
+--  call reset _gekkoCrouchSeqSet = -1 and _gekkoCrouchJustEntered = true
+--  again, causing EnforceSequence to fire ResetSequence twice in the
+--  same callstack — producing the visible post-dodge up-down bob.
+--
+--  Now EnterCrouch is called exactly once (here) with the correct
+--  holdDur. The immediate GeckoCrouch_Update() in BeginSlide takes
+--  the normal update path (dodgeActive = true → EnforceSequence)
+--  without any second EnterCrouch.
 -- ─────────────────────────────────────────────────────────────
 function ENT:Dodge_EnterCrouch(slideDuration)
     local now = CurTime()
     self._gekkoDodgeCrouch       = true
     self._gekkoDodgeCrouchUntil  = now + slideDuration
-    self._gekkoDodgeCrouchForced = true
+    self._gekkoDodgeCrouchForced = false   -- never set true: avoids double EnterCrouch
     EnterCrouch(self, slideDuration, nil)
 end
 
@@ -215,7 +228,9 @@ function ENT:GeckoCrouch_Update()
     local dodgeActive = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
     local slideActive = self._pedestalSliding
 
-    -- ── FORCE-TICK (fired once by BeginSlide) ───────────────────
+    -- ── FORCE-TICK: kept for safety but should never fire for dodge
+    -- entry now that Dodge_EnterCrouch no longer sets this flag.
+    -- ─────────────────────────────────────────────────────────────
     if self._gekkoDodgeCrouchForced then
         self._gekkoDodgeCrouchForced = false
         if not self._gekkoCrouching then
