@@ -86,14 +86,11 @@ local function EnterCrouch(ent, holdDuration, randDuration)
     local now = CurTime()
 
     -- FIX: Guard against re-entry when already crouching.
-    -- Without this, a second EnterCrouch call (e.g. from the
-    -- _gekkoDodgeCrouchForced path) resets _gekkoCrouchSeqSet = -1
-    -- and _gekkoCrouchJustEntered = true again, forcing EnforceSequence
-    -- to call ResetSequence a second time on the same callstack tick,
-    -- which is what produced the visible post-dodge up-down bob.
+    -- A second EnterCrouch call resets _gekkoCrouchSeqSet = -1 and
+    -- _gekkoCrouchJustEntered = true, which forces EnforceSequence to
+    -- call ResetSequence again on the same tick → the visible post-dodge
+    -- up-down bob. If already crouching, only extend the hold timer.
     if ent._gekkoCrouching then
-        -- Already crouching: only extend the hold timer if the new
-        -- duration would push it further out. Never restart the state.
         local holdLen = holdDuration or CROUCH_HOLD_MIN
         if randDuration and randDuration > holdLen then holdLen = randDuration end
         local newUntil = now + holdLen
@@ -125,6 +122,7 @@ local function EnterCrouch(ent, holdDuration, randDuration)
     print(string.format("[GeckoCrouch] Enter | holdUntil=%.2f", ent._gekkoCrouchHoldUntil))
 end
 
+
 local function ExitCrouch(ent)
     local now = CurTime()
     -- Never exit while sliding
@@ -133,6 +131,8 @@ local function ExitCrouch(ent)
     ent._gekkoCrouching         = false
     ent._gekkoCrouchJustEntered = false
     ent._gekkoCrouchSeqSet      = -1
+    -- FIX: Invalidate last-sequence cache so walk/idle re-stamps immediately.
+    ent.Gekko_LastSeqIdx        = -1
     ent._gekkoDodgeCrouch       = false
     ent._gekkoDodgeCrouchUntil  = 0
     ent._gekkoDodgeCrouchForced = false
@@ -165,13 +165,7 @@ local function EnforceSequence(ent)
     if ent._gekkoCrouchSeqSet ~= seqIdx then
         ent:ResetSequence(seqIdx)
         ent._gekkoCrouchSeqSet      = seqIdx
-        -- FIX: Clear _gekkoCrouchJustEntered after the first successful
-        -- ResetSequence. Previously this flag was set in EnterCrouch and
-        -- NEVER cleared, meaning every subsequent EnforceSequence call
-        -- looked like a fresh entry. Combined with TranslateActivity also
-        -- calling ResetSequence, this caused the sequence to be stamped
-        -- twice per tick → visible up-down bob after a dodge. Clearing it
-        -- here ensures only one ResetSequence fires per enter event.
+        -- FIX: Clear just-entered flag so EnforceSequence does not re-stamp every tick.
         ent._gekkoCrouchJustEntered = false
     end
 
@@ -206,6 +200,10 @@ function ENT:Dodge_EnterCrouch(slideDuration)
     self._gekkoDodgeCrouch       = true
     self._gekkoDodgeCrouchUntil  = now + slideDuration
     self._gekkoDodgeCrouchForced = false   -- never set true: avoids double EnterCrouch
+    -- FIX: Force GekkoUpdateAnimation to re-stamp the sequence on exit,
+    -- since its guard (targetSeq ~= Gekko_LastSeqIdx) would otherwise
+    -- skip the walk/idle ResetSequence after the dodge window ends.
+    self.Gekko_LastSeqIdx        = -1
     EnterCrouch(self, slideDuration, nil)
 end
 
@@ -231,6 +229,22 @@ function ENT:GeckoCrouch_Init()
     self._gekkoDodgeCrouchUntil  = 0
     self._gekkoDodgeCrouchForced = false
 end
+
+-- ─────────────────────────────────────────────────────────────
+--  ENT:GeckoCrouch_CacheSeqs
+--  Looks up and caches the crouch animation sequence indices.
+--  Called from Init (deferred timer) and from GekkoUpdateAnimation
+--  whenever GekkoSeq_CrouchWalk is nil or -1.
+--  GekkoSeq_CrouchWalk  : "c_walk"  (primary crouch anim)
+--  GekkoSeq_CrouchIdle  : "c_idle"  (stationary crouch; falls back to c_walk)
+-- ─────────────────────────────────────────────────────────────
+function ENT:GeckoCrouch_CacheSeqs()
+    local cw = self:LookupSequence("c_walk")
+    local ci = self:LookupSequence("c_idle")
+    self.GekkoSeq_CrouchWalk = (cw and cw ~= -1) and cw or -1
+    self.GekkoSeq_CrouchIdle = (ci and ci ~= -1) and ci or -1
+end
+
 
 -- ─────────────────────────────────────────────────────────────
 --  ENT:GeckoCrouch_Update  (called every OnThink via GekkoUpdateAnimation)
