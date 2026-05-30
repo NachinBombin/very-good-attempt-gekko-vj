@@ -18,20 +18,31 @@
 --     every engine tick, ~100 Hz) instead of a 0.03 s recursive timer
 --     (~33 Hz). The old timer left a race window where VJ Base could
 --     set Flinching=true between ticks and win the sequence reassertion.
+--   * FIX: Removed local Dodge_EnterCrouch / Dodge_ExitCrouch entirely.
+--     The local Dodge_EnterCrouch set _gekkoDodgeCrouchForced = true,
+--     then BeginSlide called ent:GeckoCrouch_Update() immediately after,
+--     which hit the _gekkoDodgeCrouchForced branch and called EnterCrouch
+--     a second time with nil holdDuration. That second call reset
+--     _gekkoCrouchSeqSet = -1 and _gekkoCrouchJustEntered = true again,
+--     causing EnforceSequence to call ResetSequence twice in the same
+--     callstack — producing the post-dodge up-down bob.
+--     BeginSlide now calls ent:Dodge_EnterCrouch(crouchHold) directly,
+--     which is the single authoritative path in crouch_system.lua and
+--     never sets _gekkoDodgeCrouchForced.
 -- ============================================================
 
 local SLIDE_DIST          = 100
 local SLIDE_SPEED         = 280      -- units/sec
 
 local STRAFE_INTERVAL_MIN = 1.5
-local STRAFE_INTERVAL_MAX = 24.5
+local STRAFE_INTERVAL_MAX = 4.5
 
-local DODGE_CHARGES       = 1
+local DODGE_CHARGES       = 3
 local DODGE_WINDOW        = 6.0
 local DODGE_CHANCE        = 0.72
-local DODGE_COOLDOWN_MIN  = 1.8
-local DODGE_COOLDOWN_MAX  = 22.0
-local DODGE_VULN_DUR      = 1.0
+local DODGE_COOLDOWN_MIN  = 0.8
+local DODGE_COOLDOWN_MAX  = 2.0
+local DODGE_VULN_DUR      = 4.0
 
 -- Crouch hold window: covers slide travel + stand-up blend.
 -- Must be longer than slideDur (0.36 s). 2.5 s gives a full
@@ -107,59 +118,20 @@ end
 
 -- ============================================================
 -- Crouch enter / exit
+-- Delegated entirely to ENT:Dodge_EnterCrouch (crouch_system.lua).
+-- The old local Dodge_EnterCrouch / Dodge_ExitCrouch are REMOVED.
+-- Root cause of the post-dodge up-down bob:
+--   The local Dodge_EnterCrouch set _gekkoDodgeCrouchForced = true.
+--   BeginSlide then called ent:GeckoCrouch_Update() immediately after,
+--   which hit the _gekkoDodgeCrouchForced branch and called
+--   EnterCrouch() a second time (with nil holdDuration). That second
+--   call reset _gekkoCrouchSeqSet = -1 and _gekkoCrouchJustEntered = true
+--   again, forcing EnforceSequence to call ResetSequence twice in the
+--   same callstack — which restarted the animation from frame 0 twice,
+--   producing the visible bob. ENT:Dodge_EnterCrouch in crouch_system.lua
+--   is the single authoritative entry point: it never sets
+--   _gekkoDodgeCrouchForced, so EnterCrouch fires exactly once.
 -- ============================================================
-
-local function Dodge_EnterCrouch(ent, holdDur)
-    local now = CurTime()
-    ent._gekkoCrouching         = true
-    ent._gekkoCrouchJustEntered = true
-    ent._gekkoCrouchHoldUntil   = now + holdDur
-    ent._gekkoCrouchSeqSet      = -1
-    ent._gekkoObsOnSince        = nil
-    ent._gekkoObsDebounced      = false
-    ent._gekkoObsHullHit        = false
-    ent._gekkoDodgeCrouch       = true
-    ent._gekkoDodgeCrouchUntil  = now + holdDur
-    -- Force-tick flag: GeckoCrouch_Update skips all guards on the very
-    -- first call after this, stamping the crouch sequence before
-    -- SetMoveType fires. Fixes the "VJ wins the reassertion race" bug.
-    ent._gekkoDodgeCrouchForced = true
-
-    ent:SetCollisionBounds(
-        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
-        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
-    )
-    ent:SetNWBool("GekkoIsCrouching", true)
-    print(string.format("[DodgeCrouch] Enter | holdUntil=%.2f", ent._gekkoCrouchHoldUntil))
-end
-
-local function Dodge_ExitCrouch(ent)
-    local now = CurTime()
-    ent._gekkoCrouching           = false
-    ent._gekkoCrouchJustEntered   = false
-    ent._gekkoCrouchSeqSet        = -1
-    ent._gekkoDodgeCrouch         = false
-    ent._gekkoDodgeCrouchUntil    = 0
-    ent._gekkoDodgeCrouchForced   = false
-    ent._gekkoObsRearmT           = now + STAND_REARM_DELAY
-    ent._gekkoObsOnSince          = nil
-    ent._gekkoObsDebounced        = false
-    ent._gekkoObsHullHit          = false
-    ent._gekkoCeilingHit          = false
-    ent._gekkoCeilNextT           = 0
-    ent._gekkoRandomCrouch        = false
-    ent._gekkoRandomCrouchEndT    = 0
-    ent._gekkoRandomDuration      = 0
-    ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
-
-    ent:SetCollisionBounds(
-        Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
-        Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
-    )
-    ent:SetNWBool("GekkoIsCrouching", false)
-    ent.VJ_CanMoveThink = true
-    print("[DodgeCrouch] Exit | standing")
-end
 
 -- ============================================================
 -- BeginSlide
@@ -183,25 +155,32 @@ local function BeginSlide(ent, slideDir, withCrouch)
     ent._gekkoInvulnUntil = invulnEnd
 
     if withCrouch then
-        Dodge_EnterCrouch(ent, crouchHold)
+        -- Route through ENT:Dodge_EnterCrouch (crouch_system.lua).
+        -- Single authoritative EnterCrouch call — _gekkoDodgeCrouchForced
+        -- is never set true, so GeckoCrouch_Update below does NOT call
+        -- EnterCrouch a second time. Bob is gone.
+        ent:Dodge_EnterCrouch(crouchHold)
 
-        -- Force-stamp the crouch sequence in this same callstack,
-        -- before SetMoveType fires on the next engine tick.
+        -- Force-stamp the crouch sequence before SetMoveType fires.
         ent:GeckoCrouch_Update()
-        ent._gekkoDodgeCrouchForced = false   -- safety clear
-
-        -- Flinch suppression is now handled every engine tick inside
-        -- GeckoCrouch_Update() itself (self-healing flinch kill at function
-        -- top). The old 0.03 s recursive timer fired less frequently than
-        -- the engine think loop, leaving gaps where VJ Base could win the
-        -- reassertion race and snap the NPC out of crouch mid-slide.
         ent.Flinching = false
     end
+
+    -- FIX: Kill Flinching BEFORE SetSchedule. VJ Base processes SCHED_NONE on
+    -- the same engine tick and may reassign a task that calls ResetSequence,
+    -- overwriting the crouch sequence just stamped above. Suppressing Flinching
+    -- here ensures GekkoUpdateAnimation is not gated out on the next think tick,
+    -- so GeckoCrouch_Update can re-enforce the sequence immediately.
+    ent.Flinching = false
 
     -- Lock VJ AI movement
     ent.VJ_IsMoving     = false
     ent.VJ_CanMoveThink = false
     ent:SetSchedule(SCHED_NONE)
+
+    -- FIX: Kill Flinching again after SetSchedule in case VJ Base set it
+    -- during schedule-task processing on this same tick.
+    ent.Flinching = false
     if not withCrouch then
         ent._gekkoSuppressActivity = CurTime() + slideDur + 0.1
     end
@@ -282,14 +261,13 @@ function ENT:PedestalDodge_ThinkStrafe()
         if ok and IsValid(result) then enemy = result end
     end
     if not IsValid(enemy) then return end
-    if not self:Visible(enemy) then return end
 
-    self._strafeNextT = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
-
-    local dir = PickSlideDir(self, math.random() >= 0.5)
+    local preferRight = math.random() > 0.5
+    local dir = PickSlideDir(self, preferRight)
     if not dir then return end
 
     BeginSlide(self, dir, false)
+    self._strafeNextT = CurTime() + math.Rand(STRAFE_INTERVAL_MIN, STRAFE_INTERVAL_MAX)
 end
 
 -- ============================================================
@@ -297,54 +275,53 @@ end
 -- ============================================================
 
 function ENT:PedestalDodge_OnHit(dmginfo)
-    if self._gekkoDead then return false end
+    local now = CurTime()
+
+    -- Already sliding or in crouch lock → ignore
     if self._pedestalSliding then return false end
-
-    -- Already in an invuln window from a previous dodge in this burst:
-    -- silently discard the damage without starting another slide.
-    if CurTime() < (self._gekkoInvulnUntil or 0) then
-        dmginfo:SetDamage(0)
-        dmginfo:ScaleDamage(0)
-        dmginfo:SetDamageForce(Vector(0, 0, 0))
-        self.Flinching = false
-        return true
+    if self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0) then
+        return false
     end
 
-    local dtype = dmginfo:GetDamageType()
-    local valid = (DMG_BULLET   and bit.band(dtype, DMG_BULLET)   ~= 0)
-               or (DMG_BUCKSHOT and bit.band(dtype, DMG_BUCKSHOT) ~= 0)
-               or (DMG_SNIPER   and bit.band(dtype, DMG_SNIPER)   ~= 0)
-               or (DMG_BLAST    and bit.band(dtype, DMG_BLAST)    ~= 0)
-               or bit.band(dtype, 8) ~= 0
-    if not valid then return false end
+    -- Cooldown between reactive dodges
+    if now < (self._dodgeCooldownUntil or 0) then return false end
 
-    if self._dodgeVulnerable then return false end
-    if CurTime() < self._dodgeCooldownUntil then return false end
-    if math.random() > DODGE_CHANCE then return false end
-
-    if CurTime() - self._dodgeWindowStart >= DODGE_WINDOW then
+    -- Charge system
+    if now - self._dodgeWindowStart > DODGE_WINDOW then
         self._dodgeChargesLeft = DODGE_CHARGES
-        self._dodgeWindowStart = CurTime()
+        self._dodgeWindowStart = now
     end
-    if self._dodgeChargesLeft <= 0 then return false end
-
-    local attacker  = dmginfo:GetAttacker()
-    local dmgOrigin = IsValid(attacker) and attacker:GetPos() or dmginfo:GetDamagePosition()
-    local toAtk     = (dmgOrigin - self:GetPos())
-    toAtk.z = 0
-    toAtk:Normalize()
-    local preferRight = self:GetRight():Dot(toAtk) < 0
-
-    local dir = PickSlideDir(self, preferRight)
-    if not dir then dir = PickSlideDir(self, not preferRight) end
-    if not dir then return false end
-
-    self._dodgeChargesLeft   = self._dodgeChargesLeft - 1
-    self._dodgeCooldownUntil = CurTime() + math.Rand(DODGE_COOLDOWN_MIN, DODGE_COOLDOWN_MAX)
-
     if self._dodgeChargesLeft <= 0 then
         self._dodgeVulnerable = true
-        self._dodgeVulnUntil  = CurTime() + DODGE_VULN_DUR
+        self._dodgeVulnUntil  = now + DODGE_VULN_DUR
+        return false
+    end
+
+    -- Probabilistic gate
+    if math.random() > DODGE_CHANCE then return false end
+
+    -- Pick direction away from attacker
+    local attacker = dmginfo:GetAttacker()
+    local preferRight = true
+    if IsValid(attacker) then
+        local toAtk = (attacker:GetPos() - self:GetPos()):GetNormalized()
+        preferRight = self:GetRight():Dot(toAtk) < 0
+    end
+
+    local dir = PickSlideDir(self, preferRight)
+    if not dir then
+        dir = PickSlideDir(self, not preferRight)
+    end
+    if not dir then return false end
+
+    -- Consume charge, arm cooldown
+    self._dodgeChargesLeft = self._dodgeChargesLeft - 1
+    self._dodgeCooldownUntil = now + math.Rand(DODGE_COOLDOWN_MIN, DODGE_COOLDOWN_MAX)
+
+    -- Mark vulnerable if out of charges
+    if self._dodgeChargesLeft <= 0 then
+        self._dodgeVulnerable = true
+        self._dodgeVulnUntil  = now + DODGE_VULN_DUR
         self:EmitSound("npc/turret_floor/die.wav", 75, 120)
     end
 
