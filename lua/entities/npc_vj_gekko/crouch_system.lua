@@ -84,6 +84,25 @@ end
 -- ─────────────────────────────────────────────────────────────
 local function EnterCrouch(ent, holdDuration, randDuration)
     local now = CurTime()
+
+    -- FIX: Guard against re-entry when already crouching.
+    -- Without this, a second EnterCrouch call (e.g. from the
+    -- _gekkoDodgeCrouchForced path) resets _gekkoCrouchSeqSet = -1
+    -- and _gekkoCrouchJustEntered = true again, forcing EnforceSequence
+    -- to call ResetSequence a second time on the same callstack tick,
+    -- which is what produced the visible post-dodge up-down bob.
+    if ent._gekkoCrouching then
+        -- Already crouching: only extend the hold timer if the new
+        -- duration would push it further out. Never restart the state.
+        local holdLen = holdDuration or CROUCH_HOLD_MIN
+        if randDuration and randDuration > holdLen then holdLen = randDuration end
+        local newUntil = now + holdLen
+        if newUntil > (ent._gekkoCrouchHoldUntil or 0) then
+            ent._gekkoCrouchHoldUntil = newUntil
+        end
+        return
+    end
+
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
 
@@ -145,7 +164,15 @@ local function EnforceSequence(ent)
 
     if ent._gekkoCrouchSeqSet ~= seqIdx then
         ent:ResetSequence(seqIdx)
-        ent._gekkoCrouchSeqSet = seqIdx
+        ent._gekkoCrouchSeqSet      = seqIdx
+        -- FIX: Clear _gekkoCrouchJustEntered after the first successful
+        -- ResetSequence. Previously this flag was set in EnterCrouch and
+        -- NEVER cleared, meaning every subsequent EnforceSequence call
+        -- looked like a fresh entry. Combined with TranslateActivity also
+        -- calling ResetSequence, this caused the sequence to be stamped
+        -- twice per tick → visible up-down bob after a dodge. Clearing it
+        -- here ensures only one ResetSequence fires per enter event.
+        ent._gekkoCrouchJustEntered = false
     end
 
     -- Continuously drive playback rate so VJ Base can't starve it.
