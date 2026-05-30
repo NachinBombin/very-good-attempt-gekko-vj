@@ -165,6 +165,10 @@ function ENT:GeckoCrouch_Init()
     self._gekkoRandomCrouchEndT    = 0
     self._gekkoRandomDuration      = 0
     self._gekkoRandomCrouchNextT   = CurTime() + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    -- dodge crouch flag: when true, GeckoCrouch_Update holds the crouch
+    -- until _gekkoDodgeCrouchUntil expires, exactly like a long random crouch.
+    self._gekkoDodgeCrouching      = false
+    self._gekkoDodgeCrouchUntil    = 0
     print("[GeckoCrouch] Init() complete")
 end
 
@@ -183,28 +187,24 @@ function ENT:GeckoCrouch_CacheSeqs()
 end
 
 -- ─────────────────────────────────────────────────────────────
---  EnterCrouch
+--  EnterCrouch  (shared by obstacle, ceiling, random, AND dodge)
 -- ─────────────────────────────────────────────────────────────
-local function EnterCrouch(ent, randDuration)
+local function EnterCrouch(ent, holdDuration)
     local now = CurTime()
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
-    local holdLen = CROUCH_HOLD_MIN
-    if randDuration and randDuration > holdLen then
-        holdLen = randDuration
-    end
+    local holdLen = holdDuration or CROUCH_HOLD_MIN
+    if holdLen < CROUCH_HOLD_MIN then holdLen = CROUCH_HOLD_MIN end
     ent._gekkoCrouchHoldUntil = now + holdLen
     ent._gekkoCrouchSeqSet    = -1
     ent._gekkoObsOnSince      = nil
     ent._gekkoObsDebounced    = false
     ent._gekkoObsHullHit      = false
 
-    -- Shrink collision hull to crouched height
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_CROUCH_H)
     )
-
     ent:SetNWBool("GekkoIsCrouching", true)
 
     print(string.format("[GeckoCrouch] → Crouching holdLen=%.1fs  holdUntil=%.2f",
@@ -229,17 +229,33 @@ local function ExitCrouch(ent)
     ent._gekkoRandomCrouchEndT    = 0
     ent._gekkoRandomDuration      = 0
     ent._gekkoRandomCrouchNextT   = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
+    -- clear dodge crouch flag on exit
+    ent._gekkoDodgeCrouching      = false
+    ent._gekkoDodgeCrouchUntil    = 0
 
-    -- Restore full standing hull
     ent:SetCollisionBounds(
         Vector(-HITBOX_HALF_W, -HITBOX_HALF_W, 0),
         Vector( HITBOX_HALF_W,  HITBOX_HALF_W, HITBOX_STAND_H)
     )
-
     ent:SetNWBool("GekkoIsCrouching", false)
     ent.VJ_CanMoveThink = true
 
     print("[GeckoCrouch] → Standing")
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  GeckoCrouch_BeginDodge
+--  Called by pedestal_dodge_system.lua when a reactive dodge
+--  fires. Sets the dodge-crouch lock and enters the shared
+--  EnterCrouch path — identical to any other crouch trigger.
+-- ─────────────────────────────────────────────────────────────
+function ENT:GeckoCrouch_BeginDodge(holdDuration)
+    local now = CurTime()
+    self._gekkoDodgeCrouching   = true
+    self._gekkoDodgeCrouchUntil = now + holdDuration
+    -- Enter the same crouch the obstacle/ceiling system uses.
+    -- holdDuration is passed so the hold window matches the dodge window.
+    EnterCrouch(self, holdDuration)
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -268,17 +284,22 @@ function ENT:GeckoCrouch_Update()
         obsHit = TickObstacle(self)
     end
 
+    -- Dodge lock: treat an active dodge-crouch exactly like any other
+    -- lock source (ceiling, obstacle). While the dodge window is live
+    -- the NPC is forced to stay crouched regardless of other flags.
+    local dodgeLock = self._gekkoDodgeCrouching and now < self._gekkoDodgeCrouchUntil
+
     local vjCrouch   = (self.VJ_IsBeingCrouched == true)
     local randActive = self._gekkoRandomCrouch
-    local wantCrouch = vjCrouch or obsHit or ceilHit or randActive
+    local wantCrouch = vjCrouch or obsHit or ceilHit or randActive or dodgeLock
 
     if not self._crouchDiagT or now > self._crouchDiagT then
         print(string.format(
-            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  holdLeft=%.2f  rearmLeft=%.2f",
+            "[GeckoCrouch] Update | crouching=%s  want=%s  vj=%s  obs=%s  ceil=%s  rand=%s  dodge=%s  holdLeft=%.2f",
             tostring(self._gekkoCrouching), tostring(wantCrouch),
             tostring(vjCrouch), tostring(obsHit), tostring(ceilHit), tostring(randActive),
-            math.max(0, self._gekkoCrouchHoldUntil - now),
-            math.max(0, self._gekkoObsRearmT - now)
+            tostring(dodgeLock),
+            math.max(0, self._gekkoCrouchHoldUntil - now)
         ))
         self._crouchDiagT = now + 2
     end
@@ -291,11 +312,13 @@ function ENT:GeckoCrouch_Update()
             return false
         end
     else
+        -- Ceiling continuously re-locks the hold timer.
         if ceilHit then
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
 
         if now >= self._gekkoCrouchHoldUntil then
+            -- Clear expired random flag.
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
@@ -303,7 +326,15 @@ function ENT:GeckoCrouch_Update()
                 self._gekkoRandomCrouchNextT = now + math.Rand(RAND_CHECK_MIN, RAND_CHECK_MAX)
                 print(string.format("[GeckoCrouch] Random EXPIRED — next roll in %.1fs",
                     self._gekkoRandomCrouchNextT - now))
-                wantCrouch = vjCrouch or obsHit or ceilHit
+                wantCrouch = vjCrouch or obsHit or ceilHit or dodgeLock
+            end
+
+            -- The dodge lock extends the hold: keep the NPC crouched
+            -- until the full dodge window (_gekkoDodgeCrouchUntil) expires.
+            -- This is the same pattern CeilingCheck uses above.
+            if dodgeLock then
+                self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+                wantCrouch = true
             end
 
             if not wantCrouch then
