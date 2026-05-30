@@ -1101,3 +1101,197 @@ end
 local function FireTrackMissile(ent, enemy)
     local dist = ent:GetPos():Distance(enemy:GetPos())
     if dist < MISSILE_MIN_DIST then
+        print(string.format("[GekkoTRACK] Too close (%.0f) -- re-rolling", dist))
+        return FireMissile(ent, enemy)
+    end
+    ent._missileCount = (ent._missileCount or 0) + 1
+    local attIdx  = (ent._missileCount % 2 == 1) and ATT_MISSILE_L or ATT_MISSILE_R
+    local attData = ent:GetAttachment(attIdx)
+    local src     = attData and attData.Pos or (ent:GetPos() + Vector(0, 0, 160))
+    local aimPos  = enemy:GetPos() + Vector(0, 0, 40)
+    local dir     = (aimPos - src):GetNormalized()
+    sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
+    ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, math.random(95, 110), 1)
+    local missile = ents.Create("sent_track_missile")
+    if not IsValid(missile) then
+        print("[GekkoTRACK] ERROR: sent_track_missile create failed -- falling back")
+        return FireMissile(ent, enemy)
+    end
+    missile.Owner  = ent
+    missile.Target = enemy
+    missile:SetPos(src); missile:SetAngles(dir:Angle()); missile:SetOwner(ent)
+    missile:Spawn(); missile:Activate()
+    local phys = missile:GetPhysicsObject()
+    if IsValid(phys) then phys:SetVelocity(dir * 900) end
+    SendMuzzleFlash(src, dir, 2)
+    print(string.format("[GekkoTRACK] Launched | att=%d dist=%.0f", attIdx, dist))
+    return true
+end
+
+local function FireNikita(ent, enemy)
+    local dist = ent:GetPos():Distance(enemy:GetPos())
+    if dist < NIKITA_MIN_DIST then
+        print(string.format("[GekkoNIKITA] Too close (%.0f) -- re-rolling", dist))
+        return FireGrenadeLauncher(ent, enemy)
+    end
+    local forward = ent:GetForward(); forward.z = 0; forward:Normalize()
+    local src = ent:GetPos() + forward * NIKITA_SPAWN_FORWARD + Vector(0, 0, NIKITA_SPAWN_Z)
+    local aimPos = enemy:GetPos() + Vector(0, 0, 40)
+    local dir = (aimPos - src):GetNormalized()
+    sound.Play(MISSILE_SOUND_WARN, ent:GetPos(), 511, 60)
+    ent:EmitSound(ROCKET_SND_FIRE[math.random(#ROCKET_SND_FIRE)], ROCKET_SND_LEVEL, 90, 1)
+    for i = 0, NIKITA_MUZZLE_SMOKE_COUNT - 1 do
+        timer.Simple(i * NIKITA_MUZZLE_SMOKE_STAGGER, function()
+            if not IsValid(ent) then return end
+            local ed = EffectData()
+            ed:SetOrigin(src); ed:SetNormal(dir)
+            ed:SetScale(NIKITA_MUZZLE_SMOKE_SCALE); ed:SetMagnitude(1)
+            util.Effect("SmokeEffect", ed)
+        end)
+    end
+    local nikita = ents.Create("sent_nikita_missile")
+    if not IsValid(nikita) then
+        print("[GekkoNIKITA] ERROR: sent_nikita_missile create failed -- falling back")
+        return FireMissile(ent, enemy)
+    end
+    nikita.Owner  = ent
+    nikita.Target = enemy
+    nikita:SetPos(src); nikita:SetAngles(dir:Angle()); nikita:SetOwner(ent)
+    nikita:Spawn(); nikita:Activate()
+    local phys = nikita:GetPhysicsObject()
+    if IsValid(phys) then phys:SetVelocity(dir * 700) end
+    SendMuzzleFlash(src, dir, 2)
+    print(string.format("[GekkoNIKITA] Launched | dist=%.0f", dist))
+    return true
+end
+
+local function FireBrushmaster(ent, enemy)
+    local aimPos   = enemy:GetPos() + Vector(0, 0, 40)
+    local rounds   = math.random(BM_ROUNDS_MIN, BM_ROUNDS_MAX)
+    local bmAtt    = ent:GetAttachment(ATT_MACHINEGUN)
+    local src      = bmAtt and bmAtt.Pos or (ent:GetPos() + Vector(0, 0, 200))
+    local srcAng   = bmAtt and bmAtt.Ang or ent:GetAngles()
+    ent:EmitSound(BM_SND_RELOAD, BM_SND_LEVEL, math.random(95, 105), 1)
+    for i = 0, rounds - 1 do
+        local interval = (i % 2 == 0) and BM_INTERVAL or BM_INTERVAL2
+        if math.random(1, 100) <= BM_STUTTER_CHANCE then
+            interval = interval * math.Rand(1.2, 1.8)
+        end
+        local fireTime = i * interval
+        timer.Simple(fireTime, function()
+            if not IsValid(ent) then return end
+            local curEnemy = GetActiveEnemy(ent)
+            local curAim   = IsValid(curEnemy) and (curEnemy:GetPos() + Vector(0, 0, 40)) or aimPos
+            local curBmAtt = ent:GetAttachment(ATT_MACHINEGUN)
+            local curSrc   = curBmAtt and curBmAtt.Pos or (ent:GetPos() + Vector(0, 0, 200))
+            local curAng   = curBmAtt and curBmAtt.Ang or ent:GetAngles()
+            local dropComp = Vector(0, 0, BM_DROP_COMP_Z + math.Rand(-BM_DROP_JITTER_Z, BM_DROP_JITTER_Z))
+            local dir = (curAim + dropComp - curSrc):GetNormalized()
+            ent:FireBullets({
+                Attacker   = ent,
+                Damage     = MG_DAMAGE * 2.5,
+                Dir        = dir,
+                Src        = curSrc,
+                AmmoType   = "AR2",
+                TracerName = "Tracer",
+                Num        = 1,
+                Spread     = Vector(0.02, 0.02, 0.02),
+                Callback   = function(_, tr, _)
+                    if tr.Hit and tr.HitNormal then
+                        SendBulletImpact(tr.HitPos, tr.HitNormal, 2)
+                        BushmasterSparks(tr.HitPos, tr.HitNormal, ent)
+                        BushmasterSmoke(tr.HitPos, tr.HitNormal)
+                    end
+                end,
+            })
+            local muzzleEff = EffectData()
+            muzzleEff:SetOrigin(curSrc + dir * BM_MUZZLE_Z_OFFSET * 0.05)
+            muzzleEff:SetNormal(dir)
+            muzzleEff:SetScale(BM_MUZZLE_SCALE * 0.1)
+            util.Effect("MuzzleFlash", muzzleEff)
+            SendMuzzleFlash(curSrc, dir, 3)
+            SpawnCartridge(curSrc, curAng, BM_SHELL_SCALE)
+            timer.Simple(BM_SHELL_DROP_DELAY, function()
+                if not IsValid(ent) then return end
+                ent:EmitSound(
+                    BM_SHELL_DROP_SOUNDS[math.random(#BM_SHELL_DROP_SOUNDS)],
+                    BM_SHELL_DROP_LEVEL,
+                    math.random(BM_SHELL_DROP_PITCH_MIN, BM_SHELL_DROP_PITCH_MAX), 1
+                )
+            end)
+            ent:EmitSound(BM_SND_SHOOT, BM_SND_LEVEL, math.random(95, 108), 1)
+        end)
+    end
+    return true
+end
+
+-- ============================================================
+-- ENT:Attack  — master weapon dispatcher
+-- ============================================================
+function ENT:Attack()
+    local enemy = GetActiveEnemy(self)
+    if not IsValid(enemy) then return end
+
+    if self._gekkoDead then return end
+    if CurTime() < (self._gekkoInvulnUntil or 0) then return end
+
+    local weapon = RollWeapon()
+
+    if weapon == self._lastWeaponChoice then
+        weapon = RerollNotMissile(weapon)
+    end
+    self._lastWeaponChoice = weapon
+
+    local dist = self:GetPos():Distance(enemy:GetPos())
+    print(string.format("[GekkoATK] weapon=%s dist=%.0f", weapon, dist))
+
+    if weapon == "MG" then
+        FireMGBurst(self, enemy)
+    elseif weapon == "MISSILE" then
+        FireMissile(self, enemy)
+    elseif weapon == "SALVO" then
+        FireDoubleSalvo(self, enemy)
+    elseif weapon == "GRENADE" then
+        FireGrenadeLauncher(self, enemy)
+    elseif weapon == "TOPMISSILE" then
+        FireTopMissile(self, enemy)
+    elseif weapon == "TRACKMISSILE" then
+        FireTrackMissile(self, enemy)
+    elseif weapon == "ORBITRPG" then
+        FireOrbitRpg(self, enemy)
+    elseif weapon == "NIKITA" then
+        FireNikita(self, enemy)
+    elseif weapon == "BRUSHMASTER" then
+        FireBrushmaster(self, enemy)
+    elseif weapon == "ELASTIC" then
+        self:GekkoElastic_Fire(enemy)
+    else
+        FireMGBurst(self, enemy)
+    end
+end
+
+-- ============================================================
+-- VJ Base hooks
+-- ============================================================
+function ENT:VJ_OnThink()
+end
+
+function ENT:VJ_OnDeath(dmginfo, hitGroup)
+    self._gekkoDead = true
+    self._gekkoInvulnUntil = 0
+    if self._gekkoSprinting then GekkoSprint_End(self) end
+    self:SetNWBool("GekkoMGFiring", false)
+    self:GekkoDeath_OnDeath(dmginfo, hitGroup)
+    print("[GekkoNPC] Death triggered")
+end
+
+function ENT:VJ_OnFlinch(dmginfo, hitGroup)
+    if CurTime() < (self._gekkoInvulnUntil or 0) then
+        self.Flinching = false
+        return true
+    end
+end
+
+function ENT:VJ_OnSight(enemy)
+    SendSonarLock(enemy)
+end
