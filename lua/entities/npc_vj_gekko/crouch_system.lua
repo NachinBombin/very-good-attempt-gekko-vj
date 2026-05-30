@@ -29,6 +29,12 @@ local DEFAULT_MOVE_SPEED    = 150
 local CWALK_STATIONARY_RATE = 0.05
 local CWALK_MOVING_THRESH   = 5
 
+-- How far past _gekkoCrouchHoldUntil the dodge lock stays active.
+-- This staggers _gekkoDodgeCrouchUntil AFTER _gekkoCrouchHoldUntil so
+-- anyLock is still true when the hold-exit check fires, preventing the
+-- premature ExitCrouch that caused the post-dodge up-down animation bob.
+local DODGE_CROUCH_TAIL = 0.6
+
 -- ─────────────────────────────────────────────────────────────
 --  Hull shapes (obstacle check only)
 -- ─────────────────────────────────────────────────────────────
@@ -85,11 +91,11 @@ end
 local function EnterCrouch(ent, holdDuration, randDuration)
     local now = CurTime()
 
-    -- FIX: Guard against re-entry when already crouching.
+    -- Guard against re-entry when already crouching.
     -- A second EnterCrouch call resets _gekkoCrouchSeqSet = -1 and
-    -- _gekkoCrouchJustEntered = true, which forces EnforceSequence to
-    -- call ResetSequence again on the same tick → the visible post-dodge
-    -- up-down bob. If already crouching, only extend the hold timer.
+    -- _gekkoCrouchJustEntered = true, forcing EnforceSequence to call
+    -- ResetSequence again on the same tick — the visible post-dodge bob.
+    -- If already crouching, only extend the hold timer.
     if ent._gekkoCrouching then
         local holdLen = holdDuration or CROUCH_HOLD_MIN
         if randDuration and randDuration > holdLen then holdLen = randDuration end
@@ -103,7 +109,6 @@ local function EnterCrouch(ent, holdDuration, randDuration)
     ent._gekkoCrouching         = true
     ent._gekkoCrouchJustEntered = true
 
-    -- holdDuration (explicit) takes priority; fall back to random then minimum.
     local holdLen = holdDuration or CROUCH_HOLD_MIN
     if randDuration and randDuration > holdLen then
         holdLen = randDuration
@@ -131,7 +136,7 @@ local function ExitCrouch(ent)
     ent._gekkoCrouching         = false
     ent._gekkoCrouchJustEntered = false
     ent._gekkoCrouchSeqSet      = -1
-    -- FIX: Invalidate last-sequence cache so walk/idle re-stamps immediately.
+    -- Invalidate last-sequence cache so walk/idle re-stamps immediately.
     ent.Gekko_LastSeqIdx        = -1
     ent._gekkoDodgeCrouch       = false
     ent._gekkoDodgeCrouchUntil  = 0
@@ -157,19 +162,25 @@ end
 local function EnforceSequence(ent)
     local speed    = ent:GetVelocity():Length2D()
     local isMoving = speed > CWALK_MOVING_THRESH
-    local seqName  = isMoving and "c_walk" or "c_walk"   -- same seq; split point for future
+
+    -- FIX: was "c_walk" for both branches — c_idle was never used.
+    local seqName  = isMoving and "c_walk" or "c_idle"
     local seqIdx   = ent:LookupSequence(seqName)
+
+    -- Fall back to c_walk if c_idle doesn't exist on this model.
+    if seqIdx < 0 then
+        seqIdx = ent:LookupSequence("c_walk")
+    end
 
     if seqIdx < 0 then return end
 
     if ent._gekkoCrouchSeqSet ~= seqIdx then
         ent:ResetSequence(seqIdx)
         ent._gekkoCrouchSeqSet      = seqIdx
-        -- FIX: Clear just-entered flag so EnforceSequence does not re-stamp every tick.
+        -- Clear just-entered flag so EnforceSequence does not re-stamp every tick.
         ent._gekkoCrouchJustEntered = false
     end
 
-    -- Continuously drive playback rate so VJ Base can't starve it.
     local rate
     if isMoving then
         rate = math.Clamp(speed / DEFAULT_MOVE_SPEED, 0.4, 2.0)
@@ -182,29 +193,48 @@ end
 -- ─────────────────────────────────────────────────────────────
 --  ENT:Dodge_EnterCrouch  (called by pedestal_dodge_system BeginSlide)
 --
---  FIX: Do NOT set _gekkoDodgeCrouchForced = true here.
---  The old code set it true, then BeginSlide called GeckoCrouch_Update()
---  immediately after, which hit the _gekkoDodgeCrouchForced branch and
---  called EnterCrouch a second time with nil holdDuration. That second
---  call reset _gekkoCrouchSeqSet = -1 and _gekkoCrouchJustEntered = true
---  again, causing EnforceSequence to fire ResetSequence twice in the
---  same callstack — producing the visible post-dodge up-down bob.
+--  FIX (bob): _gekkoDodgeCrouchUntil is now set to
+--      now + slideDuration + DODGE_CROUCH_TAIL
+--  instead of just now + slideDuration.
 --
---  Now EnterCrouch is called exactly once (here) with the correct
---  holdDur. The immediate GeckoCrouch_Update() in BeginSlide takes
---  the normal update path (dodgeActive = true → EnforceSequence)
---  without any second EnterCrouch.
+--  Previously both _gekkoDodgeCrouchUntil and _gekkoCrouchHoldUntil
+--  were set to the same value (now + 2.5). On the tick they both
+--  expired simultaneously:
+--    - now >= _gekkoCrouchHoldUntil  → true  (exit check fires)
+--    - dodgeActive = _gekkoDodgeCrouch and now < _gekkoDodgeCrouchUntil
+--                  = true            and false  → FALSE
+--    - anyLock = dodgeActive or slideActive or ceilHit = FALSE
+--  So ExitCrouch fired, then the NPC immediately re-entered crouch
+--  on the next want-crouch evaluation because VJ Base's movement AI
+--  had been running since slideDur (0.36s) and was fighting
+--  EnforceSequence's ResetSequence calls, causing the up-down bob.
+--
+--  With DODGE_CROUCH_TAIL = 0.6s stagger:
+--    _gekkoCrouchHoldUntil  = now + 2.5   (hold expires first)
+--    _gekkoDodgeCrouchUntil = now + 3.1   (tail keeps dodgeActive true)
+--  When the hold-exit check fires at T+2.5:
+--    dodgeActive = true (now < 3.1) → anyLock = true → ExitCrouch blocked.
+--  GeckoCrouch_Update instead extends _gekkoCrouchHoldUntil by
+--  CROUCH_HOLD_MIN so the posture holds cleanly. At T+3.1 dodgeActive
+--  becomes false, anyLock becomes false, and ExitCrouch fires once,
+--  smoothly, with no competition from VJ Base.
 -- ─────────────────────────────────────────────────────────────
 function ENT:Dodge_EnterCrouch(slideDuration)
     local now = CurTime()
-    self._gekkoDodgeCrouch       = true
-    self._gekkoDodgeCrouchUntil  = now + slideDuration
+    self._gekkoDodgeCrouch      = true
+    -- Stagger the dodge-active expiry past the hold expiry by DODGE_CROUCH_TAIL
+    -- so anyLock stays true during the stand-up blend window.
+    self._gekkoDodgeCrouchUntil  = now + slideDuration + DODGE_CROUCH_TAIL
     self._gekkoDodgeCrouchForced = false   -- never set true: avoids double EnterCrouch
-    -- FIX: Force GekkoUpdateAnimation to re-stamp the sequence on exit,
-    -- since its guard (targetSeq ~= Gekko_LastSeqIdx) would otherwise
-    -- skip the walk/idle ResetSequence after the dodge window ends.
+    -- Force GekkoUpdateAnimation to re-stamp the sequence on exit.
     self.Gekko_LastSeqIdx        = -1
     EnterCrouch(self, slideDuration, nil)
+    print(string.format(
+        "[GeckoCrouch] Dodge_EnterCrouch | holdUntil=%.2f dodgeUntil=%.2f (tail=%.1fs)",
+        self._gekkoCrouchHoldUntil,
+        self._gekkoDodgeCrouchUntil,
+        DODGE_CROUCH_TAIL
+    ))
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -232,11 +262,6 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 --  ENT:GeckoCrouch_CacheSeqs
---  Looks up and caches the crouch animation sequence indices.
---  Called from Init (deferred timer) and from GekkoUpdateAnimation
---  whenever GekkoSeq_CrouchWalk is nil or -1.
---  GekkoSeq_CrouchWalk  : "c_walk"  (primary crouch anim)
---  GekkoSeq_CrouchIdle  : "c_idle"  (stationary crouch; falls back to c_walk)
 -- ─────────────────────────────────────────────────────────────
 function ENT:GeckoCrouch_CacheSeqs()
     local cw = self:LookupSequence("c_walk")
@@ -252,26 +277,23 @@ end
 function ENT:GeckoCrouch_Update()
     local now = CurTime()
 
-    -- ── FIX: Self-healing Flinching kill ────────────────────────
-    -- Kill Flinching at the very top of every GeckoCrouch_Update call
-    -- while any dodge or slide lock is active. This is a last-resort
-    -- guard: even if GekkoUpdateAnimation's Flinching check was somehow
-    -- skipped (e.g. called directly from BeginSlide), the sequence
-    -- enforcement below can never be blocked by a stale flinch flag.
+    -- Kill Flinching at the top of every call while any dodge or slide
+    -- lock is active. Last-resort guard so EnforceSequence is never
+    -- blocked by a stale flinch flag.
     do
         local _dA = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
         local _sA = self._pedestalSliding
         if _dA or _sA then self.Flinching = false end
     end
-    -- ─────────────────────────────────────────────────────────────
 
-    -- ── DODGE LOCK: extend hold timer every tick while active ────
+    -- ── DODGE / SLIDE LOCK ──────────────────────────────────────
+    -- dodgeActive stays true until _gekkoDodgeCrouchUntil (now + 2.5 + 0.6 = 3.1s).
+    -- slideActive is true only during the 0.36s travel window.
     local dodgeActive = self._gekkoDodgeCrouch and now < (self._gekkoDodgeCrouchUntil or 0)
     local slideActive = self._pedestalSliding
 
-    -- ── FORCE-TICK: kept for safety but should never fire for dodge
-    -- entry now that Dodge_EnterCrouch no longer sets this flag.
-    -- ─────────────────────────────────────────────────────────────
+    -- Force-tick: kept for safety but should never fire with the current
+    -- dodge path since _gekkoDodgeCrouchForced is never set true.
     if self._gekkoDodgeCrouchForced then
         self._gekkoDodgeCrouchForced = false
         if not self._gekkoCrouching then
@@ -343,6 +365,9 @@ function ENT:GeckoCrouch_Update()
         or slideActive
 
     -- ── ANY-LOCK (prevents exit even when hold timer expires) ───
+    -- dodgeActive remains true until T+3.1 (hold=2.5 + tail=0.6).
+    -- This is the critical change: the hold check at T+2.5 sees anyLock=true
+    -- and extends rather than exits, so ExitCrouch fires exactly once at T+3.1.
     local anyLock = dodgeActive or slideActive or ceilHit
 
     -- ── ENTER PATH ──────────────────────────────────────────────
@@ -361,9 +386,9 @@ function ENT:GeckoCrouch_Update()
             end
         end
 
-        -- ExitCrouch only when hold expired AND no lock is active.
-        -- ExitCrouch itself also guards on _pedestalSliding, double safety.
         if now >= self._gekkoCrouchHoldUntil and not anyLock then
+            -- Hold expired and no lock active — process random-crouch expiry
+            -- and decide whether to exit.
             if self._gekkoRandomCrouch then
                 self._gekkoRandomCrouch      = false
                 self._gekkoRandomCrouchEndT  = 0
@@ -378,6 +403,12 @@ function ENT:GeckoCrouch_Update()
                 ExitCrouch(self)
                 return false
             end
+            self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
+
+        elseif now >= self._gekkoCrouchHoldUntil and anyLock then
+            -- FIX: Hold expired but a lock (dodge tail) is still active.
+            -- Extend the hold by CROUCH_HOLD_MIN so the NPC stays crouched
+            -- cleanly until the lock releases, then ExitCrouch fires once.
             self._gekkoCrouchHoldUntil = now + CROUCH_HOLD_MIN
         end
     end
